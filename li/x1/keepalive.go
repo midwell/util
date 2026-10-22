@@ -142,6 +142,7 @@ var errNoKeepaliveReporter = errors.New("x1: no reporter for the keepalive proce
 func (s *Server) recordActivity() {
 	s.mu.Lock()
 	s.lastSeen = s.now()
+	s.heard++
 	owed := s.keepalive.owed
 	s.keepalive = keepaliveState{}
 	reporter := s.keepaliveReporter
@@ -163,11 +164,17 @@ func (s *Server) recordActivity() {
 //   - an OK answer to the report within TIME_P1 starts timer P3, and when P3 expires with no
 //     X1 request the element deactivates all tasks and sends an Alert with code 10000
 //     "Database cleared";
-//   - no answer, or an error answer, within TIME_P1 deactivates all tasks at once, followed
-//     by the same Alert.
+//   - no answer, or an error answer, leaves P1 running, and its expiry deactivates all tasks,
+//     followed by the same Alert. An error answer is not acted on before P1 expires: the
+//     clause conditions deactivation on an error answer "and no X1 request was received while
+//     timer P1 was running", which can only be known once P1 has run.
 //
 // An element configured with RetainTasking restarts P2 instead of deactivating anything,
-// as the clause specifies; the fault stays reported until an X1 request clears it.
+// as the clause specifies; the fault stays reported until an X1 request clears it, and the
+// 9050 report is repeated each time P2 expires again while the ADMF stays silent.
+//
+// An element with no KeepaliveReporter runs the same procedure: its report cannot be
+// answered, so it deactivates when P1 expires, and the Alert has nowhere to go.
 //
 // Deactivation is the same purge DeactivateAllTasks performs, reported to OnPurge as
 // PurgeKeepaliveLapse, and it is re-checked under the transition lock so that an X1 request
@@ -354,13 +361,23 @@ func (s *Server) purgeIfSilent(silent func(lastSeen, now time.Time) bool) bool {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 
-	if !s.silent(silent) {
+	s.mu.Lock()
+	heard := s.heard
+	decided := silent(s.lastSeen, s.now())
+	s.mu.Unlock()
+	if !decided {
 		return false
 	}
 	s.purgeAllTaskingLocked(PurgeKeepaliveLapse)
 
+	// The procedure ends here only if the ADMF stayed silent while the purge ran. A request
+	// in that interval has already reset the procedure, and recordActivity takes only mu, so
+	// it does not wait for the purge; marking the procedure purged over that reset would stop
+	// it for good, leaving whatever the ADMF tasks next held with no fail-safe behind it.
 	s.mu.Lock()
-	s.keepalive.phase = keepalivePurged
+	if s.heard == heard {
+		s.keepalive.phase = keepalivePurged
+	}
 	s.mu.Unlock()
 
 	return true

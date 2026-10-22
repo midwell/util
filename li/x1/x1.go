@@ -186,6 +186,9 @@ type Server struct {
 
 	mu       sync.Mutex
 	lastSeen time.Time // time of the last X1 message from the ADMF (keepalive watchdog)
+	// heard counts X1 requests from the ADMF. It tells a purge whether a request arrived while
+	// it ran, which lastSeen cannot when two requests share an instant.
+	heard uint64
 	// keepalive is the TS 103 221-1 clause 6.6.2 procedure's state, guarded by mu. See
 	// WatchKeepalive.
 	keepalive keepaliveState
