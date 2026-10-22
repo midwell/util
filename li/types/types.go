@@ -218,16 +218,15 @@ const (
 // produces the requested product to the matching delivery endpoints.
 type InterceptTask struct {
 	XID XID
-	// Targets are the identifiers this task intercepts on, and they are
-	// alternatives: traffic or signalling matching any one of them belongs to the
-	// task. That is the ETSI list semantics — each entry in a task's
-	// targetIdentifiers is another way to identify the same target — and it is why
-	// this is a list rather than one identifier even though an ADMF tasking an
-	// IRI-POI by subscriber identity supplies exactly one.
+	// Targets are the criteria this task intercepts on, and they are conjunctive: a
+	// subject or a packet belongs to the task only where every one of them matches.
+	// ETSI TS 103 221-1 table 6.2.1.2-1: "Where multiple criteria are present, all
+	// criteria are required to be matched." A task naming one criterion, which is what
+	// an ADMF tasking an IRI-POI by subscriber identity and a triggering function
+	// tasking a UPF by session send, is the common case.
 	//
-	// A triggering function needing traffic that matches a combination of
-	// properties cannot express it here; it must send a single criterion that
-	// already carries the combination.
+	// Use MatchedBy to decide a subject, and ContradictoryTargets to refuse a
+	// combination no subject or session can satisfy.
 	Targets []TargetIdentifier
 	// DIDs are the destination identifiers the task named, kept as given alongside the
 	// endpoints they resolve to. The interface needs both: the identifiers a reported task
@@ -307,43 +306,120 @@ func (t InterceptTask) WantsGeneralRecords() bool {
 	return t.RecordScope != RecordScopeIdentifierAssociation
 }
 
-// TargetsAny reports whether any of the task's identifiers is among ids — the
-// identifiers of some entity the caller holds (a subscriber's identities, a
-// session's criteria). It is the disjunction Targets documents, in one place so
-// that each POI does not re-derive it.
-func (t InterceptTask) TargetsAny(ids []TargetIdentifier) bool {
+// MatchedBy reports whether every identifier the task names is among ids — the
+// identifiers of some subject the caller holds, such as a subscriber's identities. It
+// is the conjunction Targets documents, in one place so that each POI does not
+// re-derive it. A task naming nothing matches nothing.
+func (t InterceptTask) MatchedBy(ids []TargetIdentifier) bool {
+	if len(t.Targets) == 0 {
+		return false
+	}
 	for _, want := range t.Targets {
-		for _, have := range ids {
-			if want == have {
-				return true
+		if !slices.Contains(ids, want) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// NamesOnlyTypes reports whether every identifier the task names is of the given
+// kinds — the kinds the element asking is able to evaluate.
+//
+// It answers the question an element must settle before acknowledging tasking:
+// MatchedBy asks whether a warrant matches a subject the element is holding right
+// now, which is a fact about this moment, whereas this asks whether the warrant is of
+// a shape the element could ever match. Because every criterion must match, one the
+// element never evaluates makes the whole task unmatchable, and acknowledging it tells
+// the provisioning function an interception is running that cannot be. TS 103 221-1
+// table 6.2.1.2-1 has the element reject it.
+//
+// Here rather than in each POI for the same reason MatchedBy is: the rule belongs in
+// one place. What differs between elements is which kinds they pass, not how the
+// question is decided.
+func (t InterceptTask) NamesOnlyTypes(kinds ...TargetIdentifierType) bool {
+	if len(t.Targets) == 0 {
+		return false
+	}
+	for _, want := range t.Targets {
+		if !slices.Contains(kinds, want.Type) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// ContradictoryTargets returns two of the task's criteria that no single subject or
+// packet can satisfy together, and false when there are none.
+//
+// Every criterion must match, so a task naming two values of a property that holds
+// one value at a time — two SUPIs, two session identities, two directions — can never
+// match, and TS 103 221-1 table 6.2.1.2-1 has an element reject "an inappropriate
+// combination of identifiers" rather than acknowledge it. The single-valued
+// properties are a subscriber's SUPI and GPSI, and a session's or a packet's F-SEID,
+// F-TEID, UE address, network instance, tunnel direction, PDR and rule identifiers.
+// A packet has one UE transport port and one protocol, so two port criteria
+// contradict unless they are the same.
+//
+// A PEI is the exception that needs care: a subscriber presents its IMEISV and the
+// IMEI it contains (TS 23.003: an IMEISV is the eight-digit TAC and six-digit serial
+// number followed by a two-digit software version), so a task may name both, and they
+// contradict only when the IMEI is not the IMEISV's first fourteen digits.
+func (t InterceptTask) ContradictoryTargets() (TargetIdentifier, TargetIdentifier, bool) {
+	for i, a := range t.Targets {
+		for _, b := range t.Targets[i+1:] {
+			if contradicts(a, b) {
+				return a, b, true
 			}
 		}
 	}
 
-	return false
+	return TargetIdentifier{}, TargetIdentifier{}, false
 }
 
-// NamesAnyType reports whether the task names at least one identifier of the
-// given kinds — the kinds the element asking is able to resolve.
-//
-// It answers the question an element must settle before acknowledging tasking:
-// TargetsAny asks whether a warrant matches a subject the element is holding right
-// now, which is a fact about this moment, whereas this asks whether the warrant is
-// of a shape the element could ever match. A warrant naming only identifiers an
-// element never resolves matches nothing at every moment, and acknowledging it
-// tells the provisioning function an interception is running that cannot be.
-//
-// Here rather than in each POI for the same reason TargetsAny is: the rule belongs
-// in one place. What differs between elements is which kinds they pass, not how
-// the question is decided.
-func (t InterceptTask) NamesAnyType(kinds ...TargetIdentifierType) bool {
-	for _, want := range t.Targets {
-		if slices.Contains(kinds, want.Type) {
-			return true
-		}
+// contradicts reports whether no subject or packet satisfies both a and b.
+func contradicts(a, b TargetIdentifier) bool {
+	if a == b {
+		return false
+	}
+	if isPort(a.Type) && isPort(b.Type) {
+		return true
+	}
+	if a.Type != b.Type {
+		return false
+	}
+	if a.Type == TargetPEI {
+		return !peiCompatible(a.Value, b.Value)
 	}
 
-	return false
+	return slices.Contains(singleValued, a.Type)
+}
+
+// singleValued are the identifier kinds a subject or a packet holds one value of.
+var singleValued = []TargetIdentifierType{
+	TargetSUPI, TargetGPSI,
+	TargetFSEID, TargetFTEID, TargetUEIPv4, TargetUEIPv6,
+	TargetNetworkInstance, TargetGTPTunnelDirection, TargetPDR, TargetPDRID, TargetQERID,
+}
+
+func isPort(t TargetIdentifierType) bool {
+	return t == TargetTCPPort || t == TargetUDPPort
+}
+
+// peiCompatible reports whether two distinct PEI values can belong to one device: an
+// IMEISV and the IMEI that is its first fourteen digits. Two IMEIs or two IMEISVs that
+// differ name two devices.
+func peiCompatible(a, b string) bool {
+	const imeiDigits, imeisvDigits = 14, 16
+	switch {
+	case len(a) == imeisvDigits && len(b) == imeiDigits:
+		return a[:imeiDigits] == b
+	case len(a) == imeiDigits && len(b) == imeisvDigits:
+		return b[:imeiDigits] == a
+	default:
+		return false
+	}
 }
 
 // SplitTargets divides the identities a network function holds for one subject into
@@ -351,7 +427,7 @@ func (t InterceptTask) NamesAnyType(kinds ...TargetIdentifierType) bool {
 // TS 103 221-2 clauses 5.3.18 and 5.3.19 draw between the Matched and Other Target
 // Identifier attributes an xIRI carries.
 //
-// It is TargetsAny's witness-returning counterpart and lives beside it for the same
+// It is MatchedBy's witness-returning counterpart and lives beside it for the same
 // reason: the rule belongs in one place rather than being re-derived by each POI.
 // Every match is returned, not the first — where a task names both a SUPI and a PEI
 // that the network function holds, both did match, and picking one to report as the

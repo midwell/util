@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package store maintains the set of active Lawful Interception tasks for a
-// network function, indexed by target identifier. It lets the NF match events
-// and traffic against tasked targets locally, with no external lookup at
-// interception time.
+// network function, indexed by target identifier. It lets the NF find the tasks
+// that may concern a subject locally, with no external lookup at interception time.
 package store
 
 import (
@@ -119,7 +118,7 @@ func (s *Store) Get(xid types.XID) (types.InterceptTask, bool) {
 // cloneTask copies every slice field of t (Targets, TargetElements, DIDs, Products,
 // Deliveries), so neither the store nor its caller shares backing arrays with the other.
 // The value fields are copied by the return-by-value. A slice field added to
-// InterceptTask has to be added here too; TestEverySliceFieldIsCloned enforces that.
+// InterceptTask has to be added here too; TestEveryReferenceFieldIsCloned enforces that.
 func cloneTask(t types.InterceptTask) types.InterceptTask {
 	if t.Products != nil {
 		t.Products = append([]types.ProductType(nil), t.Products...)
@@ -155,11 +154,14 @@ func (s *Store) Snapshot() []types.InterceptTask {
 	return out
 }
 
-// Match returns the active tasks targeting the given identifier, ordered by XID.
-// A task is returned if the identifier is any of its Targets, and once however many
-// of its identifiers equal this one.
-// The result is a fresh slice the caller may use without holding any lock; nil if
-// no task matches.
+// Match returns the active tasks naming the given identifier among their Targets,
+// ordered by XID, once each however many of its Targets equal it. The result is a
+// fresh slice the caller may use without holding any lock; nil if no task names it.
+//
+// It is an index lookup, not a match decision. A task's criteria are conjunctive, so a
+// task naming this identifier and another is the subject's only if the subject also
+// presents the other: a caller deciding a subject passes each returned task through
+// InterceptTask.MatchedBy with every identifier the subject holds.
 //
 // The order is fixed deliberately. Both indexes are maps, so an unsorted result
 // varies between calls on the same set of tasks, and a caller that acts on one

@@ -93,9 +93,10 @@ func TestReadsDoNotShareTheStoresArrays(t *testing.T) {
 	}
 }
 
-// TestEverySliceFieldIsCloned: cloneTask copies the slice fields it names, so one added
-// to InterceptTask later would be shared silently. This fails until it is named.
-func TestEverySliceFieldIsCloned(t *testing.T) {
+// TestEveryReferenceFieldIsCloned: cloneTask copies the slice fields it names, so a field
+// added to InterceptTask later that shares storage when copied by value — a slice, a map,
+// a pointer — would be shared with callers silently. This fails until it is named.
+func TestEveryReferenceFieldIsCloned(t *testing.T) {
 	cloned := map[string]bool{
 		"Targets": true, "TargetElements": true, "DIDs": true, "Products": true, "Deliveries": true,
 	}
@@ -103,8 +104,12 @@ func TestEverySliceFieldIsCloned(t *testing.T) {
 	typ := reflect.TypeFor[types.InterceptTask]()
 	for i := range typ.NumField() {
 		f := typ.Field(i)
-		if f.Type.Kind() == reflect.Slice && !cloned[f.Name] {
-			t.Errorf("InterceptTask.%s is a slice cloneTask does not copy", f.Name)
+		switch f.Type.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func:
+			if !cloned[f.Name] {
+				t.Errorf("InterceptTask.%s shares storage when copied and cloneTask does not copy it", f.Name)
+			}
+		default:
 		}
 	}
 }

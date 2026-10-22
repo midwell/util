@@ -191,10 +191,11 @@ func ipv4(v string) types.TargetIdentifier {
 	return types.TargetIdentifier{Type: types.TargetUEIPv4, Value: v}
 }
 
-// TestMatchByAnyCriterion checks the list semantics: a task carrying several
-// identifiers is found by each of them, and exactly once by each, since a
-// triggering function may describe the same traffic more than one way.
-func TestMatchByAnyCriterion(t *testing.T) {
+// TestEachCriterionIndexesTheTask: a task carrying several criteria is found by each of
+// them, exactly once by each. Match is the index lookup that finds the candidates; the
+// criteria are conjunctive, and InterceptTask.MatchedBy decides whether a candidate is
+// the subject's.
+func TestEachCriterionIndexesTheTask(t *testing.T) {
 	s := New()
 	seid := types.TargetIdentifier{Type: types.TargetFSEID, Value: "14426627323429955319"}
 	addr := ipv4("10.250.0.9")
@@ -243,17 +244,26 @@ func TestModifyNarrowsCriteria(t *testing.T) {
 	}
 }
 
-// TestTargetsAnyDisjunction pins the disjunction InterceptTask.Targets documents:
-// one identifier in common is a match, and none is not.
-func TestTargetsAnyDisjunction(t *testing.T) {
-	task := types.InterceptTask{Targets: []types.TargetIdentifier{supi("262019876543210"), ipv4("10.250.0.9")}}
-	if !task.TargetsAny([]types.TargetIdentifier{ipv4("10.250.0.9")}) {
-		t.Error("TargetsAny = false for an identifier the task carries")
+// TestACandidateIsTheSubjectsOnlyWhenEveryCriterionHolds: Match finds a task by any one
+// of its criteria, and the conjunction InterceptTask.Targets documents is then decided by
+// MatchedBy. A subject presenting one of two criteria is found as a candidate and is not
+// the task's subject.
+func TestACandidateIsTheSubjectsOnlyWhenEveryCriterionHolds(t *testing.T) {
+	s := New()
+	both := types.InterceptTask{XID: "W1", Targets: []types.TargetIdentifier{supi("262019876543210"), ipv4("10.250.0.9")}}
+	if !s.Activate(both) {
+		t.Fatal("activate failed")
 	}
-	if task.TargetsAny([]types.TargetIdentifier{ipv4("10.250.0.10"), supi("111111111111111")}) {
-		t.Error("TargetsAny = true for identifiers the task does not carry")
+
+	onlyAddress := []types.TargetIdentifier{ipv4("10.250.0.9"), supi("111111111111111")}
+	candidates := s.Match(ipv4("10.250.0.9"))
+	if len(candidates) != 1 {
+		t.Fatalf("Match = %+v, want the one candidate", candidates)
 	}
-	if task.TargetsAny(nil) {
-		t.Error("TargetsAny = true against no identifiers")
+	if candidates[0].MatchedBy(onlyAddress) {
+		t.Error("a subject presenting one of the task's two criteria was decided the task's subject")
+	}
+	if !candidates[0].MatchedBy([]types.TargetIdentifier{ipv4("10.250.0.9"), supi("262019876543210")}) {
+		t.Error("a subject presenting both criteria was not decided the task's subject")
 	}
 }

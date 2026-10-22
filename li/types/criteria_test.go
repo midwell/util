@@ -83,10 +83,10 @@ func TestEverySubscriberIdentifierRenders(t *testing.T) {
 	}
 }
 
-// TestTargetsAnyMatchesEachCriterionByValue: a task naming a criterion matches an entity
-// holding exactly that criterion and nothing else, so the comparison is by type and value.
-// The network instance is the schema's hexBinary — "internet" hex-encoded — not a name.
-func TestTargetsAnyMatchesEachCriterionByValue(t *testing.T) {
+// TestMatchedByComparesEachCriterionByValue: a task naming a criterion matches an entity
+// holding exactly that criterion, so the comparison is by type and value. The network
+// instance is the schema's hexBinary — "internet" hex-encoded — not a name.
+func TestMatchedByComparesEachCriterionByValue(t *testing.T) {
 	for _, tc := range []struct {
 		typ        TargetIdentifierType
 		val, other string
@@ -104,22 +104,54 @@ func TestTargetsAnyMatchesEachCriterionByValue(t *testing.T) {
 	} {
 		task := InterceptTask{Targets: []TargetIdentifier{{Type: tc.typ, Value: tc.val}}}
 
-		if !task.TargetsAny([]TargetIdentifier{{Type: tc.typ, Value: tc.val}}) {
+		if !task.MatchedBy([]TargetIdentifier{{Type: tc.typ, Value: tc.val}}) {
 			t.Errorf("%s %q does not match itself", tc.typ, tc.val)
 		}
-		if task.TargetsAny([]TargetIdentifier{{Type: tc.typ, Value: tc.other}}) {
+		if task.MatchedBy([]TargetIdentifier{{Type: tc.typ, Value: tc.other}}) {
 			t.Errorf("%s %q matched %q", tc.typ, tc.val, tc.other)
 		}
 		// The same value under another type is a different criterion.
-		if task.TargetsAny([]TargetIdentifier{{Type: TargetSUPI, Value: tc.val}}) {
+		if task.MatchedBy([]TargetIdentifier{{Type: TargetSUPI, Value: tc.val}}) {
 			t.Errorf("%s %q matched a SUPI with the same value", tc.typ, tc.val)
 		}
 	}
 }
 
-// TestNamesAnyTypeAsksAboutKindsNotValues: the question is whether a warrant is of a
-// shape the element could ever match, so only the identifier types count.
-func TestNamesAnyTypeAsksAboutKindsNotValues(t *testing.T) {
+// TestEveryCriterionIsRequired is TS 103 221-1 table 6.2.1.2-1: "Where multiple criteria
+// are present, all criteria are required to be matched." A subject presenting one of a
+// task's two identifiers is not the task's subject — matching it anyway intercepts
+// someone the warrant does not describe.
+func TestEveryCriterionIsRequired(t *testing.T) {
+	supi := TargetIdentifier{Type: TargetSUPI, Value: "262019876543210"}
+	gpsi := TargetIdentifier{Type: TargetGPSI, Value: "4915123456789"}
+	pei := TargetIdentifier{Type: TargetPEI, Value: "35784005123456"}
+	task := InterceptTask{Targets: []TargetIdentifier{supi, gpsi}}
+
+	for _, tc := range []struct {
+		name string
+		held []TargetIdentifier
+		want bool
+	}{
+		{"both, and more", []TargetIdentifier{supi, pei, gpsi}, true},
+		{"both", []TargetIdentifier{gpsi, supi}, true},
+		{"only the SUPI", []TargetIdentifier{supi, pei}, false},
+		{"only the GPSI", []TargetIdentifier{gpsi}, false},
+		{"nothing", nil, false},
+	} {
+		if got := task.MatchedBy(tc.held); got != tc.want {
+			t.Errorf("%s: MatchedBy = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	if (InterceptTask{}).MatchedBy([]TargetIdentifier{supi}) {
+		t.Error("a task naming nothing matched a subject")
+	}
+}
+
+// TestNamesOnlyTypesRequiresEveryCriterionToBeEvaluable: because every criterion must
+// match, one the element never evaluates makes the task unmatchable at that element, so
+// the question is whether all of them are of kinds it handles — only the types count.
+func TestNamesOnlyTypesRequiresEveryCriterionToBeEvaluable(t *testing.T) {
 	task := InterceptTask{Targets: []TargetIdentifier{
 		{Type: TargetSUPI, Value: "262019876543210"},
 		{Type: TargetFSEID, Value: "42"},
@@ -129,18 +161,54 @@ func TestNamesAnyTypeAsksAboutKindsNotValues(t *testing.T) {
 		kinds []TargetIdentifierType
 		want  bool
 	}{
-		{[]TargetIdentifierType{TargetSUPI}, true},
-		{[]TargetIdentifierType{TargetPEI, TargetFSEID}, true},
-		{[]TargetIdentifierType{TargetPEI, TargetGPSI}, false},
+		{[]TargetIdentifierType{TargetSUPI, TargetFSEID}, true},
+		{[]TargetIdentifierType{TargetSUPI, TargetPEI, TargetGPSI}, false},
+		{[]TargetIdentifierType{TargetFSEID}, false},
 		{nil, false},
 	} {
-		if got := task.NamesAnyType(tc.kinds...); got != tc.want {
-			t.Errorf("NamesAnyType(%v) = %v, want %v", tc.kinds, got, tc.want)
+		if got := task.NamesOnlyTypes(tc.kinds...); got != tc.want {
+			t.Errorf("NamesOnlyTypes(%v) = %v, want %v", tc.kinds, got, tc.want)
 		}
 	}
 
-	if (InterceptTask{}).NamesAnyType(TargetSUPI) {
-		t.Error("a task naming nothing names a SUPI")
+	if (InterceptTask{}).NamesOnlyTypes(TargetSUPI) {
+		t.Error("a task naming nothing is evaluable")
+	}
+}
+
+// TestContradictoryTargetsFindsCombinationsNothingSatisfies: a task whose criteria can
+// never all match at once is "an inappropriate combination of identifiers" that table
+// 6.2.1.2-1 has the element reject. A combination some subject or packet can satisfy
+// is not one.
+func TestContradictoryTargetsFindsCombinationsNothingSatisfies(t *testing.T) {
+	id := func(typ TargetIdentifierType, v string) TargetIdentifier {
+		return TargetIdentifier{Type: typ, Value: v}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		targets []TargetIdentifier
+		want    bool
+	}{
+		{"two SUPIs", []TargetIdentifier{id(TargetSUPI, "262019876543210"), id(TargetSUPI, "262019876543211")}, true},
+		{"two GPSIs", []TargetIdentifier{id(TargetGPSI, "1"), id(TargetGPSI, "2")}, true},
+		{"two sessions", []TargetIdentifier{id(TargetFSEID, "1"), id(TargetFSEID, "2")}, true},
+		{"two directions", []TargetIdentifier{id(TargetGTPTunnelDirection, "Outbound"), id(TargetGTPTunnelDirection, "Inbound")}, true},
+		{"two UE addresses", []TargetIdentifier{id(TargetUEIPv4, "192.0.2.1"), id(TargetUEIPv4, "192.0.2.2")}, true},
+		{"a TCP and a UDP port", []TargetIdentifier{id(TargetTCPPort, "53"), id(TargetUDPPort, "53")}, true},
+		{"two TCP ports", []TargetIdentifier{id(TargetTCPPort, "80"), id(TargetTCPPort, "443")}, true},
+		{"two IMEIs", []TargetIdentifier{id(TargetPEI, "35784005123456"), id(TargetPEI, "35784005123457")}, true},
+		{"an IMEISV and another device's IMEI", []TargetIdentifier{id(TargetPEI, "3578400512345678"), id(TargetPEI, "35784005123457")}, true},
+		{"an IMEISV and its own IMEI", []TargetIdentifier{id(TargetPEI, "3578400512345678"), id(TargetPEI, "35784005123456")}, false},
+		{"a SUPI and a GPSI", []TargetIdentifier{id(TargetSUPI, "262019876543210"), id(TargetGPSI, "1")}, false},
+		{"a session and a direction", []TargetIdentifier{id(TargetFSEID, "1"), id(TargetGTPTunnelDirection, "Outbound")}, false},
+		{"a criterion named twice", []TargetIdentifier{id(TargetFSEID, "1"), id(TargetFSEID, "1")}, false},
+		{"one criterion", []TargetIdentifier{id(TargetSUPI, "262019876543210")}, false},
+	} {
+		_, _, got := InterceptTask{Targets: tc.targets}.ContradictoryTargets()
+		if got != tc.want {
+			t.Errorf("%s: ContradictoryTargets = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
