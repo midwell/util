@@ -6,6 +6,7 @@ package x2x3
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // Sender is the minimal delivery contract an X2/X3 POI depends on. *Client
@@ -65,6 +66,10 @@ type AsyncSender struct {
 	// batch is reused by the delivery worker so coalescing costs no allocation.
 	// Only the worker touches it.
 	batch []*PDU
+
+	// abandoned tells the worker to stop delivering and account for what is still queued
+	// as dropped. Set by abandon, when whoever is closing this sender stops waiting for it.
+	abandoned atomic.Bool
 }
 
 // defaultQueueDepth bounds buffered-but-undelivered PDUs. Sized generously for
@@ -134,11 +139,36 @@ func (a *AsyncSender) run() {
 		}
 		a.batch = batch
 
+		if a.abandoned.Load() {
+			for range batch {
+				a.dropped()
+			}
+
+			continue
+		}
+
 		if err := a.send(batch); err != nil && a.onError != nil {
 			a.onError(err)
 		}
 	}
 }
+
+func (a *AsyncSender) dropped() {
+	if a.onDrop != nil {
+		a.onDrop()
+	}
+}
+
+// abandon tells the worker to deliver nothing more: every PDU it has not yet started on is
+// reported to onDrop instead. A batch already being written finishes, and its outcome is
+// reported as usual.
+//
+// It exists for a close that will not wait for the queue to drain (see Pool.Close). Leaving
+// the worker to drain on its own after the closer has given up meant the queued product was
+// accounted for by nothing: not delivered before the process exited, and not reported as lost
+// either. Abandoning it turns that into a count — one drop per unit — which is what the
+// mediation function will see missing.
+func (a *AsyncSender) abandon() { a.abandoned.Store(true) }
 
 // Send enqueues pdu for asynchronous delivery and returns immediately. It never
 // blocks; a full buffer drops the PDU and invokes onDrop. The caller must not
@@ -164,9 +194,7 @@ func (a *AsyncSender) Send(pdu *PDU) error {
 		return nil
 	}
 
-	if a.onDrop != nil {
-		a.onDrop()
-	}
+	a.dropped()
 
 	return nil
 }

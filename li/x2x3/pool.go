@@ -217,7 +217,9 @@ const closeTimeout = 2 * time.Second
 // The drain is bounded (see closeTimeout) and the senders are closed concurrently, so the
 // bound is per pool rather than per destination. A sender still draining when the bound
 // expires is left to its goroutine: this runs at teardown, the process is about to go, and
-// the alternative is being killed part-way through the same work with less of it done.
+// the alternative is being killed part-way through the same work with less of it done. What
+// that sender has not yet started to deliver is abandoned and reported to onDrop, one call per
+// unit, so the product the process takes with it is counted rather than silently lost.
 func (p *Pool) Close() error {
 	p.mu.Lock()
 	senders := p.senders
@@ -227,9 +229,14 @@ func (p *Pool) Close() error {
 
 	// Concurrently, for the same reason the trigger keepalive round fans out: closed in
 	// line, the pool's shutdown takes as long as the sum of its unreachable destinations.
-	errs := make(chan error, len(senders))
-	for _, s := range senders {
-		go func(s Sender) { errs <- s.Close() }(s)
+	type closed struct {
+		addr string
+		err  error
+	}
+
+	results := make(chan closed, len(senders))
+	for addr, s := range senders {
+		go func(addr string, s Sender) { results <- closed{addr, s.Close()} }(addr, s)
 	}
 
 	var firstErr error
@@ -237,13 +244,24 @@ func (p *Pool) Close() error {
 	deadline := time.After(closeTimeout)
 	for range senders {
 		select {
-		case err := <-errs:
-			if err != nil && firstErr == nil {
-				firstErr = err
+		case r := <-results:
+			delete(senders, r.addr)
+
+			if r.err != nil && firstErr == nil {
+				firstErr = r.err
 			}
 		case <-deadline:
 			if firstErr == nil {
 				firstErr = errCloseTimedOut
+			}
+
+			// What these senders still hold will not be delivered before the process
+			// that is closing the pool goes, so it is counted as dropped rather than left
+			// to drain unaccounted for. See AsyncSender.abandon.
+			for _, s := range senders {
+				if a, ok := s.(*AsyncSender); ok {
+					a.abandon()
+				}
 			}
 
 			return firstErr
