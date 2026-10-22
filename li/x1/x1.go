@@ -878,7 +878,7 @@ func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) 
 			AdmfIdentifier:   m.AdmfIdentifier,
 			NeIdentifier:     s.neID,
 			MessageTimestamp: x1Timestamp(s.now()),
-			Version:          echoVersion(m.Version),
+			Version:          supportedVersion,
 			X1TransactionID:  echoTransactionID(m.X1TransactionID),
 			ErrorInformation: &X1Error{ErrorCode: code, ErrorDescription: desc},
 			// The schema makes requestMessageType mandatory on an ErrorResponse. A refusal
@@ -1249,7 +1249,7 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 		AdmfIdentifier:   m.AdmfIdentifier,
 		NeIdentifier:     s.neID,
 		MessageTimestamp: x1Timestamp(s.now()),
-		Version:          echoVersion(m.Version),
+		Version:          supportedVersion,
 		X1TransactionID:  echoTransactionID(m.X1TransactionID),
 	}
 
@@ -2727,38 +2727,25 @@ var x1TemplateFuncs = template.FuncMap{
 // versionPattern is the schema's Version restriction, `v1\.\d+\.\d+`.
 var versionPattern = regexp.MustCompile(`^v1\.\d+\.\d+$`)
 
-// echoVersion and echoTransactionID keep a peer from choosing header values that make
-// *our own* answer invalid.
+// echoTransactionID keeps a peer from choosing a header value that makes *our own* answer
+// invalid.
 //
-// Every response echoes the request's version and x1TransactionId, and the schema
-// restricts both — a pattern and a UUID. Echoed verbatim, a malformed request would
-// produce a malformed reply, and the reply easiest to spoil is the one whose request has been trusted by
-// nothing: the refusal telling a peer it may not task this element. A conformant ADMF
-// validating replies discards an invalid one, which would make the most
-// security-relevant message this interface sends unreportable, by sending a bad version
-// string.
+// Every response echoes the request's x1TransactionId, and the schema restricts it to a
+// UUID. A malformed one would otherwise produce a malformed reply, and the reply easiest to
+// spoil is the one whose request has been trusted by nothing: the refusal telling a peer it
+// may not task this element. A conformant ADMF validating replies discards an invalid one.
 //
-// The two fields are not the same trade. Substituting the version costs nothing: it is
-// a statement about which interface *we* speak, and a peer that sent something outside
-// the pattern has told us nothing to preserve.
-func echoVersion(v string) string {
-	if versionPattern.MatchString(v) {
-		return v
-	}
-
-	return supportedVersion
-}
-
-// echoTransactionID substitutes a fresh UUID for a transaction identifier outside the
-// schema's format.
+// The version needs no such guard: a response states the version this element encoded it
+// in (TS 103 221-1 table 6.1-1, "Version of the present document used for encoding the
+// message"), which is supportedVersion whatever the request said.
 //
-// This one does cost something — an ADMF matches a response to its request by this value
-// — so it is worth being explicit about who pays. Only a peer that sent a
-// non-conformant identifier is affected, and it has no conformant correlation to lose;
-// a conformant ADMF's value is echoed untouched. Set against that, echoing the malformed
-// value invalidates the whole response, which loses the correlation *and* everything
-// else the message says. A fresh value is chosen rather than a fixed one so that two
-// refusals to the same peer stay distinguishable.
+// Substituting the transaction identifier does cost something — an ADMF matches a response
+// to its request by this value — so it is worth being explicit about who pays. Only a peer
+// that sent a non-conformant identifier is affected, and it has no conformant correlation to
+// lose; a conformant ADMF's value is echoed untouched. Set against that, echoing the
+// malformed value invalidates the whole response, which loses the correlation *and*
+// everything else the message says. A fresh value is chosen rather than a fixed one so that
+// two refusals to the same peer stay distinguishable.
 func echoTransactionID(id string) string {
 	if uuidPattern.MatchString(id) {
 		return id

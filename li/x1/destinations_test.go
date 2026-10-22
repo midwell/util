@@ -699,19 +699,38 @@ func TestMalformedRequestHeadersAreNotEchoedBack(t *testing.T) {
 	).Replace(string(request("PingRequest", "")))
 
 	m := serve(t, srv, body)
-	if !versionPattern.MatchString(m.Version) {
-		t.Errorf("echoed version %q does not match the schema's pattern", m.Version)
+	if m.Version != supportedVersion {
+		t.Errorf("answer version %q, want this element's %q", m.Version, supportedVersion)
 	}
 	if !uuidPattern.MatchString(m.X1TransactionID) {
 		t.Errorf("echoed x1TransactionId %q is not a UUID", m.X1TransactionID)
 	}
 
-	// A conformant peer's values are its own, untouched: the substitution costs an ADMF
-	// its correlation, and only a peer that sent something no conformant ADMF would send
-	// pays it.
+	// A conformant peer's transaction identifier is its own, untouched: the substitution
+	// costs an ADMF its correlation, and only a peer that sent something no conformant ADMF
+	// would send pays it.
 	ok := serve(t, srv, string(request("PingRequest", "")))
-	if ok.Version != "v1.6.1" || ok.X1TransactionID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
-		t.Errorf("a conformant peer's headers were altered: version=%q txid=%q", ok.Version, ok.X1TransactionID)
+	if ok.X1TransactionID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Errorf("a conformant peer's x1TransactionId was altered: %q", ok.X1TransactionID)
+	}
+}
+
+// TestAnAnswerCarriesTheVersionThisElementEncodedItIn: TS 103 221-1 table 6.1-1 defines
+// Version as the version of the present document used to encode the message, so an answer
+// states this element's version, not the version the request was encoded in.
+func TestAnAnswerCarriesTheVersionThisElementEncodedItIn(t *testing.T) {
+	srv := NewServer(store.New(), "neID")
+
+	for _, v := range []string{supportedVersion, "v1.21.1", "v1.0.0"} {
+		body := strings.Replace(string(request("PingRequest", "")), "<ns1:version>"+supportedVersion+"</ns1:version>",
+			"<ns1:version>"+v+"</ns1:version>", 1)
+		if !strings.Contains(body, "<ns1:version>"+v+"</ns1:version>") {
+			t.Fatalf("the request fixture does not carry a version element to replace")
+		}
+
+		if got := serve(t, srv, body).Version; got != supportedVersion {
+			t.Errorf("a request in %s was answered in %q, want this element's %q", v, got, supportedVersion)
+		}
 	}
 }
 
