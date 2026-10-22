@@ -240,3 +240,52 @@ func TestCloseDoesNotWaitOutAProbe(t *testing.T) {
 		return runtime.NumGoroutine() <= before+4
 	})
 }
+
+// TestDeliveriesBetweenProbesDoNotMultiplyThem: every connection the peer closes asks for a
+// probe, and deliveries reconnect between them, so closes can arrive while a probe is still
+// waiting out its spacing. Each used to start a probe of its own; they woke together and all
+// dialled, so the spacing held per probe but not per destination. One probe at a time answers
+// for every close that arrives while it is in flight.
+func TestDeliveriesBetweenProbesDoNotMultiplyThem(t *testing.T) {
+	m := newProbeMDF(t, true, false)
+
+	c := clientTo(t, m.addr, KeepaliveConfig{})
+	c.redialInterval = 500 * time.Millisecond
+
+	for range 20 {
+		_ = c.Send(product()) //nolint:errcheck // a peer that hangs up may refuse some of these
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	before := m.accepted.Load()
+
+	const watch = 1200 * time.Millisecond
+	time.Sleep(watch)
+
+	// With no deliveries in the window, only probes dial: at most one per interval, plus one
+	// already due when the window opened.
+	limit := int64(watch/c.redialInterval) + 1
+	if n := m.accepted.Load() - before; n > limit {
+		t.Errorf("%d dials in %s with no deliveries, want at most %d: the closes during the "+
+			"deliveries each left a probe behind, and they dialled together", n, watch, limit)
+	}
+}
+
+// TestAProbeThatReconnectsMarksTheDestinationReachable: a successful probe is the element
+// finding the mediation function reachable, as a successful delivery would. Left unmarked, a
+// fault raised for an earlier outage stayed standing until traffic happened to flow.
+func TestAProbeThatReconnectsMarksTheDestinationReachable(t *testing.T) {
+	m := newProbeMDF(t, false, false)
+
+	c := clientTo(t, m.addr, KeepaliveConfig{})
+
+	if err := c.Send(product()); err != nil {
+		t.Fatalf("the first delivery failed: %v", err)
+	}
+	// An outage the element concluded earlier, still standing when the peer closes.
+	c.unreachable.Store(true)
+	m.waitFirstClosed(t)
+
+	eventually(t, "the element to reconnect on its own", func() bool { return m.accepted.Load() == 2 })
+	eventually(t, "the destination to be marked reachable", func() bool { return !c.Unreachable() })
+}

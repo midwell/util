@@ -542,7 +542,14 @@ func (c *Client) peerClosed(st *connState) {
 
 	// Added under mu, where closed is read: Close sets closed under mu before it waits, so
 	// no probe can be added once that wait has begun.
-	if !c.keepalive.Disabled && !c.closed {
+	//
+	// **One probe at a time.** A probe already in flight re-checks for a held connection when
+	// it wakes, so it answers for this close too; a second one would wait out the same spacing
+	// computed from the same instant, wake beside it and dial again, and a peer that keeps
+	// closing what deliveries reconnect would then be dialled once per close rather than once
+	// per redialInterval -- and two failing probes would report one outage twice.
+	if !c.keepalive.Disabled && !c.closed && !c.probing {
+		c.probing = true
 		c.probes.Add(1)
 
 		go c.probeAfterPeerClose()
@@ -562,6 +569,11 @@ func (c *Client) peerClosed(st *connState) {
 // dial, and waits for this goroutine.
 func (c *Client) probeAfterPeerClose() {
 	defer c.probes.Done()
+	defer func() {
+		c.mu.Lock()
+		c.probing = false
+		c.mu.Unlock()
+	}()
 
 	c.mu.Lock()
 	wait := c.probeWaitLocked()
@@ -611,6 +623,9 @@ func (c *Client) probeAfterPeerClose() {
 		return
 	}
 	c.installLocked(conn)
+	// Reachable again, as a delivery that wrote successfully would record: a fault raised
+	// for this destination is then retracted rather than left standing until traffic flows.
+	c.unreachable.Store(false)
 	c.mu.Unlock()
 }
 

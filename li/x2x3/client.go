@@ -61,6 +61,8 @@ type Client struct {
 	// lastProbe is when the most recent redial after a peer's close was started — see
 	// probeAfterPeerClose. Guarded by mu.
 	lastProbe time.Time
+	// probing is whether a post-close probe is in flight; at most one is. Guarded by mu.
+	probing bool
 
 	// lifetime is cancelled by Close. It bounds the dials this client makes, so a Close
 	// does not wait out a dial's timeout, and it is what a probe waiting out its backoff
@@ -474,9 +476,12 @@ func (c *Client) dropLocked() {
 // is not left with goroutines it cannot see. A probe mid-dial is cancelled rather than
 // waited out. The wait happens after mu is released, for the reason dropLocked gives.
 func (c *Client) Close() error {
+	// Cancelled before mu is taken: a delivery dialling under mu would otherwise hold Close
+	// behind its dial timeout, which is what lifetime exists to prevent.
+	c.cancel()
+
 	c.mu.Lock()
 	c.closed = true
-	c.cancel()
 	live := c.live
 	c.live = nil
 
