@@ -10,6 +10,7 @@ package x1
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -203,7 +204,7 @@ func (a IPAddress) Valid() error {
 	if a.IPv4 != "" {
 		ip, err := netip.ParseAddr(a.IPv4)
 		if err != nil || !ip.Is4() {
-			return fmt.Errorf("IPv4Address %q is not an IPv4 address", a.IPv4)
+			return errors.New("IPv4Address is not an IPv4 address")
 		}
 
 		return nil
@@ -214,7 +215,7 @@ func (a IPAddress) Valid() error {
 		// schema's IPv6 type: a zone has no representation in it, and a mapped address
 		// names an IPv4 endpoint. Accepting either stored a value this element could
 		// not render back into the arm it came in.
-		return fmt.Errorf("IPv6Address %q is not an IPv6 address", a.IPv6)
+		return errors.New("IPv6Address is not an IPv6 address")
 	}
 
 	return nil

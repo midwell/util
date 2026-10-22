@@ -68,14 +68,11 @@ var responseTemplate = template.Must(template.New("x1resp").Funcs(x1TemplateFunc
 //
 //	[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}(Z|[+-][0-9]{2}:[0-9]{2})
 //
-// The zeros in this layout are what keeps trailing zeros; Go's nines — as in
-// time.RFC3339Nano, which every one of these call sites used to use — strip them. That made
-// roughly one message in ten carry five digits or fewer and fail a peer's validation, in
-// every direction: responses, the triggers a CC-TF sends, and the fault reports by which
-// this element says something is wrong.
-//
-// The defect and the fix differ by one character, which is why there is one of these rather
-// than five, and why a test pins it with a clock whose fraction ends in zeros.
+// The zeros in this layout are what keep trailing zeros; Go's nines, as in time.RFC3339Nano,
+// strip them, and roughly one timestamp in ten would then carry five digits or fewer and
+// fail a peer's validation -- in responses, in the triggers a CC-TF sends, and in fault
+// reports alike. One shared layout serves all of them, and a test pins it with a clock
+// whose fraction ends in zeros.
 const x1TimestampLayout = "2006-01-02T15:04:05.000000Z07:00"
 
 // x1Timestamp renders t for an X1 message, in UTC.
@@ -149,11 +146,12 @@ type Server struct {
 	// agreement in advance) then DeactivateAllTasks is enabled." It fails safe — interception
 	// stops, which is the direction this whole capability fails in anyway.
 	//
-	// RemoveAllDestinations is disabled unless enabled: the specification states no default
-	// beyond prior agreement, and it is not symmetric with the other. Removing every
-	// destination strands an element that still has to deliver, and the specification's own
-	// guard — refuse while any destination is referenced by a task — shows it was thought of
-	// as dangerous.
+	// RemoveAllDestinations is disabled unless enabled, which **deviates from TS 103 221-1
+	// clause 6.3.4**: without prior agreement the clause enables it, as it does
+	// DeactivateAllTasks. It is off here because removing every destination strands an
+	// element that is still tasked and has to deliver -- the clause's own guard, refusing
+	// while any destination is referenced by a task, shows the operation is a dangerous one.
+	// An element that has agreed to it enables it with WithRemoveAllDestinations.
 	deactivateAllDisabled        bool
 	removeAllDestinationsEnabled bool
 
@@ -234,11 +232,9 @@ type heldDestination struct {
 // endpoints expands a destination into the delivery endpoints it serves.
 //
 // did is the identifier the destination was resolved by, and it is carried onto
-// every endpoint. It used to be dropped here, which left the element unable to say
-// *which* destination a delivery fault concerned — the identifier was discarded at
-// the boundary between provisioning and delivery, so it was absent from the domain
-// model every point of interception works in, not merely from the sites that
-// notice a fault.
+// every endpoint, so a point of interception reporting a delivery fault can say *which*
+// destination it concerns: the endpoint is the domain model every POI works in, and an
+// identifier dropped at this boundary is absent from all of them.
 func (d heldDestination) endpoints(did string) []types.DeliveryEndpoint {
 	switch d.DeliveryType {
 	case deliveryX2Only:
@@ -285,25 +281,22 @@ const (
 //	(prev, next) modification, or an activation replacing an XID already held
 //	(task, nil)  removal — deactivation, bulk deactivation, or fail-safe purge
 //
-// It supersedes OnActivate/OnDeactivate and is preferred when set. The pair could
-// not express a modification: a ModifyTask keeps the XID, so "the old task" and
-// "the new task" are the same key, and a POI receiving them as two events had to
-// infer an ordering the provisioning interface never stated. Where the POI's
-// response was to install state for the new task and remove state for the old,
-// under that shared key, the removal could reclaim what the installation had just
-// created.
+// One event carries both tasks because a modification keeps the XID: as two events,
+// "remove the old task" and "install the new one" share a key, and a POI that removed
+// after installing would reclaim what it had just created.
 //
-// The POI decides what changed. This package no longer guesses from the target
-// identifiers alone — a task's products can change with its targets untouched, and
+// The POI decides what changed. This package does not guess from the target
+// identifiers alone -- a task's products can change with its targets untouched, and
 // every guess of that kind is another field somebody forgot.
 //
 // An exact replay is not a transition and fires nothing: re-provisioning is how a
 // provisioning function restores tasking after a restart, and it must not re-emit
 // records that report the beginning of an interception that never stopped.
 //
-// The callback runs synchronously on the X1 request goroutine, so it must not
-// block. Both pointers are to values owned by the caller for the duration of the
-// call; a POI keeping either must copy it.
+// The callback runs synchronously on the X1 request goroutine, under the lock that
+// serialises every task transition, so it must not block and must not call back into the
+// Server -- that would deadlock. Both pointers are to values owned by the caller for the
+// duration of the call; a POI keeping either must copy it.
 func OnTaskChange(fn func(prev, next *types.InterceptTask)) Option {
 	return func(s *Server) { s.onTaskChange = fn }
 }
@@ -315,6 +308,10 @@ func OnTaskChange(fn func(prev, next *types.InterceptTask)) Option {
 // "my tasking was purged" can say whether anybody asked for it. An element that
 // reports every withdrawal as a fail-safe purge teaches its operator to ignore the
 // channel, and the report that matters then arrives into that habit.
+//
+// It runs under the same transition lock as OnTaskChange: it must not block -- a
+// synchronous report over the network belongs on a goroutine -- and must not call back
+// into the Server.
 func OnPurge(fn func(types.InterceptTask, PurgeReason)) Option {
 	return func(s *Server) { s.onPurge = fn }
 }
@@ -330,9 +327,10 @@ func OnPurge(fn func(types.InterceptTask, PurgeReason)) Option {
 // undiscoverable from the outside, which is why the answer has to come before the
 // acknowledgement rather than from a callback after it.
 //
-// The check runs synchronously on the X1 request goroutine, so it must not block.
-// It must not apply anything either: a task it approves may still be refused
-// afterwards for a reason this package owns.
+// The check runs synchronously on the X1 request goroutine, under the transition lock, so
+// it must not block and must not call back into the Server. It must not apply anything
+// either: a task it approves may still be refused afterwards for a reason this package
+// owns.
 func CanApply(fn func(types.InterceptTask) error) Option {
 	return func(s *Server) { s.canApply = fn }
 }
@@ -482,8 +480,7 @@ func (s *Server) faultsForTasks(tasks []types.InterceptTask) map[types.XID][]X1E
 // concerned.
 //
 // **Asked, not stored**, which is the same choice WithFaultProbes and
-// WithDestinationReachability make and for the reason this project has now learned twice: a
-// recorded fault goes stale, needs an expiry or an explicit clear, and gets reported after the
+// WithDestinationReachability make, and for the same reason: a recorded fault goes stale, needs an expiry or an explicit clear, and gets reported after the
 // condition has ended. Every condition here is re-observable from state the element already
 // holds, so the honest answer is computed when the question is asked.
 //
@@ -532,10 +529,11 @@ func WithoutDeactivateAllTasks() Option {
 
 // WithRemoveAllDestinations permits bulk destination removal, which is refused by default.
 //
-// The asymmetry with the option above is the specification's: bulk deactivation defaults to
-// enabled and this does not. Deactivating everything stops interception, which is the safe
-// direction; removing every destination leaves an element still tasked and with nowhere to
-// deliver.
+// The default deviates from TS 103 221-1 clause 6.3.4, which enables the operation unless
+// agreed otherwise; the deviation is deliberate. Deactivating everything stops interception,
+// which is the safe direction, so that operation keeps the clause's default; removing every
+// destination leaves an element still tasked and with nowhere to deliver, so this one is off
+// until a deployment agrees to it.
 func WithRemoveAllDestinations() Option {
 	return func(s *Server) { s.removeAllDestinationsEnabled = true }
 }
@@ -642,10 +640,9 @@ type ConfiguredDestination struct {
 // Valid reports whether this entry can be resolved, or why it cannot.
 //
 // Exported because a POI has somewhere to report a rejected entry and this package does
-// not: an unusable mapping means a task naming that DID silently resolves to the
-// configured default instead, which is the class of silence this whole change is about.
-// The option below drops such an entry; the network function that supplied it tells the
-// ADMF over X1.
+// not: an unusable mapping means a task naming that DID cannot be delivered, and the
+// operator who declared it would not otherwise learn why. The option below drops such an
+// entry; the network function that supplied it tells the ADMF over X1.
 func (d ConfiguredDestination) Valid() error {
 	if err := validIdentifier("did", d.DID); err != nil {
 		return err
@@ -657,12 +654,16 @@ func (d ConfiguredDestination) Valid() error {
 	if err != nil {
 		return fmt.Errorf("address is not host:port")
 	}
-	// **SplitHostPort accepts a host that is not an address**, so this used to admit an
-	// entry that resolves to a destination nothing can dial — and an operator's static
-	// declaration is the one destination source with no X1 answer to carry the refusal, so
-	// an unusable entry is dropped and the task naming its DID is then refused for an
-	// identifier the operator believes they supplied. The same two checks the provisioned
-	// path takes, for the same reason: the value, not only the shape that carried it.
+	// **SplitHostPort accepts a host that is not an address**, so the host and port are
+	// checked as values: an entry that resolves to a destination nothing can dial is
+	// dropped here, rather than refusing, later, a task for an identifier the operator
+	// believes they supplied.
+	//
+	// Looser than the provisioned path on purpose. Operator configuration is accepted in
+	// any form the dialler accepts -- a zone, an IPv4-mapped address, a port with leading
+	// zeros -- and is dialled as written; only the details answers render it in the
+	// schema's spelling (see deliveryAddress). A provisioned address is a peer's message
+	// against a schema type, and is refused outside it.
 	if _, err := netip.ParseAddr(host); err != nil {
 		return fmt.Errorf("address host %q is not an IP address", host)
 	}
@@ -918,7 +919,7 @@ func (s *Server) recordActivity() {
 // MinKeepaliveWindow is the shortest fail-safe window WatchKeepalive will run.
 //
 // It exists because the window is halved to produce the tick interval, and integer
-// division reaches zero: a window under two nanoseconds panicked time.NewTicker, on a
+// division reaches zero: a window under two nanoseconds would panic time.NewTicker, on a
 // goroutine, taking the network function down. A second is far below any window a
 // deployment would choose and far above the arithmetic's floor, which is what a guard
 // against a configuration mistake should be.
@@ -929,13 +930,15 @@ const MinKeepaliveWindow = time.Second
 // ADMF is presumed gone, so warrants must not persist). It blocks — run it in a
 // goroutine.
 //
+// The watchdog samples every timeout/2, so the purge lands between timeout and
+// 1.5 × timeout after the last authenticated message: the window is a lower bound on how
+// long tasking outlives a silent ADMF, not an exact one.
+//
 // A timeout below MinKeepaliveWindow is refused: the watchdog does not start, and this
-// returns rather than running with a window it cannot measure. The callers all check
-// their configured value first and report an unusable one to the ADMF, which is where
-// an operator's mistake should be caught — but the contract used to be stated as
-// "timeout must be > 0", which 1ns satisfies and then panicked the process. A library
-// whose precondition is wrong is one every future caller inherits, and this one is
-// being upstreamed.
+// returns rather than running with a window it cannot measure. The callers check their
+// configured value first and report an unusable one to the ADMF, which is where an
+// operator's mistake is caught; this guard keeps a caller that skips that check from
+// panicking the process.
 //
 // It returns when stop is closed. A network function passes nil, since the
 // fail-safe must run for as long as the element can hold tasking; a nil channel
@@ -1030,12 +1033,9 @@ func (s *Server) purgeAllTasking(reason PurgeReason) {
 // Caller holds s.transitionMu.
 func (s *Server) purgeAllTaskingLocked(reason PurgeReason) {
 	tasks := s.store.Snapshot()
-	// nil in production. It exists because the window between the snapshot and the
-	// clear is a few instructions wide, so the interleaving it used to admit cannot be
-	// reached by racing two goroutines and hoping — and a property this consequential
-	// asserted by hope is one that passes against the defect. See
-	// TestAnActivationRacingTheFailSafePurgeLeavesNoOrphan, which holds the purge open
-	// here and is mutation-verified against the unsynchronised ordering.
+	// nil in production. The window between the snapshot and the clear is a few
+	// instructions wide, so a test holds it open here rather than racing two goroutines at
+	// it -- see TestAnActivationRacingTheFailSafePurgeLeavesNoOrphan.
 	if s.afterPurgeSnapshot != nil {
 		s.afterPurgeSnapshot()
 	}
@@ -1058,10 +1058,10 @@ func (s *Server) deactivateAll() { s.purgeAllTasking(PurgeBulkDeactivate) }
 // the beginning of an interception, because none began, and must not tear down and
 // rebuild state that was already correct.
 //
-// What changed is the POI's to work out. Deciding here, from the target
-// identifiers alone, is what made a change of products invisible: adding CC never
-// began content interception for a target's existing sessions, and removing it
-// left that interception running after the authority for it was gone.
+// What changed is the POI's to work out. Deciding here, from the target identifiers
+// alone, would make a change of products invisible: adding CC would never begin content
+// interception for a target's existing sessions, and removing it would leave that
+// interception running after the authority for it was gone.
 func (s *Server) notifyChanged(prevTask types.InterceptTask, hadPrev bool, task types.InterceptTask) {
 	if s.onTaskChange == nil || (hadPrev && sameTask(prevTask, task)) {
 		return
@@ -1156,9 +1156,9 @@ func (s *Server) removeAllDestinations() (int, error) {
 // the point of interception — with no other task operation, bulk deactivation or
 // fail-safe purge able to interleave.
 //
-// The three used to be separate operations under no shared lock, on a server net/http
-// gives a goroutine per request. See transitionMu for what that let through, and why
-// the notification is issued from inside the operation rather than after it.
+// net/http gives each request a goroutine, so without one shared lock the three steps
+// interleave with other requests. See transitionMu for what that would let through, and
+// why the notification is issued from inside the operation rather than after it.
 func (s *Server) applyTaskTransition(m X1RequestMessage, isModify bool) (int, error) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
@@ -1201,16 +1201,15 @@ func (s *Server) applyTaskTransition(m X1RequestMessage, isModify bool) (int, er
 	switch {
 	case isModify && m.TaskDetails == nil:
 		// taskDetails is mandatory in a ModifyTaskRequest, so this is the message
-		// violating its own schema: 1010, not the generic 1000 an uncoded error became.
+		// violating its own schema: 1010, not the generic 1000.
 		err = fmt.Errorf("missing taskDetails")
 		code = errCodeSchemaError
 	case malformed != nil:
-		// Before the "no such task" check below, deliberately. A ModifyTask naming a
-		// malformed xId reached that check first and was refused with 2020, "XID does
-		// not exist on NE" — true, but an accident of ordering, and it points the ADMF
-		// at activating a task that would fail for the same reason. 1010 names the
-		// actual fault, and "implementers shall use the most specific error code
-		// available".
+		// Before the "no such task" check below, deliberately. Answered there, a ModifyTask
+		// naming a malformed or absent xId would get 2020, "XID does not exist on NE" --
+		// true, but an accident of ordering, and it points the ADMF at activating a task
+		// that would fail for the same reason. 1010 names the actual fault, and
+		// "implementers shall use the most specific error code available".
 		err = malformed
 		code = errorCode(err)
 	case unhonourable != nil:
@@ -1428,17 +1427,13 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 // not already present at the NE" — the mirror of the CreateDestination rule this element
 // already answers with 2030, and the reason 2020 exists.
 //
-// It used to acknowledge unconditionally, which is the worst answer available. An ADMF
-// withdrawing a warrant with a mistyped XID was told the withdrawal had completed while the
-// interception went on running, and interception outliving its authority is the one
-// direction this plane must never fail in. A malformed identifier was accepted on the same
-// path for the same reason.
-//
-// The consequence of fixing it is worth stating, because it changes what a deployed element
-// answers: an ADMF that re-sends a deactivation for tasking this element no longer holds —
-// after a keepalive purge or a restart, say — now receives 2020 where it received an
-// acknowledgement before. That is the point. It is the only way the ADMF can learn the
-// element was not holding the warrant it thought it was withdrawing.
+// A deactivation is never acknowledged unconditionally. An ADMF withdrawing a warrant with
+// a mistyped XID must not be told the withdrawal completed while the interception goes on
+// running: interception outliving its authority is the one direction this plane must never
+// fail in. So a malformed identifier is refused, and an XID this element does not hold is
+// answered 2020 -- including a re-sent deactivation after a keepalive purge or a restart,
+// which is how the ADMF learns the element was not holding the warrant it thought it was
+// withdrawing.
 func (s *Server) deactivate(xid string) (int, error) {
 	if xid == "" {
 		return 0, refuse(errCodeSchemaError, "missing xId")
@@ -1490,7 +1485,7 @@ func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 		// Refusing it matters beyond tidiness: an element that stores a malformed
 		// identifier interoperates with a provisioning function no conformant one would
 		// produce, and its own test material stops being a guide to what a real ADMF
-		// sends. Ours said `pre-shared-did` for months.
+		// sends.
 		return 0, err
 	}
 	if _, err := deliveryProducts(d.DeliveryType); err != nil {
@@ -1531,9 +1526,8 @@ func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 	referenced := s.didReferenced(d.DID)
 
 	// nil in production. The window between the reference check and the mutation is a
-	// few instructions wide, so the interleaving it used to admit cannot be reached by
-	// racing two goroutines and hoping — see
-	// TestACreateRacingAnActivationResolvesOneWayOrTheOther.
+	// few instructions wide, so a test holds it open here rather than racing two
+	// goroutines at it -- see TestACreateRacingAnActivationResolvesOneWayOrTheOther.
 	if s.afterDestinationGuard != nil {
 		s.afterDestinationGuard()
 	}
@@ -1541,9 +1535,8 @@ func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.destinations[d.DID]; exists {
-		// The wording is matched on by a peer that has to tell "already there" from
-		// "something went wrong" — as an ADMF re-provisioning after a restart does —
-		// so it stays as it is now that the code says the same thing.
+		// The code, 2030, is what tells a peer re-provisioning after a restart that the
+		// destination is already there rather than that something went wrong.
 		return errCodeDIDExists, fmt.Errorf("destination already present")
 	}
 	if _, declared := s.configured[d.DID]; declared && referenced {
@@ -1585,13 +1578,11 @@ func destinationFrom(d DestinationDetails) (heldDestination, error) {
 	}
 	ap := d.Address.IPAddressAndPort
 
-	// **The value, not only the field that carried it.** This used to take the IPv4 arm's
-	// text as an address without parsing it, and read the port through a helper that
-	// resolved a two-armed choice by precedence — so a destination whose address is not an
-	// address was created, acknowledged and dialled forever, and a message populating both
-	// port arms had this element choose which one a warrant's product went to. Both are
-	// schema errors (1010): the types restrict them, and a value violating its own type is
-	// malformed rather than something this element declines to honour.
+	// **The value, not only the field that carried it.** An address that is not an
+	// address would be created, acknowledged and dialled forever, and a message populating
+	// both port arms would leave this element choosing which one a warrant's product goes
+	// to. Both are schema errors (1010): the types restrict them, and a value violating its
+	// own type is malformed rather than something this element declines to honour.
 	if err := ap.Address.Valid(); err != nil {
 		return heldDestination{}, codedError{errCodeSchemaError, err}
 	}
@@ -1691,10 +1682,9 @@ func (s *Server) activate(m X1RequestMessage) (types.InterceptTask, error) {
 	// values of the same provenance.
 	//
 	// The found bool is honoured rather than discarded. Under the transition lock a
-	// concurrent removal can no longer land between the store and this read, so this
-	// is a guard on an interleaving that should now be impossible — but answering the
-	// absence as though it were the task just activated is the specific failure it
-	// guards against, and it is silent: the POI is handed a zero InterceptTask, with
+	// concurrent removal cannot land between the store and this read, so this guards an
+	// interleaving that should be impossible -- but answering the absence as though it
+	// were the task just activated would be silent: the POI is handed a zero InterceptTask, with
 	// no XID and no targets, as a successful activation, and the ADMF is told the
 	// warrant is running.
 	stored, found := s.store.Get(task.XID)
@@ -1760,14 +1750,14 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 		// otherwise an agency the warrant names receives nothing while the provisioning
 		// function is told the interception is running, which is undiscoverable from
 		// outside. On an element serving several agencies the alternative is worse than
-		// silence — the product goes to whichever endpoint the element's own
-		// configuration names, and li-security-isolation admits no exception for a
-		// destination the element could not resolve.
+		// silence -- the product would go to whichever endpoint the element's own
+		// configuration names, crossing from one agency to another, and no destination the
+		// element could not resolve may be an exception to that isolation.
 		//
 		// 2040 is the registry's own "DID does not exist on the NE", which tells the ADMF
 		// what to do; a generic failure would tell it only that something went wrong. The
-		// identifier is named here, on the X1 answer to the party that provisioned it, and
-		// nowhere else.
+		// identifier is named here, on the X1 answer to the party that assigned it, and
+		// nowhere else (see refuse).
 		return types.InterceptTask{}, codedError{errCodeNoSuchDID, fmt.Errorf(
 			"listOfDids names %d destination identifier(s) this element cannot resolve: %s",
 			len(unresolved), strings.Join(unresolved, ", "))}
@@ -1796,11 +1786,10 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 //
 // It exists because an identifier cannot be reported as "element name plus value":
 // the LI_T3 packet-detection criteria are not plain identifier elements but arms of
-// a 3GPP extension, nested inside targetIdentifierExtension with an Owner. Rendering
-// them as a plain element produced XML no ADMF could validate — and, worse, criteria
-// with no mapping of their own were reported as `supiimsi`, telling an auditing ADMF
-// that the element was tasked by a subscriber identity when it was tasked by a
-// tunnel, a port or a direction. GetTaskDetails and GetAllDetails exist so an ADMF
+// a 3GPP extension, nested inside targetIdentifierExtension with an Owner. Rendered as
+// a plain element they would be XML no ADMF could validate, and a criterion with no
+// mapping of its own would tell an auditing ADMF the element was tasked by a subscriber
+// identity when it was tasked by a tunnel, a port or a direction. GetTaskDetails and GetAllDetails exist so an ADMF
 // can discover what an element actually holds; answering them wrongly defeats the
 // only mechanism it has.
 //
@@ -1845,7 +1834,7 @@ func targetXMLAs(t types.TargetIdentifier, element string) string {
 	}
 
 	value := t.Value
-	if element == elPEIIMEICD && digitsBetween(value, 14, 14) {
+	if element == elPEIIMEICD && digitsBetween(value, imeiDigits, imeiDigits) {
 		// Stored as the fourteen-digit IMEI; the element the request used carries the
 		// check digit too, verified on the way in, so this reproduces what was sent.
 		value += string(imeiCheckDigit(value))
@@ -1931,7 +1920,7 @@ func mapTarget(t TargetIdentifier) ([]types.TargetIdentifier, error) {
 			// operation's own refusal, as for a TEID above, and a message that sends the
 			// operator to the digit rather than to the XML. canonicalArmValue has already made
 			// the value fifteen digits, so the indexing is safe.
-			if tok := strings.TrimSpace(arm.value); imeiCheckDigit(tok[:14]) != tok[14] {
+			if tok := xsToken(arm.value); imeiCheckDigit(tok[:imeiDigits]) != tok[imeiDigits] {
 				return nil, fmt.Errorf("%s: the check digit does not match the IMEI", arm.element)
 			}
 		}
@@ -1996,9 +1985,8 @@ func mapExtensionTarget(ext *TargetIdentifierExtension) ([]types.TargetIdentifie
 	// statement as the extension being 3GPP's, and another owner is entitled to define
 	// elements of any name in a namespace this element happens to recognise.
 	//
-	// The same rule the message-level extensions already take (unhonourableExtensions),
-	// applied to the one structure that was missed — and the one where the content decides
-	// which traffic is intercepted.
+	// The same rule the message-level extensions take (unhonourableExtensions), applied to
+	// the structure whose content decides which traffic is intercepted.
 	if ext.Owner != ExtensionOwner3GPP {
 		return nil, fmt.Errorf("target identifier extension owned by %q is not supported", ext.Owner)
 	}
@@ -2194,9 +2182,9 @@ func malformedTaskIdentifiers(td TaskDetails) error {
 //
 // Every typed arm is checked, the subscriber identifiers included: each is a TS 103 280
 // pattern type (an IMSI is six to fifteen digits, an IMEI fourteen, an IMEISV sixteen, an
-// MSISDN or E.164 number one to fifteen), and a value outside it was acknowledged, stored
-// as a criterion no session could ever match, and echoed back as this element's account
-// of what it holds. Only supinai is unrestricted, because the schema types an NAI as a
+// MSISDN or E.164 number one to fifteen), and a value outside it would be acknowledged,
+// stored as a criterion no session could ever match, and echoed back as this element's
+// account of what it holds. Only supinai is unrestricted, because the schema types an NAI as a
 // plain string. The extension arm's contents are checked by mapUPFLIT3Identifier, which
 // refuses each criterion it cannot use.
 func malformedTargetValue(t TargetIdentifier) error {
@@ -2274,31 +2262,30 @@ var armTypes = map[string]types.TargetIdentifierType{
 // canonical spelling, or a 1010 refusal.
 //
 // **Canonical, because matching compares strings.** The pattern types are xs:token, whose
-// surrounding whitespace the schema collapses, and the integer types admit a sign and
-// leading zeros ("+80", "0080"), so one value has several valid spellings — and a task
-// stored in one of them never equalled the identifier a consumer built in another. The
+// surrounding XML whitespace the schema collapses, and the integer types admit a sign and
+// leading zeros ("+80", "0080"), so one value has several valid spellings -- and a task
+// stored in one of them would never equal the identifier a consumer built in another. The
 // IPv6 type admits only the expanded lowercase form, so the parseable compressed forms a
-// peer may send are stored expanded, which is also the form the answers must use. Nothing
-// compares a stored IPv6 criterion as text today — the UPF refuses one outright — so the
-// spelling chosen costs no consumer a match.
+// peer may send are stored expanded, which is also the form the answers must use. No
+// consumer compares a stored IPv6 criterion as text, so the spelling costs no match.
 //
 // The value is not quoted in the refusal: for the subscriber identifiers it is a
-// subscriber's identity, and the ADMF knows what it sent.
+// subscriber's identity (see refuse).
 func canonicalArmValue(a targetArm) (string, error) {
 	bad := func() (string, error) {
 		return "", refuse(errCodeSchemaError, "%s does not conform to its schema type", a.element)
 	}
-	tok := strings.TrimSpace(a.value)
+	tok := xsToken(a.value)
 
 	switch a.element {
 	case elSUPIIMSI, elIMSI:
-		if !digitsBetween(tok, 6, 15) {
+		if !digitsBetween(tok, imsiMinDigits, imsiMaxDigits) {
 			return bad()
 		}
 
 		return tok, nil
 	case elPEIIMEI, elIMEI:
-		if !digitsBetween(tok, 14, 14) {
+		if !digitsBetween(tok, imeiDigits, imeiDigits) {
 			return bad()
 		}
 
@@ -2309,19 +2296,19 @@ func canonicalArmValue(a targetArm) (string, error) {
 		// rather than discarded unread: a wrong one means the ADMF's value names no device,
 		// and the answer re-derives it, so only a correct one round-trips exactly.
 		// The check digit is verified in mapTarget, not here: a wrong one is schema-valid.
-		if !digitsBetween(tok, 15, 15) {
+		if !digitsBetween(tok, imeiDigits+1, imeiDigits+1) {
 			return bad()
 		}
 
-		return tok[:14], nil
+		return tok[:imeiDigits], nil
 	case elPEIIMEISV:
-		if !digitsBetween(tok, 16, 16) {
+		if !digitsBetween(tok, imeisvDigits, imeisvDigits) {
 			return bad()
 		}
 
 		return tok, nil
 	case elGPSIMSISDN, elE164Number:
-		if !digitsBetween(tok, 1, 15) {
+		if !digitsBetween(tok, msisdnMinDigits, msisdnMaxDigits) {
 			return bad()
 		}
 
@@ -2332,12 +2319,12 @@ func canonicalArmValue(a targetArm) (string, error) {
 	case elGTPUTunnelID:
 		// GtpTunnelId is an xs:integer from 0 to 4294967296. The upper bound is one past
 		// what a TEID holds; mapTarget refuses it as a criterion this element cannot use.
-		return schemaInteger(tok, 0, 1<<32, bad)
+		return schemaInteger(tok, 0, gtpTunnelIDMax, bad)
 	case elTCPPort:
 		// TS 103 280 TCPPort is minExclusive 1, so 1 is outside it.
-		return schemaInteger(tok, 2, 65535, bad)
+		return schemaInteger(tok, 2, math.MaxUint16, bad)
 	case elUDPPort:
-		return schemaInteger(tok, 0, 65535, bad)
+		return schemaInteger(tok, 0, math.MaxUint16, bad)
 	case elIPv4Address:
 		ip, err := netip.ParseAddr(tok)
 		if err != nil || !ip.Is4() {
@@ -2369,6 +2356,27 @@ func schemaInteger(tok string, lo, hi int64, bad func() (string, error)) (string
 	}
 
 	return strconv.FormatInt(n, 10), nil
+}
+
+// The TS 103 280 lengths of the identifier types that are strings of digits.
+const (
+	imsiMinDigits   = 6
+	imsiMaxDigits   = 15
+	imeiDigits      = 14 // the 15-digit IMEICheckDigit adds the TS 23.003 check digit
+	imeisvDigits    = 16
+	msisdnMinDigits = 1
+	msisdnMaxDigits = 15
+)
+
+// gtpTunnelIDMax is the upper bound of the schema's GtpTunnelId, one past what a TEID can
+// hold: mapTarget refuses that value as a criterion no tunnel carries.
+const gtpTunnelIDMax = 1 << 32
+
+// xsToken trims the whitespace an xs:token value's surroundings may carry: space, tab,
+// carriage return and line feed, which the schema collapses, and nothing else. Wider
+// trimming -- strings.TrimSpace's Unicode spaces -- would accept values the schema refuses.
+func xsToken(s string) string {
+	return strings.Trim(s, " \t\r\n")
 }
 
 // imeiCheckDigit is the check digit TS 23.003 Annex B defines for a fourteen-digit IMEI:
@@ -2502,14 +2510,12 @@ func unhonourableTaskFields(td TaskDetails, honoursCorrelation bool) error {
 	if len(td.ListOfServiceTypes) > 0 {
 		// This element applies no service-type scoping, so honouring the task as sent
 		// would intercept every service for the target when a narrower set was
-		// authorised — more product than the warrant allows, and silently. TS 33.128
-		// prescribes the remedy: an IRI-POI receiving a ServiceType it does not support
-		// "shall reject the task with an appropriate error".
-		//
-		// The code was the generic "unsupported request" while the TS 103 221-1 error
-		// registry — which is in that document's text, not its schema — had not been
-		// read, with a note to substitute a better value once confirmed rather than
-		// invent one. Table 6.7-3 has an entry for exactly this.
+		// authorised -- more product than the warrant allows, and silently. Refusing it is
+		// this element's design decision rather than a rule TS 33.128 states for the AMF or
+		// SMF: the specification gives that remedy -- "shall reject the task with an
+		// appropriate error" -- for the SMSF, EES, 5GMS AF and NWDAF POIs, and the same
+		// reasoning applies here. TS 103 221-1 table 6.7-3 has a code for exactly this,
+		// 3050.
 		return refuse(errCodeBadServiceType, "service-type scoping is not supported")
 	}
 	if len(td.ListOfTrafficPolicyReferences) > 0 {
@@ -2552,9 +2558,9 @@ func unhonourableExtensions(exts []MessageExtension, on string) error {
 			return fmt.Errorf("%s extension owned by %q is not supported", on, ext.Owner)
 		}
 		// The identifier-association extension is a *task* extension: TS 33.128 defines it
-		// in TaskDetailsExtensions, where it selects records. Recognised on a destination
-		// it was acknowledged and then meant nothing, which is the outcome this function
-		// exists to prevent — so on anything but a task it is as unrecognised as any other.
+		// in TaskDetailsExtensions, where it selects records. Recognised on a destination it
+		// would be acknowledged and then mean nothing, which is the outcome this function
+		// exists to prevent -- so on anything but a task it is as unrecognised as any other.
 		if ext.IdentifierAssociation == nil || len(ext.Content) > 0 || on != "task" {
 			return fmt.Errorf("3GPP %s extension %s is not supported", on, extensionContentNames(ext))
 		}
@@ -2639,6 +2645,8 @@ type codedError struct {
 	err  error
 }
 
+// Error returns the refusal's description, which becomes the response's
+// ErrorDescription; the code travels separately.
 func (e codedError) Error() string { return e.err.Error() }
 
 // errorCode returns the TS 103 221-1 code an error carries, or 0 when it carries none.
@@ -2652,6 +2660,14 @@ func errorCode(err error) int {
 }
 
 // refuse builds a refusal carrying a specific code.
+//
+// **What a refusal's description may quote.** Every description travels back to the peer,
+// so it names what was refused -- the element, an enumeration token or extension owner, or
+// a destination identifier the provisioning function itself assigned -- which the peer
+// needs in order to see its own mistake. It never quotes a subscriber identity or an
+// address, which an LI channel must not reflect, nor a malformed xId, dId or productID,
+// which could be anything; the ADMF knows what it sent. Quoted text is escaped like every
+// other rendered string.
 func refuse(code int, format string, args ...any) error {
 	return codedError{code: code, err: fmt.Errorf(format, args...)}
 }
@@ -2663,11 +2679,10 @@ const supportedVersion = "v1.6.1"
 // x1TemplateFuncs is what every X1 template is given: XML escaping, and the interface
 // version this element speaks.
 //
-// version is a function rather than a literal in each template because there were eight
-// copies of the literal, and Requester.validate compares an answer against the constant.
-// Bumping the constant would therefore have made every request this element sends state
-// one version and every answer be checked against another — breaking the binding on all
-// eight at once, in a way no single template reads as wrong.
+// version is a function rather than a literal in each template because the answers this
+// element receives are checked against the constant (see validateBound): with a literal per
+// template, bumping the constant would make every request state one version and every
+// answer be checked against another, in a way no single template reads as wrong.
 var x1TemplateFuncs = template.FuncMap{
 	"esc":     escapeXML,
 	"version": func() string { return supportedVersion },
@@ -2726,17 +2741,15 @@ var uuidPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0
 // identifiers it got wrong.
 //
 // Three of them are `etsi103280:UUID`: a destination's `dId`, a task's `xId`, and the
-// `productID` that replaces the XID in delivered PDU headers. Only the first was checked
-// at first, which left the sharpest case open: `types.XID.Bytes()` maps an unparseable
-// XID to sixteen zero bytes, an MDF discards product it cannot attribute to a warrant,
-// and nothing reports either — so a task with a malformed `xId` was accepted,
-// interception ran, and every record was delivered under a label the mediation function
-// throws away. Refusing at the door is the only place that failure is visible.
+// `productID` that replaces the XID in delivered PDU headers. The `xId` is the sharpest
+// case: `types.XID.Bytes()` maps a non-canonical XID to sixteen zero bytes, an MDF discards
+// product it cannot attribute to a warrant, and nothing reports either -- so a task with a
+// malformed `xId` would be accepted, run, and deliver every record under a label the
+// mediation function throws away. Refusing at the door is the only place that failure is
+// visible.
 func validIdentifier(field, value string) error {
 	if !uuidPattern.MatchString(value) {
-		// The value is the peer's, and this text travels back to it in the refusal, so
-		// it is not echoed: an LI provisioning channel is the last place to start
-		// reflecting attacker-chosen strings. The ADMF knows what it sent.
+		// A value, so not quoted: see refuse.
 		return refuse(errCodeSchemaError,
 			"%s is not a UUID as the schema requires", field)
 	}
@@ -2747,9 +2760,8 @@ func validIdentifier(field, value string) error {
 // deliveryProducts maps a deliveryType onto the products it orders.
 //
 // DeliveryType is a closed enumeration in the schema, so a value outside it is the
-// message violating its own type: 1010. Uncoded, it became 3000 on a task and 1000 on a
-// destination — "cannot be applied here" and "something went wrong", neither of which
-// is what was wrong.
+// message violating its own type: 1010, on a task and a destination alike, rather than
+// "cannot be applied here" (3000) or "something went wrong" (1000).
 func deliveryProducts(dt string) ([]types.ProductType, error) {
 	switch dt {
 	case deliveryX2Only:

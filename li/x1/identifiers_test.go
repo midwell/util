@@ -79,6 +79,8 @@ func TestTargetValuesOutsideTheirSchemaTypeAreRefused(t *testing.T) {
 		{"udpPort past the range", "<ns1:udpPort>70000</ns1:udpPort>"},
 		{"ipv6Address with a zone", "<ns1:ipv6Address>fe80::1%eth0</ns1:ipv6Address>"},
 		{"ipv6Address IPv4-mapped", "<ns1:ipv6Address>::ffff:10.0.0.1</ns1:ipv6Address>"},
+		// xs:token collapses XML whitespace only; a no-break space is part of the value.
+		{"supiimsi after a no-break space", "<ns1:supiimsi>\u00a0262019876543210</ns1:supiimsi>"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			st := store.New()

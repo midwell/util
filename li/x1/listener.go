@@ -5,6 +5,7 @@ package x1
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"log"
 	"net/http"
@@ -28,23 +29,31 @@ const (
 )
 
 // NewListener returns the HTTP server an X1 endpoint should be served with:
-// mutually authenticated, bounded in time, and silent.
-//
-// It exists so the three network functions cannot drift apart. They previously
-// each constructed their own server, and a disclosure fixed in one had to be
-// fixed again in the other two; the same would be true of every
-// timeout here.
+// mutually authenticated, bounded in time, and silent. Every network function serving X1
+// takes its server from here, so none can drift from the others on a timeout or a
+// disclosure.
 //
 // **Mutual authentication is enforced here, not trusted to the caller.** The
 // configuration is cloned and its ClientAuth set to RequireAndVerifyClientCert.
 // Server.ServeHTTP binds the peer by PeerCertificates[0], which is populated under
-// RequestClientCert or RequireAnyClientCert too — but unverified, so a caller passing
-// either would have made the whole identity binding self-asserted. A nil configuration
-// is left nil: that is the certificate-less mode, served without TLS.
+// RequestClientCert or RequireAnyClientCert too -- but unverified, so a weaker setting
+// would make the whole identity binding self-asserted. A configuration with no ClientCAs
+// is given an empty pool rather than left nil: nil verifies a client against the host's
+// system roots, which would admit any publicly issued certificate, so without the LI CA
+// no client verifies at all. The caller remains responsible for a GetConfigForClient
+// hook, whose returned configuration is used as returned.
+//
+// A nil configuration is left nil and the listener serves plain HTTP. The Server then
+// refuses every message: authentication requires a client certificate, so each is
+// answered 1030. That mode exists so an element can be brought up before its LI PKI is;
+// it cannot be tasked until it has one.
 func NewListener(handler http.Handler, tlsConfig *tls.Config) *http.Server {
 	if tlsConfig != nil {
 		tlsConfig = tlsConfig.Clone()
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		if tlsConfig.ClientCAs == nil {
+			tlsConfig.ClientCAs = x509.NewCertPool()
+		}
 	}
 
 	return &http.Server{

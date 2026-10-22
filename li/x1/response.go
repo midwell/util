@@ -25,15 +25,20 @@ import (
 // tested. `TestRenderedResponsesValidate` validates every one of these against the
 // published XSD.
 
-// getAllTaskDetailsResponse is named because rendersTaskFaults and responseBody must agree on it.
-const getAllTaskDetailsResponse = "GetAllTaskDetailsResponse"
+// The response types whose renderers report a task's faults, named because
+// rendersTaskFaults and responseBody must agree on them.
+const (
+	getAllDetailsResponse     = "GetAllDetailsResponse"
+	getTaskDetailsResponse    = "GetTaskDetailsResponse"
+	getAllTaskDetailsResponse = "GetAllTaskDetailsResponse"
+)
 
 // rendersTaskFaults reports whether a response type's renderer reports a task's faults, so
 // that the supplier is consulted only for answers that carry what it says. It must agree with
 // responseBody: every case below that calls taskResponseDetails is listed here.
 func rendersTaskFaults(responseType string) bool {
 	switch responseType {
-	case "GetAllDetailsResponse", "GetTaskDetailsResponse", getAllTaskDetailsResponse:
+	case getAllDetailsResponse, getTaskDetailsResponse, getAllTaskDetailsResponse:
 		return true
 	default:
 		return false
@@ -46,9 +51,9 @@ func responseBody(m X1ResponseMessage) string {
 	switch m.Type {
 	case errorResponse:
 		return errorBody(m)
-	case "GetAllDetailsResponse":
+	case getAllDetailsResponse:
 		return allDetailsBody(m)
-	case "GetTaskDetailsResponse":
+	case getTaskDetailsResponse:
 		return taskDetailsBody(m)
 	case getAllTaskDetailsResponse:
 		return listBody("listOfTaskResponseDetails", func(b *strings.Builder) {

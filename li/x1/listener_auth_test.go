@@ -5,6 +5,7 @@ package x1
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"testing"
 )
@@ -34,5 +35,24 @@ func TestTheListenerRequiresAVerifiedClientCertificate(t *testing.T) {
 
 	if srv := NewListener(http.NotFoundHandler(), nil); srv.TLSConfig != nil {
 		t.Error("the certificate-less mode was given a TLS configuration")
+	}
+}
+
+// TestAListenerWithNoClientCAsTrustsNoClient: a nil ClientCAs verifies a client against the
+// host's system roots, so any publicly issued certificate would pass. Without the LI CA the
+// listener must verify no client at all.
+func TestAListenerWithNoClientCAsTrustsNoClient(t *testing.T) {
+	given := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	srv := NewListener(http.NotFoundHandler(), given)
+
+	if srv.TLSConfig.ClientCAs == nil {
+		t.Fatal("a listener with no ClientCAs verifies clients against the system roots")
+	}
+	if !srv.TLSConfig.ClientCAs.Equal(x509.NewCertPool()) {
+		t.Error("a listener with no ClientCAs was given anchors of its own; want an empty pool")
+	}
+	if given.ClientCAs != nil {
+		t.Error("NewListener changed the caller's configuration; it must clone it")
 	}
 }
