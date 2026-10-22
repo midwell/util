@@ -55,3 +55,37 @@ func TestACorrelationIDIsReadInTheSchemasLexicalSpace(t *testing.T) {
 		}
 	}
 }
+
+// TestAMessageInAnotherMajorVersionIsRefusedWith1020: clause 4.5 keeps minor and patch
+// increments compatible, so any v1.x.y is processed; another major version, or a value
+// outside the schema's pattern, is refused with table 6.7-3's "Unsupported version", naming
+// the version this element supports.
+func TestAMessageInAnotherMajorVersionIsRefusedWith1020(t *testing.T) {
+	for _, c := range []struct {
+		version string
+		refused bool
+	}{
+		{"v1.6.1", false},
+		{"v1.99.0", false},
+		{"v2.0.0", true},
+		{"1.6.1", true},
+	} {
+		body := strings.Replace(activateXML, "<ns1:version>v1.6.1</ns1:version>",
+			"<ns1:version>"+c.version+"</ns1:version>", 1)
+
+		st := store.New()
+		m := serve(t, testServer(st), body)
+		_, held := st.Get(testXID)
+
+		switch {
+		case c.refused && (m.ErrorInformation == nil || m.ErrorInformation.ErrorCode != errCodeUnsupportedVersion):
+			t.Errorf("%s: got %+v, want error %d", c.version, m.ErrorInformation, errCodeUnsupportedVersion)
+		case c.refused && !strings.Contains(m.ErrorInformation.ErrorDescription, supportedVersion):
+			t.Errorf("%s: the refusal %q does not name the supported version", c.version, m.ErrorInformation.ErrorDescription)
+		case c.refused && held:
+			t.Errorf("%s: a refused task was stored", c.version)
+		case !c.refused && !held:
+			t.Errorf("%s: a v1 message was not processed: %+v", c.version, m.ErrorInformation)
+		}
+	}
+}

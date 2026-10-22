@@ -16,12 +16,13 @@ const (
 	errCodeUnexpectedNE       = 1060 // Unexpected NE Identifier
 	errCodeGeneric            = 1000 // Generic error
 	errCodeUnsupportedRequest = 1080 // Unsupported request
+	errCodeUnsupportedVersion = 1020 // Unsupported version
 	// 1010 covers a value that does not conform to the format the schema defines for it
 	// — a dId that is not a UUID, say. It names what is wrong, where the
 	// per-operation generic codes name only where it happened.
 	errCodeSchemaError = 1010 // Syntax/schema error
-	// 2020 per table 6.7-3. It is emphatically not 1020, which is "Unsupported
-	// version" — a wrong code is as unhelpful to an ADMF as an invented one.
+	// 2020 per table 6.7-3, not 1020 ("Unsupported version"): a wrong code is as unhelpful
+	// to an ADMF as an invented one.
 	errCodeNoSuchTask = 2020 // XID does not exist on NE
 	// Destination and bulk-operation codes, from the same table. A generic 1000 in place of
 	// one of these is not a small matter: an ADMF distinguishes "the DID I named is not
@@ -38,8 +39,7 @@ const (
 	errCodeDestinationsInUse = 8010 // Destinations in use
 	// The task-provisioning codes. 3000/3001 are the registry's own "details of why the
 	// Task cannot be activated/modified", which is what a refusal on a field this
-	// element cannot honour is; 3050 names the ServiceType refusal exactly, and
-	// replaces the 1080 that stood in for it until the registry was to hand.
+	// element cannot honour is; 3050 names the ServiceType refusal exactly.
 	errCodeActivateFailed = 3000 // Generic ActivateTask failure
 	errCodeModifyFailed   = 3001 // Generic ModifyTask failure
 	errCodeBadServiceType = 3050 // Unsupported ServiceType

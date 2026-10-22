@@ -40,7 +40,7 @@ and it is only as current as the revisions it names.
 
 ## Deliberate deviations
 
-Three places where this element departs from the letter of TS 103 221-1, each for a stated
+The places where this element departs from the letter of TS 103 221-1, each for a stated
 reason. Everything else in this document is a disposition, not a deviation.
 
 - **`RemoveAllDestinations` is disabled by default.** Clause 6.3.4 enables it unless agreed
@@ -55,6 +55,18 @@ reason. Everything else in this document is a disposition, not a deviation.
 - **The emitted Version is `v1.6.1`** while the behaviour is built against v1.21.1 — a knowing
   understatement, explained under *Message envelope*.
 
+These follow the specification and are recorded here because each is a choice a reader may
+check:
+
+- **A task's target identifiers must all match** (table 6.2.1.2-1: "Where multiple criteria
+  are present, all criteria are required to be matched"), and a combination an element cannot
+  match together is refused rather than narrowed.
+- **An ActivateTask for an XID already held** is acknowledged when it is identical to the held
+  task, so a retried activation stays idempotent, and refused with 2010 when it differs:
+  clause 6.2.1 makes a held XID an error, and a change goes through ModifyTask.
+- **A task-scoped fault is reported as cleared** when its condition ends (clause 6.5.2), and
+  the keepalive fail-safe follows clause 6.6.2.
+
 ## Message envelope — table 6.1-1
 
 | Field | M/C/O | Disposition |
@@ -62,7 +74,7 @@ reason. Everything else in this document is a disposition, not a deviation.
 | ADMF Identifier | M | Emitted on every message. On inbound, bound per message to the configured responsible ADMF **and** to the peer's X.509 certificate (clause 8.2.4) — 1030 on a certificate mismatch, 1040 on an unexpected ADMF |
 | NE Identifier | M | Emitted from configuration. On inbound, a message naming a different NE is refused with 1060 |
 | MessageTimestamp | M | Emitted as the TS 103 280 Qualified Microsecond Date Time, rendered to a fixed six digits — see `li/README.md`, *X1 timestamps are rendered to a fixed six digits*, for why that is a conformance decision and not a formatting one |
-| Version | M | Emitted as `v1.6.1` on the requests and reports this element originates; a response echoes the version its request carried — see *Echo substitution*. Read below |
+| Version | M | Emitted as `v1.6.1` on every message this element encodes, responses included: table 6.1-1 defines it as the version used to encode the message, not an echo of the request's. Read below |
 | X1TransactionID | C | Echoed on every response. Generated per request when this element is the requester. Substituted when a peer's value is outside the TS 103 280 UUID format — see *Echo substitution* |
 
 **The Version this element originates is `v1.6.1`, and the behaviour is built against v1.21.1.** This is a
@@ -70,17 +82,18 @@ knowing understatement rather than a claim: clause 4.5 makes minor increments ba
 compatible, so declaring an older revision than you implement is the direction that cannot
 mislead a peer into expecting a message you do not answer. The reverse would be. It is
 recorded because "the version field says 1.6.1" is otherwise indistinguishable from an
-element that was built against v1.6.1 — and this one was not: the 2020 semantics of table
-6.2.3-2 and the 3050 ServiceType code both come from later revisions.
+element that was built against v1.6.1, and this one was built against v1.21.1.
 
-**Echo substitution.** Every response echoes the request's `version` and `x1TransactionId`,
-and the schema restricts both. A peer sending a value outside the restriction would otherwise
-make *our own* answer schema-invalid — and the answer easiest to spoil that way is the one
-whose request has been trusted by nothing: the refusal telling a peer it may not task this
-element. So a version outside `v1\.\d+\.\d+` is replaced by `v1.6.1`, and a transaction
-identifier outside the TS 103 280 UUID format is replaced by a fresh UUID.
+As a requester, this element accepts an answer in any `v1.x.y`: the peer encodes its answer in
+its own version.
 
-The second substitution costs something and it is worth saying who pays. An ADMF matches a
+**Echo substitution.** Every response echoes the request's `x1TransactionId`, and the schema
+restricts it to a UUID. A peer sending a value outside the restriction would otherwise make
+*our own* answer schema-invalid — and the answer easiest to spoil that way is the one whose
+request has been trusted by nothing: the refusal telling a peer it may not task this element.
+So a transaction identifier outside the TS 103 280 UUID format is replaced by a fresh UUID.
+
+The substitution costs something and it is worth saying who pays. An ADMF matches a
 response to its request by that value, so a peer that sent a non-conformant identifier loses
 the correlation — but it had no conformant correlation to lose, and echoing the malformed
 value would invalidate the whole response, losing the correlation *and* everything else the
@@ -113,8 +126,8 @@ discover that:
 | `taskDetailsExtensions` other than the LI_T3 one | — | Refused. An extension exists in order to change the meaning of the message carrying it, so an unknown one cannot be ignored. Includes `HeaderReporting`, which TS 33.128 marks C and M in tables 6.2.3-0A and 6.2.3-9 |
 | `listOfMediationDetails` | O | Accepted and disregarded, deliberately — `li/README.md`, *Fields accepted and disregarded* |
 | `implicitDeactivationAllowed` | O | Accepted and disregarded, likewise |
-| LI_T3 `PDRID` and `QERID` | — (TS 33.128 table 6.2.3-7) | **Refused**, 3000/3001. Both name a rule allocated *per PFCP session* and reused across sessions from a low number, and a CC-POI matches a criterion against every session it holds — so a task naming PDR 2 would intercept every subscriber whose session happens to hold a PDR of that number, under that warrant and indistinguishable downstream from the traffic it did name. They cannot be qualified by a session, because a task's criteria are alternatives: naming the PFCP Session ID beside the rule ID widens the interception rather than narrowing it. Declared gap against 6.2.3-7 rather than a silent one; a triggering function needing one session's traffic has `FSEID`, which is exactly that |
-| LI_T3 `PDR` whose rule leaves a field to this element | — (same table) | **Refused** where the encoded rule asks the UPF to allocate the UE address or to choose the tunnel endpoint (`CH`). Such a criterion names a value this element assigns, so it can never compare equal to any session's rule: accepted, it is an interception acknowledged and producing nothing. Normalising the assigned fields out of the comparison was the alternative and was rejected — it would make the criterion match every session whose remaining fields agree, widening the interception to make an unusable criterion usable |
+| LI_T3 `PDRID` and `QERID` | — (TS 33.128 table 6.2.3-7) | Mapped to criteria by this package; **refused by the UPF CC-POI** (its `CanApply`), 3000/3001. Both name a rule allocated *per PFCP session* and reused across sessions from a low number, so on its own a rule ID names a rule in every session that holds that number. A triggering function needing one session's traffic has `FSEID` |
+| LI_T3 `PDR` whose rule leaves a field to the element | — (same table) | **Refused by the UPF CC-POI** where the encoded rule asks the UPF to allocate the UE address or to choose the tunnel endpoint (`CH`). Such a criterion names a value the UPF assigns, so it can never compare equal to any session's rule: accepted, it is an interception acknowledged and producing nothing |
 
 **Identifier formats.** `xId`, `dId` and `productID` are all `etsi103280:UUID` in the schema.
 A value outside that format is refused with **1010** rather than stored and acted on: an
@@ -149,15 +162,14 @@ Also 1010, naming which criterion of how many. Checking the outer choice and not
 would leave the identical gap at the one level where a CC-POI actually reads its detection
 criteria.
 
-**This does not forbid a task from carrying several target identifiers.** The documented
-precedence — subscriber identifiers before packet criteria, because a task carrying both is
-targeting a subscriber — governs a task's `targetIdentifiers` *list*, where the entries are
-legitimate alternatives combined as an OR. What is refused is two arms inside *one*
-identifier. The two rules are about different levels of the structure.
+**This does not forbid a task from carrying several target identifiers.** A task's
+`targetIdentifiers` *list* may hold several entries, and all of them are required to match
+(table 6.2.1.2-1). What is refused is two arms inside *one* identifier. The two rules are about
+different levels of the structure.
 
 **Every member of a `UPFLIT3TargetIdentifier` list becomes a criterion.** It is a SEQUENCE OF
-CHOICE, so a list of several is what the structure is for, and a CC-POI is already required to
-intercept traffic matching any criterion a task carries. A member that cannot be mapped
+CHOICE, so a list of several is what the structure is for, and all of a task's criteria are
+required to match (table 6.2.1.2-1). A member that cannot be mapped
 **refuses the whole task**, naming which member of how many — the rule applied to the outer
 list, applied one level deeper. An empty list is refused. Mapping only some members would
 acknowledge a task while running an interception narrower than the one ordered, invisibly to
@@ -169,8 +181,8 @@ function would receive well-formed product for the criteria that survived.
 | Message | Disposition |
 |---|---|
 | `CreateDestination` (6.3.1) | Implemented. `dId` validated as the schema's UUID; re-creating an existing DID refused with **2030** per clause 6.3.1.1 |
-| `ModifyDestination` (6.3.2) | **Not implemented**, refused with 1080. Optional in TS 103 221-1 |
-| `RemoveDestination` (6.3.3) | **Not implemented**, refused with 1080. Optional |
+| `ModifyDestination` (6.3.2) | **Not implemented**, refused with 1080. A destination is corrected by `RemoveAllDestinations` once no task references it |
+| `RemoveDestination` (6.3.3) | **Not implemented**, refused with 1080 |
 | `RemoveAllDestinations` (6.3.4) | Implemented, **disabled by default** — a deliberate deviation from clause 6.3.4, which enables it unless agreed otherwise. Answered with the specification's own error, 8020, when disabled. When enabled, refused with **8010** while any destination is still referenced by a task, which is the guard the specification itself puts on bulk removal |
 
 The asymmetry between bulk deactivation (on by default, as clause 6.2.4 has it) and bulk
@@ -195,7 +207,7 @@ Declared permanently unsupported — see `li/CONFORMANCE.md`.
 `GetAllDetails`, `GetAllTaskDetails`, `GetDestinationDetails`, `GetAllDestinationDetails`,
 `GetNEStatus`, `ListAllDetails`, `GetAllGenericObjectDetails`.
 
-Two properties of the answers matter more than the coverage:
+These properties of the answers matter more than the coverage:
 
 - **Holding nothing is a successful empty answer, not an error.** An ADMF reconciling after a
   restart must be able to tell "this element holds no tasks" from "this element would not
@@ -231,10 +243,11 @@ the wrong length is outside the type and refused with 1010.
 
 `GetNEStatus` answering "the conditions the element can currently observe" is only half a
 statement. **The conditions it does not answer for are named here**, so that "no faults" is a
-stated answer rather than an omission.
+stated answer rather than an omission. This section describes the UPF CC-POI, whose answers
+these packages carry; the behaviour it describes is the UPF's.
 
-**The CC-POI does not answer for a disagreement between its record of what it programmed and
-what the datapath actually holds.** It cannot: the UPF's BESS `ExactMatch` module carrying each
+**The UPF CC-POI does not answer for a disagreement between its record of what it programmed
+and what the datapath actually holds.** It cannot: the UPF's BESS `ExactMatch` module carrying each
 FAR's duplication flag accepts `add`, `delete`, `clear` and `set_default_gate` and offers no
 read, so the element's own record is the only copy of that state on the control-plane side.
 

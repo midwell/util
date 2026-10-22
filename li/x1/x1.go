@@ -910,6 +910,26 @@ func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) 
 	// because this element finished acting on it.
 	s.recordActivity()
 
+	// Clause 4.5 keeps minor and patch increments backwards compatible, so any v1.x.y is
+	// processed; another major version, or a value outside the schema's pattern, is a
+	// message this element cannot read reliably. Table 6.7-3 has the code for it, and its
+	// suggested content is the version the element supports.
+	if !versionPattern.MatchString(m.Version) {
+		return X1ResponseMessage{
+			Type:             errorResponse,
+			AdmfIdentifier:   m.AdmfIdentifier,
+			NeIdentifier:     s.neID,
+			MessageTimestamp: x1Timestamp(s.now()),
+			Version:          supportedVersion,
+			X1TransactionID:  echoTransactionID(m.X1TransactionID),
+			ErrorInformation: &X1Error{
+				ErrorCode:        errCodeUnsupportedVersion,
+				ErrorDescription: "unsupported version; this element supports " + supportedVersion,
+			},
+			RequestType: localType(m.Type),
+		}
+	}
+
 	return s.apply(m)
 }
 
