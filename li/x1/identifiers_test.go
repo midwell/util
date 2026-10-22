@@ -77,6 +77,8 @@ func TestTargetValuesOutsideTheirSchemaTypeAreRefused(t *testing.T) {
 		{"gtpuTunnelId negative", "<ns1:gtpuTunnelId>-5</ns1:gtpuTunnelId>"},
 		{"tcpPort 1, which the type excludes", "<ns1:tcpPort>1</ns1:tcpPort>"},
 		{"udpPort past the range", "<ns1:udpPort>70000</ns1:udpPort>"},
+		{"ipv4Address octet past 255", "<ns1:ipv4Address>10.0.0.256</ns1:ipv4Address>"},
+		{"ipv4Address with three octets", "<ns1:ipv4Address>10.0.1</ns1:ipv4Address>"},
 		{"ipv6Address with a zone", "<ns1:ipv6Address>fe80::1%eth0</ns1:ipv6Address>"},
 		{"ipv6Address IPv4-mapped", "<ns1:ipv6Address>::ffff:10.0.0.1</ns1:ipv6Address>"},
 		// xs:token collapses XML whitespace only; a no-break space is part of the value.
@@ -116,6 +118,11 @@ func TestEquivalentSpellingsAreStoredCanonically(t *testing.T) {
 		{
 			"TEID leading zeros", "<ns1:gtpuTunnelId>007</ns1:gtpuTunnelId>",
 			types.TargetIdentifier{Type: types.TargetFTEID, Value: "7"},
+		},
+		{
+			// The schema's IPv4Address pattern admits a leading zero in an octet.
+			"IPv4 zero-padded octets", "<ns1:ipv4Address>010.000.000.001</ns1:ipv4Address>",
+			types.TargetIdentifier{Type: types.TargetUEIPv4, Value: "10.0.0.1"},
 		},
 		{
 			"IPv6 compressed upper case", "<ns1:ipv6Address>2001:DB8::9</ns1:ipv6Address>",

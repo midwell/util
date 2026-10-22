@@ -327,10 +327,9 @@ func TestTheChoiceRuleDoesNotForbidSeveralIdentifiers(t *testing.T) {
 // ── Every extension identifier is a criterion ────────────────────
 
 // TestEveryExtensionIdentifierBecomesACriterion. UPFLIT3TargetIdentifier is a
-// SEQUENCE OF CHOICE, so a list of several is what the structure is for, and the
-// CC-POI is already required to intercept traffic matching any criterion in a
-// task's list. Mapping only the first acknowledged a task while running an
-// interception narrower than the one ordered — invisible to every party.
+// SEQUENCE OF CHOICE, and every member joins the task's criteria, all of which are
+// required to match (TS 103 221-1 table 6.2.1.2-1). Mapping only the first would run
+// an interception other than the one ordered while acknowledging it.
 func TestEveryExtensionIdentifierBecomesACriterion(t *testing.T) {
 	pdr := uint32(3)
 	qer := uint32(7)

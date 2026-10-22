@@ -1169,18 +1169,10 @@ func (s *Server) applyTaskTransition(m X1RequestMessage, isModify bool) (int, er
 		code int // TS 103 221-1 error code; 0 means "pick the generic one"
 	)
 
-	// An activation naming an XID this element already holds replaces it rather
-	// than being refused, which is deliberate: re-provisioning is how an ADMF
-	// restores tasking after an element restarts, and refusing it
-	// would break the recovery path the fault reporting exists to trigger.
-	// Modifying tasking that is *not* held has no such reading and is refused
-	// below.
-	//
-	// The task already held is read for both, so that a replacement carries what
-	// it replaces to the POI: an activation over a held XID changes this
-	// element's tasking exactly as a modification does, and a POI told only
-	// about the new task has no way to take down the state it applied for the
-	// old one.
+	// The task already held under this XID, if any, decides two cases below: an
+	// activation naming a held XID is a replay or a conflict, and a modification of a
+	// task that is not held is refused. A modification carries what it replaces to the
+	// POI, which has no other way to take down the state it applied for the old task.
 	var prevTask types.InterceptTask
 	var hadPrev bool
 	if m.TaskDetails != nil {
@@ -1226,6 +1218,8 @@ func (s *Server) applyTaskTransition(m X1RequestMessage, isModify bool) (int, er
 		// "no such task" is what lets it activate the warrant instead.
 		err = fmt.Errorf("no such task")
 		code = errCodeNoSuchTask
+	case !isModify && hadPrev:
+		code, err = s.activateHeld(*m.TaskDetails, prevTask)
 	default:
 		var task types.InterceptTask
 		task, err = s.activate(m)
@@ -1471,7 +1465,7 @@ func (s *Server) deactivate(xid string) (int, error) {
 func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 	// destinationDetails and its dId are mandatory in the schema, so a message without
 	// them violates its own format: 1010, the code the package gives every schema error,
-	// rather than the generic 1000 these once fell through to.
+	// rather than the generic 1000.
 	if d == nil {
 		return errCodeSchemaError, fmt.Errorf("missing destinationDetails")
 	}
@@ -1574,7 +1568,7 @@ func (s *Server) didReferenced(did string) bool {
 func destinationFrom(d DestinationDetails) (heldDestination, error) {
 	if d.Address.IPAddressAndPort == nil {
 		// A URI, E.164 number or email address. 6020 is the registry's own entry for
-		// it; the generic code said only that the destination could not be created.
+		// it, and says more than the generic code would: why it could not be created.
 		return heldDestination{}, codedError{errCodeBadAddressType, fmt.Errorf("unsupported deliveryAddress")}
 	}
 	ap := d.Address.IPAddressAndPort
@@ -1621,17 +1615,16 @@ func (s *Server) resolveLocked(did string) (heldDestination, bool) {
 // resolveDIDs turns the DIDs a task references into delivery endpoints, and reports
 // separately the identifiers it could not resolve.
 //
-// **Reporting them is the whole change.** The endpoints alone cannot distinguish the
-// two situations that produce a short list, and they need opposite answers: a DID that
+// **The unresolved identifiers are what matter.** The endpoints alone cannot distinguish
+// the two situations that produce a short list, and they need opposite answers: a DID that
 // resolved to an X3-only destination contributes no X2 endpoint, which is correct and
 // complete, while a DID this element cannot place at all is an instruction it cannot
-// carry out. Returning only the endpoints made those indistinguishable, so a task
-// naming three agencies of which one was unknown was stored with two — and provisioning
-// reported success while an agency named in the warrant received nothing.
+// carry out. Without them, a task naming three agencies of which one is unknown would be
+// stored with two, and provisioning would report success while an agency named in the
+// warrant received nothing.
 //
-// The caller refuses such a task. The earlier reasoning for skipping was that an ADMF is
-// entitled to task an IRI-POI whose MDF2 address comes from configuration, and that
-// remains true and remains served: a task that names *no* DID falls back to the element's
+// The caller refuses such a task. An ADMF is still entitled to task an IRI-POI whose MDF2
+// address comes from configuration: a task that names *no* DID falls back to the element's
 // configured endpoint, and destinations agreed out of band are declared in the element's
 // own configuration (WithConfiguredDestinations), where they resolve. What is refused is
 // the case neither of those covers — a named identifier the element genuinely cannot
@@ -1655,6 +1648,39 @@ func (s *Server) resolveDIDs(dids []string) (endpoints []types.DeliveryEndpoint,
 	}
 
 	return endpoints, unresolved
+}
+
+// errCodeXIDExists is TS 103 221-1 table 6.7-3's "XID already exists on NE".
+const errCodeXIDExists = 2010
+
+// activateHeld answers an ActivateTask naming an XID this element already holds.
+//
+// Table 6.2.1.1-2 makes it an error: "it is an error if the XID is already present at
+// the NE", and a different task under a held XID is refused with 2010 — a change to a
+// held task is what ModifyTask is for, and replacing it silently would let an ADMF
+// believe it had activated a warrant while it had overwritten another. A replay of the
+// identical task is acknowledged instead, and changes nothing: an ADMF that resends an
+// activation whose answer it lost is asking for what this element already does, and
+// refusing it would turn a lost response into a provisioning failure. The comparison is
+// against the task as this element holds it, so a replay is identical in every field a
+// POI acts on, whatever the x1TransactionId.
+func (s *Server) activateHeld(td TaskDetails, held types.InterceptTask) (int, error) {
+	task, err := s.taskFromDetails(td)
+	if err != nil {
+		code := errorCode(err)
+		if code == 0 {
+			code = taskFailureCode(false)
+		}
+
+		return code, err
+	}
+	// The store stamps the state; the held task carries it, so the replay must too.
+	task.State = types.TaskActive
+	if sameTask(held, task) {
+		return 0, nil
+	}
+
+	return errCodeXIDExists, fmt.Errorf("XID already exists on NE; use ModifyTask to change a held task")
 }
 
 func (s *Server) activate(m X1RequestMessage) (types.InterceptTask, error) {
@@ -1826,8 +1852,8 @@ func targetXML(t types.TargetIdentifier) string {
 //
 // The identifier types fold several elements into one — supinai into SUPI, peiImeisv
 // into PEI, e164Number into GPSI — so rendering a stored identifier from its type alone
-// answered a request in a different vocabulary from the one it used, and for an IMEISV
-// in one the schema forbids. The value was checked against the requested element's own
+// would answer a request in a different vocabulary from the one it used, and for an
+// IMEISV in one the schema forbids. The value was checked against the requested element's own
 // type when the task was accepted, so rendering it back there is valid.
 func targetXMLAs(t types.TargetIdentifier, element string) string {
 	if element == "" {
@@ -1929,16 +1955,11 @@ func mapTarget(t TargetIdentifier) ([]types.TargetIdentifier, error) {
 		return one(armTypes[arm.element], value), nil
 	}
 
-	// The subscriber identifiers come first in plainArm's order deliberately: a task
-	// carrying both is targeting a subscriber, and the subscriber identifier is the one
-	// an IRI-POI can act on.
-	//
-	// That precedence governs a task's `targetIdentifiers` **list**, where a subscriber
-	// identifier and a packet criterion are separate, legitimate entries combined as
-	// alternatives. It does not govern the arms *within* one targetIdentifier: the schema
-	// defines that as an xs:choice, so two populated arms cannot occur, and
-	// malformedTaskIdentifiers refuses the message before this is reached rather than
-	// letting an order decide.
+	// plainArm's order does not decide between arms: one targetIdentifier is an
+	// xs:choice, so two populated arms cannot occur, and malformedTaskIdentifiers refuses
+	// the message before this is reached rather than letting an order decide. Several
+	// identifiers are several entries of the task's `targetIdentifiers` list, and each
+	// becomes a criterion, all of which are required to match.
 	if t.Extension != nil {
 		return mapExtensionTarget(t.Extension)
 	}
@@ -1958,19 +1979,14 @@ func one(kind types.TargetIdentifierType, value string) []types.TargetIdentifier
 // the seven extension arms in mapUPFLIT3Identifier.
 //
 // **Every member of the list becomes a criterion.** UPFLIT3TargetIdentifier is a
-// SEQUENCE OF CHOICE, so a list of several is exactly what the structure is for,
-// and `A task carrying several criteria` already requires a CC-POI to intercept
-// traffic matching any of them. This mapped `Identifiers[0]` and dropped the rest,
-// which acknowledged a task while running an interception narrower than the one
-// ordered — invisible to every party, since the triggering function was told the
-// task was accepted and the mediation function receives well-formed product for
-// the criterion that survived.
+// SEQUENCE OF CHOICE, and its members join the task's other criteria: all of them are
+// required to match (TS 103 221-1 table 6.2.1.2-1), so a list narrows the traffic
+// selected — a session's F-SEID with a tunnel direction is that session's traffic in
+// one direction. Mapping only the first member would run an interception other than
+// the one ordered while acknowledging it.
 //
-// A member that cannot be mapped refuses the **whole task**, which is the rule
-// taskFromDetails already applies to the outer list, applied one level deeper
-// where it was not. The OR semantics need nothing here: widening the output feeds
-// the existing machinery more criteria and does not change how they combine, and
-// the no-duplicate-delivery rule is enforced at the shipper.
+// A member that cannot be mapped refuses the **whole task**, the rule taskFromDetails
+// applies to the outer list, applied one level deeper.
 //
 // Accepting a criterion at this layer means it can be *provisioned*. Whether the
 // CC-POI can then evaluate it against its own session state is a separate question
@@ -2111,8 +2127,7 @@ func malformedTaskIdentifiers(td TaskDetails) error {
 	// The same check the two identifiers above get, for the same reason. A dId the
 	// schema cannot type is one no destination can be found under, so the task is
 	// accepted and then delivers to nothing — the failure RequireResolvableDIDs
-	// exists to prevent, arriving by the one route that skips it. It was this
-	// element's own malformed dId that made the case for validating xId at all.
+	// exists to prevent, arriving by the one route that skips it.
 	for _, did := range td.ListOfDIDs {
 		if err := validIdentifier("dId", did); err != nil {
 			return err
@@ -2120,13 +2135,12 @@ func malformedTaskIdentifiers(td TaskDetails) error {
 	}
 	for _, ti := range td.TargetIdentifiers {
 		// **The value, not only which arm carried it.** These arms are typed by the
-		// schema — an IPv4Address is a TS 103 280 IPv4 address, a tcpPort a Port — and
-		// mapTarget copied their text into the task store with no check at all. So a task
+		// schema — an IPv4Address is a TS 103 280 IPv4 address, a tcpPort a Port. A task
 		// carrying a port outside its type's range, or an address that is not an address,
-		// was stored, acted on as a detection criterion, and echoed back by
+		// would otherwise be stored, acted on as a detection criterion, and echoed back by
 		// GetTaskDetails as this element's own account of what it holds. Checked here
 		// because this is the decode path every task crosses: a check beside one consumer
-		// is not inherited by the next one, which is the mistake being corrected.
+		// is not inherited by the next one.
 		if err := malformedTargetValue(ti); err != nil {
 			return err
 		}
@@ -2141,8 +2155,7 @@ func malformedTaskIdentifiers(td TaskDetails) error {
 		// commoner cause is a conformant message this element cannot act on — sending an
 		// operator to correct something that is correct. So it falls through to mapTarget and
 		// is refused with the operation's own code, which says what is true of both: the task
-		// cannot be applied here. TestRefuseCriteriaOutsideTheTable pins that, and pinned it
-		// against a change that tried to make this a schema error.
+		// cannot be applied here. TestRefuseCriteriaOutsideTheTable pins that.
 		if n := populatedArms(ti); n > 1 {
 			// The schema defines TargetIdentifier as an xs:choice, so a message
 			// populating two arms is invalid against it and no reading of it is
@@ -2327,8 +2340,8 @@ func canonicalArmValue(a targetArm) (string, error) {
 	case elUDPPort:
 		return schemaInteger(tok, 0, math.MaxUint16, bad)
 	case elIPv4Address:
-		ip, err := netip.ParseAddr(tok)
-		if err != nil || !ip.Is4() {
+		ip, ok := parseSchemaIPv4(tok)
+		if !ok {
 			return bad()
 		}
 
@@ -2380,6 +2393,29 @@ func xsToken(s string) string {
 	return strings.Trim(s, " \t\r\n")
 }
 
+// schemaIPv4 is TS 103 280's IPv4Address pattern, anchored. It admits a leading zero in
+// an octet ("010.000.000.001"), which netip.ParseAddr refuses as ambiguous.
+var schemaIPv4 = regexp.MustCompile(`^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])$`)
+
+// parseSchemaIPv4 parses an address of the schema's IPv4Address type, reading each
+// octet as decimal whatever its leading zeros, so every spelling the schema admits is
+// accepted and stored in one canonical form.
+func parseSchemaIPv4(s string) (netip.Addr, bool) {
+	if !schemaIPv4.MatchString(s) {
+		return netip.Addr{}, false
+	}
+	var octets [4]byte
+	for i, part := range strings.Split(s, ".") {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		octets[i] = byte(n)
+	}
+
+	return netip.AddrFrom4(octets), true
+}
+
 // imeiCheckDigit is the check digit TS 23.003 Annex B defines for a fourteen-digit IMEI:
 // the Luhn digit, doubling every second digit from the right of the fourteen.
 func imeiCheckDigit(imei string) byte {
@@ -2415,11 +2451,10 @@ func digitsBetween(s string, lo, hi int) bool {
 // populatedArms counts how many arms of the TargetIdentifier choice carry a value.
 //
 // It is deliberately a count over every arm rather than a check of the two that
-// mapTarget happens to reach first: the defect being closed is that the switch's
-// order decided the answer, so a guard sharing that order would inherit it. A new
-// arm added to the struct and not added here would be silently exempt, which is
-// the same class of omission — hence one place, listing all of them, beside the
-// declaration they mirror.
+// mapTarget happens to reach first: a guard sharing the switch's order would let that
+// order decide the answer. A new arm added to the struct and not added here would be
+// silently exempt — hence one place, listing all of them, beside the declaration they
+// mirror.
 func populatedArms(t TargetIdentifier) int {
 	n := 0
 	for _, v := range []string{
@@ -2439,7 +2474,7 @@ func populatedArms(t TargetIdentifier) int {
 	// An arm this element does not model is still an arm: counting it is what refuses a
 	// choice carrying one modelled and one unmodelled arm, rather than narrowing it to the
 	// one understood. A choice carrying only unmodelled arms counts one here and falls
-	// through to mapTarget's refusal with the operation's code, as before.
+	// through to mapTarget's refusal with the operation's code.
 	n += len(t.Unmodelled)
 
 	return n
@@ -2488,13 +2523,13 @@ func populatedLIT3Arms(id UPFLIT3Identifier) int {
 // cannot has to follow the element.
 func unhonourableTaskFields(td TaskDetails, honoursCorrelation bool) error {
 	if td.CorrelationID != "" && !honoursCorrelation {
-		// Accepted and then ignored, until now: parsed into the task, stored, and never
-		// used by either IRI-POI — the AMF sends a zero correlation and the SMF sends
-		// the session's F-SEID. The value at stake is how the mediation function joins
-		// this element's records to a warrant's content, so an ADMF that provisioned it
-		// per clause 6.2.1.2 received an acknowledgement and a different interception
-		// from the one it authorised, with no channel through which the divergence
-		// could be reported. That is precisely what this function exists to prevent.
+		// Accepting it would mean ignoring it: neither IRI-POI uses a provisioned value —
+		// the AMF sends a zero correlation and the SMF sends the session's F-SEID. The
+		// value at stake is how the mediation function joins this element's records to a
+		// warrant's content, so an ADMF that provisioned it per clause 6.2.1.2 would
+		// receive an acknowledgement and a different interception from the one it
+		// authorised, with no channel through which the divergence could be reported.
+		// That is precisely what this function exists to prevent.
 		//
 		// Honouring it here is not the alternative: a 5G correlation is per session by
 		// construction, and one provisioned value across the many sessions a task covers
@@ -2696,8 +2731,8 @@ var versionPattern = regexp.MustCompile(`^v1\.\d+\.\d+$`)
 // *our own* answer invalid.
 //
 // Every response echoes the request's version and x1TransactionId, and the schema
-// restricts both — a pattern and a UUID. So a malformed request produced a malformed
-// reply, and the reply easiest to spoil is the one whose request has been trusted by
+// restricts both — a pattern and a UUID. Echoed verbatim, a malformed request would
+// produce a malformed reply, and the reply easiest to spoil is the one whose request has been trusted by
 // nothing: the refusal telling a peer it may not task this element. A conformant ADMF
 // validating replies discards an invalid one, which would make the most
 // security-relevant message this interface sends unreportable, by sending a bad version

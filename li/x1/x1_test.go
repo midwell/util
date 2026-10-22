@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -383,30 +384,61 @@ func TestModifyUnknownTaskRefused(t *testing.T) {
 	}
 }
 
-// TestActivateReplacesHeldTask is the counterpart: re-activating an XID this
-// element already holds is how an ADMF restores tasking after the element
-// restarts, so it must be accepted and applied, not refused as a duplicate.
-func TestActivateReplacesHeldTask(t *testing.T) {
+// TestAReplayedActivationIsAcknowledged: an ADMF that lost the answer to an activation
+// resends it, and the identical task is what this element already holds — so it is
+// acknowledged, and nothing changes: no second notification to the POI, the same task
+// in the store. A new x1TransactionId does not make it a different task.
+func TestAReplayedActivationIsAcknowledged(t *testing.T) {
+	st := store.New()
+	var changes int
+	srv := testServer(st, OnTaskChange(func(_, _ *types.InterceptTask) { changes++ }))
+
+	if _, err := srv.Process([]byte(activateXML), admfPeer(t)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	held, _ := st.Get(testXID)
+
+	replay := strings.Replace(activateXML, "3741800e-971b-4aa9-85f4-466d2b1adc7f",
+		"9f0c4e1a-5b2d-4c3e-8f7a-1d2e3f4a5b6c", 1)
+	resp, err := srv.Process([]byte(replay), admfPeer(t))
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if m := resp.Messages[0]; m.OK != ackOK {
+		t.Fatalf("replayed activation = %+v, want acknowledged", m)
+	}
+	if again, _ := st.Get(testXID); !reflect.DeepEqual(again, held) || st.Len() != 1 {
+		t.Errorf("a replay changed the store: held %+v, now %+v (%d tasks)", held, again, st.Len())
+	}
+	if changes != 1 {
+		t.Errorf("the POI was notified %d times, want once: a replay is not a change", changes)
+	}
+}
+
+// TestADifferentTaskUnderAHeldXIDIsRefused is TS 103 221-1 table 6.2.1.1-2: "it is an
+// error if the XID is already present at the NE", answered 2010. Replacing the held task
+// would let an ADMF believe it activated a warrant while it overwrote another; a change
+// to a held task is what ModifyTask is for.
+func TestADifferentTaskUnderAHeldXIDIsRefused(t *testing.T) {
 	st := store.New()
 	srv := testServer(st)
 
 	if _, err := srv.Process([]byte(activateXML), admfPeer(t)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
+	held, _ := st.Get(testXID)
+
 	retargeted := strings.Replace(activateXML, "2125552368", "5551234567", 1)
 	resp, err := srv.Process([]byte(retargeted), admfPeer(t))
 	if err != nil {
 		t.Fatalf("re-activate: %v", err)
 	}
-	if m := resp.Messages[0]; m.OK != ackOK {
-		t.Fatalf("re-activation = %+v, want acknowledged", m)
+	m := resp.Messages[0]
+	if m.ErrorInformation == nil || m.ErrorInformation.ErrorCode != errCodeXIDExists {
+		t.Fatalf("a different task under a held XID = %+v, want error %d", m, errCodeXIDExists)
 	}
-	task, ok := st.Get(testXID)
-	if !ok || task.Targets[0].Value != "5551234567" {
-		t.Errorf("stored task = %+v, want the re-activated target 5551234567", task)
-	}
-	if st.Len() != 1 {
-		t.Errorf("store holds %d tasks, want 1", st.Len())
+	if now, _ := st.Get(testXID); !reflect.DeepEqual(now, held) {
+		t.Errorf("the refused activation changed the held task: %+v, want %+v", now, held)
 	}
 }
 
@@ -679,18 +711,14 @@ func TestOnTaskChangeCarriesBothSides(t *testing.T) {
 		t.Errorf("retarget next = %+v, want the task as it becomes, targeting 5551234567", log.next[1])
 	}
 
-	// An ActivateTask naming a held XID is a replacement, not a fresh activation:
-	// the ADMF's restart-recovery path sends exactly this, and a POI told only about
-	// the new task cannot take down what it applied for the old one.
-	replaceXML := strings.Replace(activateXML, "2125552368", "5555550000", 1)
-	if _, err := srv.Process([]byte(replaceXML), admfPeer(t)); err != nil {
-		t.Fatalf("replacement activate: %v", err)
+	// An ActivateTask naming a held XID with a different task is refused with 2010, so
+	// it changes nothing and the POI hears nothing.
+	conflictXML := strings.Replace(activateXML, "2125552368", "5555550000", 1)
+	if _, err := srv.Process([]byte(conflictXML), admfPeer(t)); err != nil {
+		t.Fatalf("conflicting activate: %v", err)
 	}
-	if len(log.prev) != 3 {
-		t.Fatalf("replacement fired %d events, want 1", len(log.prev)-2)
-	}
-	if log.prev[2] == nil || log.prev[2].Targets[0].Value != "5551234567" {
-		t.Errorf("replacement prev = %+v, want the held task rather than nil", log.prev[2])
+	if len(log.prev) != 2 {
+		t.Fatalf("a refused activation over a held XID fired %d events, want none", len(log.prev)-2)
 	}
 
 	// Removal is the same event with no next.
@@ -699,8 +727,8 @@ func TestOnTaskChangeCarriesBothSides(t *testing.T) {
 	if _, err := srv.Process([]byte(deactivateXML), admfPeer(t)); err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}
-	if len(log.prev) != 4 || log.prev[3] == nil || log.next[3] != nil {
-		t.Fatalf("deactivation reported as prev=%v next=%v, want (task, nil)", log.prev[3], log.next[3])
+	if len(log.prev) != 3 || log.prev[2] == nil || log.next[2] != nil {
+		t.Fatalf("deactivation reported as prev=%v next=%v, want (task, nil)", log.prev[2], log.next[2])
 	}
 }
 
