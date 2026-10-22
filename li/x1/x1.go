@@ -847,6 +847,7 @@ func (s *Server) Process(body []byte, peer *x509.Certificate) (*X1Response, erro
 	}
 	resp := &X1Response{}
 	for _, m := range req.Messages {
+		m.collapseTokens()
 		resp.Messages = append(resp.Messages, s.applyAuthenticated(m, peer))
 	}
 

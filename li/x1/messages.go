@@ -58,6 +58,46 @@ type X1RequestMessage struct {
 	DID string `xml:"dId,omitempty"`
 }
 
+// collapseTokens puts every xs:token-derived field of the message into the value the schema
+// gives it, before anything reads one.
+//
+// The schema types the header identifiers and the task, product and destination identifiers
+// as xs:token or types derived from it, whose whiteSpace facet is
+// "collapse": surrounding whitespace is not part of the value and an internal run is one
+// space. A conformant peer may therefore send `<xId> 50b9… </xId>` across lines, and that is
+// the same identifier as the unpadded one -- comparing the raw text would refuse it as
+// malformed, or key a task under a spelling no later message repeats. correlationID is an
+// xs:nonNegativeInteger, whose lexical space also admits a leading "+". The version and the
+// deliveryType are xs:string, whose whitespace is part of the value, and are left as sent.
+func (m *X1RequestMessage) collapseTokens() {
+	for _, f := range []*string{&m.AdmfIdentifier, &m.NeIdentifier, &m.X1TransactionID, &m.XID, &m.DID} {
+		*f = collapseToken(*f)
+	}
+	if d := m.DestinationDetails; d != nil {
+		d.DID = collapseToken(d.DID)
+	}
+	if td := m.TaskDetails; td != nil {
+		td.XID = collapseToken(td.XID)
+		td.ProductID = collapseToken(td.ProductID)
+		for i := range td.ListOfDIDs {
+			td.ListOfDIDs[i] = collapseToken(td.ListOfDIDs[i])
+		}
+		for i := range td.DSIDs {
+			td.DSIDs[i] = collapseToken(td.DSIDs[i])
+		}
+		td.CorrelationID = strings.TrimPrefix(collapseToken(td.CorrelationID), "+")
+	}
+}
+
+// collapseToken applies XML Schema's "collapse" whitespace facet: tab, carriage return and
+// line feed become spaces, runs of spaces become one, and leading and trailing spaces go.
+// Only those four characters are XML whitespace; any other is part of the value.
+func collapseToken(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	}), " ")
+}
+
 // DestinationDetails is a delivery destination (TS 103 221-1 clause 6.3.1.2).
 // Field order follows its xs:sequence.
 type DestinationDetails struct {
