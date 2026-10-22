@@ -453,7 +453,9 @@ func TestDuplicateDestinationIsRefusedWithItsOwnCode(t *testing.T) {
 	}
 }
 
-// The schema types a DId as a TS 103 280 UUID. Accepting anything else means
+// The schema types a DId as a TS 103 280 UUID. Surrounding whitespace is not among the
+// refusals: UUID derives from xs:token, so the pattern applies to the collapsed value (see
+// TestTokenWhitespaceIsNotPartOfAnIdentifier). Accepting anything else means
 // interoperating with a provisioning function no conformant one would produce, and hiding
 // the format defect on both sides until it surfaces as a mismatch neither can attribute.
 func TestDestinationIdentifierMustBeAUUID(t *testing.T) {
@@ -461,7 +463,6 @@ func TestDestinationIdentifierMustBeAUUID(t *testing.T) {
 		"pre-shared-did",
 		"11111111-1111-4111-8111",                // too short
 		"11111111-1111-4111-8111-11111111111G",   // not hex
-		"11111111-1111-4111-8111-111111111111  ", // trailing space
 		"11111111111141118111111111111111",       // unhyphenated
 		"11111111-1111-4111-8111-11111111111A",   // uppercase, which the pattern excludes
 	} {
