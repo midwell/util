@@ -23,9 +23,15 @@ type recordingSender struct {
 	closeCount int
 	err        error
 	block      chan struct{}
+	// entered, when non-nil, receives once per Send as it starts, before any block, so a
+	// test can wait until the worker is holding a PDU.
+	entered chan struct{}
 }
 
 func (r *recordingSender) Send(*PDU) error {
+	if r.entered != nil {
+		r.entered <- struct{}{}
+	}
 	if r.block != nil {
 		<-r.block
 	}
@@ -99,11 +105,20 @@ func TestAsyncSenderErrorCallback(t *testing.T) {
 // PDUs are accepted (one in-flight in the worker, one queued), so the rest drop.
 func TestAsyncSenderDropsWhenFull(t *testing.T) {
 	block := make(chan struct{})
-	rec := &recordingSender{block: block}
+	rec := &recordingSender{block: block, entered: make(chan struct{}, 1)}
 	var mu sync.Mutex
 	drops := 0
 	a := NewAsyncSender(rec, 1, nil, func() { mu.Lock(); drops++; mu.Unlock() })
 
+	// The worker drains whatever is already queued into one batch, so the sends below only
+	// meet a full queue once it is blocked delivering. Wait for that first, rather than
+	// race it.
+	if err := a.Send(&PDU{Type: PDUTypeX2}); err != nil {
+		t.Fatalf("Send must never return an error: %v", err)
+	}
+	<-rec.entered
+
+	// The worker holds the first PDU and the queue holds one more; every other send drops.
 	const n = 10
 	for range n {
 		if err := a.Send(&PDU{Type: PDUTypeX2}); err != nil {
@@ -113,8 +128,8 @@ func TestAsyncSenderDropsWhenFull(t *testing.T) {
 	mu.Lock()
 	d := drops
 	mu.Unlock()
-	if d < n-2 {
-		t.Errorf("dropped %d of %d with the worker blocked and depth 1, want >= %d", d, n, n-2)
+	if d != n-1 {
+		t.Errorf("dropped %d of %d with the worker blocked and depth 1, want %d", d, n, n-1)
 	}
 
 	close(block) // let the worker drain so Close can finish
