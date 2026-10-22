@@ -289,12 +289,18 @@ func (a IPAddress) Canonical() string {
 	return a.IPv6
 }
 
+// errPortNamesNoEndpoint is Valid's answer for a UDPPort of 0: inside the schema's type, so
+// not a schema error, but not a port this element could deliver to.
+var errPortNamesNoEndpoint = errors.New("UDPPort 0 names no endpoint this element can deliver to")
+
 // Valid reports whether this port is one arm carrying a value a peer can be dialled on.
 //
-// Zero is refused because it is not a port: the schema types both arms as a TS 103 280
-// Port, and a destination stored with port 0 is one this element would dial and never
-// reach. The upper bound comes free from the uint16 the arms are typed as — a value above
-// it fails to decode, which is where a range check belongs when the type can carry it.
+// Each arm is held to its own TS 103 280 type: TCPPort is minExclusive 1, so 0 and 1 are
+// outside it and refused as malformed. UDPPort admits 0, which is schema-valid but names no
+// endpoint, so that case returns errPortNamesNoEndpoint for the caller to refuse as a
+// destination that cannot be created rather than as a malformed one. The upper bound comes
+// free from the uint16 the arms are typed as: a value above it fails to decode the whole
+// request, which is where a range check belongs when the type can carry it.
 func (p Port) Valid() error {
 	switch n := p.Arms(); {
 	case n == 0:
@@ -302,8 +308,11 @@ func (p Port) Valid() error {
 	case n > 1:
 		return fmt.Errorf("port populates %d arms of a choice; exactly one is valid", n)
 	}
-	if p.Value() == 0 {
-		return fmt.Errorf("port is 0, which names no endpoint")
+	switch {
+	case p.TCPPort != nil && *p.TCPPort <= 1:
+		return fmt.Errorf("TCPPort %d is outside its schema type, which starts at 2", *p.TCPPort)
+	case p.UDPPort != nil && *p.UDPPort == 0:
+		return errPortNamesNoEndpoint
 	}
 
 	return nil

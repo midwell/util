@@ -461,10 +461,10 @@ func TestDuplicateDestinationIsRefusedWithItsOwnCode(t *testing.T) {
 func TestDestinationIdentifierMustBeAUUID(t *testing.T) {
 	for _, did := range []string{
 		"pre-shared-did",
-		"11111111-1111-4111-8111",                // too short
-		"11111111-1111-4111-8111-11111111111G",   // not hex
-		"11111111111141118111111111111111",       // unhyphenated
-		"11111111-1111-4111-8111-11111111111A",   // uppercase, which the pattern excludes
+		"11111111-1111-4111-8111",              // too short
+		"11111111-1111-4111-8111-11111111111G", // not hex
+		"11111111111141118111111111111111",     // unhyphenated
+		"11111111-1111-4111-8111-11111111111A", // uppercase, which the pattern excludes
 	} {
 		t.Run(did, func(t *testing.T) {
 			srv := NewServer(store.New(), "neID")

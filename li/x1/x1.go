@@ -1583,6 +1583,11 @@ func destinationFrom(d DestinationDetails) (heldDestination, error) {
 		return heldDestination{}, codedError{errCodeSchemaError, err}
 	}
 	if err := ap.Port.Valid(); err != nil {
+		if errors.Is(err, errPortNamesNoEndpoint) {
+			// Inside the type, so not malformed: a destination this element cannot create.
+			return heldDestination{}, codedError{errCodeCreateDestFailed, err}
+		}
+
 		return heldDestination{}, codedError{errCodeSchemaError, err}
 	}
 
