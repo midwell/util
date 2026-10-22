@@ -549,7 +549,7 @@ both the risk and the evidence. In SD-Core the `Requester` is used by the SMF's 
 function, pointed at a UPF's LI_T3 endpoint, and a UPF runs this server. The reference
 simulator used for interoperability is an ADMF and MDF: an X1 *client* toward these network
 functions, never the responder to a request they send. The residual is that the endpoint URL is deployment configuration, so a
-third-party CC-POI is possible in principle; nothing this project ships or tests has one.
+third-party CC-POI is possible in principle; none is exercised here.
 
 ## What this disposition does not cover
 

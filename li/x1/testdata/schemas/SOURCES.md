@@ -168,7 +168,7 @@ promise.
 
 ## TS 33.128 — why ListOfDIDs is not optional for a 5G POI
 
-Table 6.2.2.1-1, *ActivateTask message for the IRI-POI in the AMF*, the row this project's
+Table 6.2.2.1-1, *ActivateTask message for the IRI-POI in the AMF*, the row SD-Core's
 AMF is governed by — `ListOfDIDs`, **M**:
 
 > Delivery endpoints for LI_X2 for the IRI-POI in the AMF. These delivery endpoints are
@@ -196,7 +196,7 @@ element is checked against:
 
 Read in context (clause 6.2.3.4) this table governs an IRI-POI *in the UPF*, triggered over
 LI_T2, and it exists only to report packet header information — "if approach 1 described in
-clause 6.2.3.9.1 is used for packet header information reporting". This project's UPF hosts
+clause 6.2.3.9.1 is used for packet header information reporting". SD-Core's UPF hosts
 no IRI-POI: it hosts a triggered CC-POI, which already takes its X3 destination from the
 task. So the table describes a function that is absent rather than one that is wrong.
 

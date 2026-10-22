@@ -333,8 +333,8 @@ type TaskDetails struct {
 	ProductID     string   `xml:"productID,omitempty"`     // UUIDv4; overrides XID in X2/X3 headers
 	// ListOfServiceTypes narrows a task to particular CSP service types. Bound so
 	// that it can be *refused*: encoding/xml drops elements a struct does not
-	// declare, so leaving it out meant an instruction to intercept less was
-	// silently discarded and everything delivered instead. Element names per
+	// declare, so without it an instruction to intercept less would be silently
+	// discarded and everything delivered instead. Element names per
 	// TS_103_221_01.xsd (listOfServiceTypes containing serviceType).
 	ListOfServiceTypes []string `xml:"listOfServiceTypes>serviceType,omitempty"`
 	// ListOfMediationDetails is accepted and disregarded, which is what TS 103 221-1
@@ -363,9 +363,9 @@ type TaskDetails struct {
 	TaskDetailsExtensions []MessageExtension `xml:"taskDetailsExtensions,omitempty"`
 	// ListOfTrafficPolicyReferences is refused. It is an "Ordered list  of
 	// TrafficPolicyReferences to be applied to the LITaskObject", defined in
-	// TS 103 120 clause 8.2.13, which this project does not implement. A policy that
-	// is meant to shape what a task collects, silently unapplied, is the
-	// listOfServiceTypes defect a second time.
+	// TS 103 120 clause 8.2.13, which these packages do not implement. A policy that
+	// is meant to shape what a task collects, silently unapplied, would be the same
+	// failure as an unapplied listOfServiceTypes.
 	ListOfTrafficPolicyReferences []string `xml:"listOfTrafficPolicyReferences>trafficPolicyReference,omitempty"`
 }
 
