@@ -76,7 +76,7 @@ func Load(certPath, keyPath, caCertPath string) (*Material, error) {
 // is refused.
 func caPool(bundle []byte) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
-	anchors := 0
+	anchors, skipped := 0, 0
 
 	for rest := bundle; ; {
 		var block *pem.Block
@@ -91,6 +91,7 @@ func caPool(bundle []byte) (*x509.CertPool, error) {
 			continue
 		}
 		if !c.IsCA || !c.BasicConstraintsValid {
+			skipped++
 			continue
 		}
 		pool.AddCert(c)
@@ -98,7 +99,11 @@ func caPool(bundle []byte) (*x509.CertPool, error) {
 	}
 
 	if anchors == 0 {
-		return nil, fmt.Errorf("contains no CA certificate")
+		// Say why: a root without the extension (an X.509 v1 certificate, or one issued
+		// with no extensions configured) is skipped by the rule above, and "no CA" alone
+		// would send an operator looking at the wrong file.
+		return nil, fmt.Errorf("contains no CA certificate: %d certificate(s) skipped for "+
+			"lacking basicConstraints with CA:TRUE", skipped)
 	}
 	return pool, nil
 }

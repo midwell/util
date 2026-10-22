@@ -119,8 +119,14 @@ func TestABundleWithNoCAIsRefused(t *testing.T) {
 		}
 	}
 
-	if _, err := Load(cp, kp, ap); err == nil || !strings.Contains(err.Error(), "no CA") {
+	_, err := Load(cp, kp, ap)
+	if err == nil || !strings.Contains(err.Error(), "no CA") {
 		t.Errorf("Load of a bundle holding only a leaf = %v, want a refusal naming the missing CA", err)
+	}
+	// And why: a root issued without the extension is skipped by the same rule, so the error
+	// must name the rule rather than leave the operator to suspect the wrong file.
+	if err != nil && !strings.Contains(err.Error(), "1 certificate(s) skipped for lacking basicConstraints") {
+		t.Errorf("the refusal does not say why the certificate was skipped: %v", err)
 	}
 }
 
