@@ -192,8 +192,12 @@ func taskResponseDetails(ind int, t types.InterceptTask, faults []X1Error) strin
 	b.WriteString(open(ind+2, "taskDetails"))
 	b.WriteString(el(ind+4, "xId", escapeXML(string(t.XID))))
 	b.WriteString(open(ind+4, "targetIdentifiers"))
-	for _, id := range t.Targets {
-		b.WriteString(el(ind+6, "targetIdentifier", targetXML(id)))
+	for i, id := range t.Targets {
+		element := ""
+		if i < len(t.TargetElements) {
+			element = t.TargetElements[i]
+		}
+		b.WriteString(el(ind+6, "targetIdentifier", targetXMLAs(id, element)))
 	}
 	b.WriteString(closeTag(ind+4, "targetIdentifiers"))
 	b.WriteString(el(ind+4, "deliveryType", deliveryTypeOf(t.Products)))

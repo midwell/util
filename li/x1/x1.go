@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -1691,12 +1692,22 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 	// task. Taking the ones we understand and dropping the rest would narrow the
 	// interception below what was ordered while answering that it had been applied.
 	targets := make([]types.TargetIdentifier, 0, len(td.TargetIdentifiers))
+	elements := make([]string, 0, len(td.TargetIdentifiers))
 	for _, ti := range td.TargetIdentifiers {
 		mapped, err := mapTarget(ti)
 		if err != nil {
 			return types.InterceptTask{}, err
 		}
 		targets = append(targets, mapped...)
+		// The element the identifier was requested as, so the answers can use it. The
+		// extension arm yields several criteria and names no plain element.
+		element := ""
+		if arm, ok := plainArm(ti); ok {
+			element = arm.element
+		}
+		for range mapped {
+			elements = append(elements, element)
+		}
 	}
 	products, err := deliveryProducts(td.DeliveryType)
 	if err != nil {
@@ -1742,14 +1753,15 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 	}
 
 	return types.InterceptTask{
-		XID:           types.XID(td.XID),
-		Targets:       targets,
-		DIDs:          td.ListOfDIDs,
-		Products:      products,
-		ProductID:     types.XID(td.ProductID),
-		CorrelationID: correlation,
-		Deliveries:    deliveries,
-		RecordScope:   recordScope(td),
+		XID:            types.XID(td.XID),
+		Targets:        targets,
+		TargetElements: elements,
+		DIDs:           td.ListOfDIDs,
+		Products:       products,
+		ProductID:      types.XID(td.ProductID),
+		CorrelationID:  correlation,
+		Deliveries:     deliveries,
+		RecordScope:    recordScope(td),
 	}, nil
 }
 
@@ -1773,7 +1785,7 @@ func targetXML(t types.TargetIdentifier) string {
 	// the X2 conditional attribute of TS 103 221-2 clause 5.3.18 renders the same
 	// identifiers: one mapping, so the two interfaces cannot come to disagree about
 	// what an identifier is called. The prefix is this document's, not the mapping's.
-	if el, ok := t.Type.XMLElement(); ok {
+	if el, ok := t.Element(); ok {
 		return "<ns1:" + el + ">" + escapeXML(t.Value) + "</ns1:" + el + ">"
 	}
 
@@ -1791,6 +1803,22 @@ func targetXML(t types.TargetIdentifier) string {
 		"<ext:UPFLIT3TargetIdentifier>" + arm + "</ext:UPFLIT3TargetIdentifier>" +
 		"</ext:UPFLIT3TargetIdentifierExtensions>" +
 		"</ns1:targetIdentifierExtension>"
+}
+
+// targetXMLAs renders an identifier as the element it was requested as, when that is
+// known, and otherwise as targetXML would.
+//
+// The identifier types fold several elements into one — supinai into SUPI, peiImeisv
+// into PEI, e164Number into GPSI — so rendering a stored identifier from its type alone
+// answered a request in a different vocabulary from the one it used, and for an IMEISV
+// in one the schema forbids. The value was checked against the requested element's own
+// type when the task was accepted, so rendering it back there is valid.
+func targetXMLAs(t types.TargetIdentifier, element string) string {
+	if element == "" {
+		return targetXML(t)
+	}
+
+	return "<ns1:" + element + ">" + escapeXML(t.Value) + "</ns1:" + element + ">"
 }
 
 // extensionTargetArm renders the 3GPP LI_T3 arm for a packet-detection criterion.
@@ -1846,45 +1874,39 @@ func hasDelivery(endpoints []types.DeliveryEndpoint, t types.DeliveryType) bool 
 // a slice because one arm — the LI_T3 extension — is itself a list, and every
 // member of that list is a criterion the task ordered.
 func mapTarget(t TargetIdentifier) ([]types.TargetIdentifier, error) {
-	switch {
-	case t.SUPIIMSI != "":
-		return one(types.TargetSUPI, t.SUPIIMSI), nil
-	case t.IMSI != "":
-		return one(types.TargetSUPI, t.IMSI), nil
-	case t.SUPINAI != "":
-		return one(types.TargetSUPI, t.SUPINAI), nil
-	case t.PEIIMEI != "":
-		return one(types.TargetPEI, t.PEIIMEI), nil
-	case t.PEIIMEISV != "":
-		return one(types.TargetPEI, t.PEIIMEISV), nil
-	case t.GPSIMSISDN != "":
-		return one(types.TargetGPSI, t.GPSIMSISDN), nil
-	case t.E164Number != "":
-		return one(types.TargetGPSI, t.E164Number), nil
-	// The plain TS 103 221-1 criteria of table 6.2.3-7. These come after the
-	// subscriber identifiers deliberately: a task carrying both is targeting a
-	// subscriber, and the subscriber identifier is the one an IRI-POI can act on.
+	// A plain arm is stored in its canonical spelling, so the task matches the identifier
+	// a consumer builds however the peer spelled it. The switch below keeps the order of
+	// precedence plainArm shares with it.
+	if arm, ok := plainArm(t); ok {
+		value, err := canonicalArmValue(arm)
+		if err != nil {
+			return nil, err
+		}
+		if arm.element == elGTPUTunnelID {
+			// canonicalArmValue has already made value a decimal within the schema's
+			// range, so the parse cannot fail; checked anyway rather than assumed.
+			if n, perr := strconv.ParseUint(value, 10, 64); perr != nil || n > math.MaxUint32 {
+				// Schema-valid, one past what a TEID holds: no tunnel carries it, so the
+				// criterion could never match and the task would be acknowledged to
+				// produce nothing.
+				return nil, fmt.Errorf("gtpuTunnelId %s is not a TEID", value)
+			}
+		}
+
+		return one(armTypes[arm.element], value), nil
+	}
+
+	// The subscriber identifiers come first in plainArm's order deliberately: a task
+	// carrying both is targeting a subscriber, and the subscriber identifier is the one
+	// an IRI-POI can act on.
 	//
-	// That precedence governs a task's `targetIdentifiers` **list**, where a
-	// subscriber identifier and a packet criterion are separate, legitimate entries
-	// combined as alternatives. It does not govern the arms *within* one
-	// targetIdentifier: the schema defines that as an xs:choice, so two populated
-	// arms cannot occur, and malformedTaskIdentifiers refuses the message before
-	// this is reached rather than letting the order below decide. The two rules are
-	// about different levels of the structure — this switch is not what settles a
-	// multi-arm message, and reading it as though it were is what left the
-	// cardinality unchecked.
-	case t.GTPUTunnelID != "":
-		return one(types.TargetFTEID, t.GTPUTunnelID), nil
-	case t.IPv4Address != "":
-		return one(types.TargetUEIPv4, t.IPv4Address), nil
-	case t.IPv6Address != "":
-		return one(types.TargetUEIPv6, t.IPv6Address), nil
-	case t.TCPPort != "":
-		return one(types.TargetTCPPort, t.TCPPort), nil
-	case t.UDPPort != "":
-		return one(types.TargetUDPPort, t.UDPPort), nil
-	case t.Extension != nil:
+	// That precedence governs a task's `targetIdentifiers` **list**, where a subscriber
+	// identifier and a packet criterion are separate, legitimate entries combined as
+	// alternatives. It does not govern the arms *within* one targetIdentifier: the schema
+	// defines that as an xs:choice, so two populated arms cannot occur, and
+	// malformedTaskIdentifiers refuses the message before this is reached rather than
+	// letting an order decide.
+	if t.Extension != nil {
 		return mapExtensionTarget(t.Extension)
 	}
 
@@ -2121,44 +2143,183 @@ func malformedTaskIdentifiers(td TaskDetails) error {
 	return nil
 }
 
-// malformedTargetValue checks the arms whose schema type restricts what they may carry.
+// malformedTargetValue checks the populated plain arm's value against its schema type.
 //
-// Only the arms with a restriction this element can state: the two addresses against their
-// families, and the two transport ports against the range of a port. The subscriber
-// identifiers are left to validIdentifier's own rules, and the extension arm's contents
-// are checked by mapUPFLIT3Identifier, which refuses each criterion it cannot use.
+// Every typed arm is checked, the subscriber identifiers included: each is a TS 103 280
+// pattern type (an IMSI is six to fifteen digits, an IMEI fourteen, an IMEISV sixteen, an
+// MSISDN or E.164 number one to fifteen), and a value outside it was acknowledged, stored
+// as a criterion no session could ever match, and echoed back as this element's account
+// of what it holds. Only supinai is unrestricted, because the schema types an NAI as a
+// plain string. The extension arm's contents are checked by mapUPFLIT3Identifier, which
+// refuses each criterion it cannot use.
 func malformedTargetValue(t TargetIdentifier) error {
-	for _, a := range []struct {
-		name, value string
-		want4       bool
-	}{
-		{"ipv4Address", t.IPv4Address, true},
-		{"ipv6Address", t.IPv6Address, false},
-	} {
-		if a.value == "" {
-			continue
-		}
-		ip, err := netip.ParseAddr(a.value)
-		if err != nil || ip.Is4() != a.want4 {
-			return refuse(errCodeSchemaError, "%s %q is not an %s address", a.name, a.value, a.name)
-		}
+	arm, ok := plainArm(t)
+	if !ok {
+		return nil
 	}
-	for _, p := range []struct{ name, value string }{
-		{"tcpPort", t.TCPPort},
-		{"udpPort", t.UDPPort},
+	_, err := canonicalArmValue(arm)
+
+	return err
+}
+
+// The plain TargetIdentifier elements this element models, by their schema names.
+const (
+	elSUPIIMSI     = "supiimsi"
+	elIMSI         = "imsi"
+	elSUPINAI      = "supinai"
+	elPEIIMEI      = "peiImei"
+	elPEIIMEISV    = "peiImeisv"
+	elGPSIMSISDN   = "gpsiMsisdn"
+	elE164Number   = "e164Number"
+	elGTPUTunnelID = "gtpuTunnelId"
+	elIPv4Address  = "ipv4Address"
+	elIPv6Address  = "ipv6Address"
+	elTCPPort      = "tcpPort"
+	elUDPPort      = "udpPort"
+)
+
+// targetArm is one plain TargetIdentifier arm: the element that carried it and its text.
+type targetArm struct {
+	element, value string
+}
+
+// plainArm returns the first populated plain arm of t, in mapTarget's order of
+// precedence, or false when t carries none — only the extension, or nothing modelled.
+func plainArm(t TargetIdentifier) (targetArm, bool) {
+	for _, a := range []targetArm{
+		{elSUPIIMSI, t.SUPIIMSI},
+		{elIMSI, t.IMSI},
+		{elSUPINAI, t.SUPINAI},
+		{elPEIIMEI, t.PEIIMEI},
+		{elPEIIMEISV, t.PEIIMEISV},
+		{elGPSIMSISDN, t.GPSIMSISDN},
+		{elE164Number, t.E164Number},
+		{elGTPUTunnelID, t.GTPUTunnelID},
+		{elIPv4Address, t.IPv4Address},
+		{elIPv6Address, t.IPv6Address},
+		{elTCPPort, t.TCPPort},
+		{elUDPPort, t.UDPPort},
 	} {
-		if p.value == "" {
-			continue
-		}
-		// ParseUint with a 16-bit size is the range: the schema types both as a
-		// TS 103 280 Port, and a value outside it names no endpoint and no traffic.
-		if _, err := strconv.ParseUint(p.value, 10, 16); err != nil {
-			return refuse(errCodeSchemaError,
-				"%s %q is not a port number in the range the schema defines", p.name, p.value)
+		if a.value != "" {
+			return a, true
 		}
 	}
 
-	return nil
+	return targetArm{}, false
+}
+
+// armTypes is the identifier type each plain arm is matched as.
+var armTypes = map[string]types.TargetIdentifierType{
+	elSUPIIMSI: types.TargetSUPI, elIMSI: types.TargetSUPI, elSUPINAI: types.TargetSUPI,
+	elPEIIMEI: types.TargetPEI, elPEIIMEISV: types.TargetPEI,
+	elGPSIMSISDN: types.TargetGPSI, elE164Number: types.TargetGPSI,
+	elGTPUTunnelID: types.TargetFTEID,
+	elIPv4Address:  types.TargetUEIPv4, elIPv6Address: types.TargetUEIPv6,
+	elTCPPort: types.TargetTCPPort, elUDPPort: types.TargetUDPPort,
+}
+
+// canonicalArmValue checks an arm's value against its schema type and returns it in one
+// canonical spelling, or a 1010 refusal.
+//
+// **Canonical, because matching compares strings.** The pattern types are xs:token, whose
+// surrounding whitespace the schema collapses, and the integer types admit a sign and
+// leading zeros ("+80", "0080"), so one value has several valid spellings — and a task
+// stored in one of them never equalled the identifier a consumer built in another. The
+// IPv6 type admits only the expanded lowercase form, so the parseable compressed forms a
+// peer may send are stored expanded, which is also the form the answers must use. Nothing
+// compares a stored IPv6 criterion as text today — the UPF refuses one outright — so the
+// spelling chosen costs no consumer a match.
+//
+// The value is not quoted in the refusal: for the subscriber identifiers it is a
+// subscriber's identity, and the ADMF knows what it sent.
+func canonicalArmValue(a targetArm) (string, error) {
+	bad := func() (string, error) {
+		return "", refuse(errCodeSchemaError, "%s does not conform to its schema type", a.element)
+	}
+	tok := strings.TrimSpace(a.value)
+
+	switch a.element {
+	case elSUPIIMSI, elIMSI:
+		if !digitsBetween(tok, 6, 15) {
+			return bad()
+		}
+
+		return tok, nil
+	case elPEIIMEI:
+		if !digitsBetween(tok, 14, 14) {
+			return bad()
+		}
+
+		return tok, nil
+	case elPEIIMEISV:
+		if !digitsBetween(tok, 16, 16) {
+			return bad()
+		}
+
+		return tok, nil
+	case elGPSIMSISDN, elE164Number:
+		if !digitsBetween(tok, 1, 15) {
+			return bad()
+		}
+
+		return tok, nil
+	case elSUPINAI:
+		// xs:string, so neither restricted nor whitespace-collapsed.
+		return a.value, nil
+	case elGTPUTunnelID:
+		// GtpTunnelId is an xs:integer from 0 to 4294967296. The upper bound is one past
+		// what a TEID holds; mapTarget refuses it as a criterion this element cannot use.
+		return schemaInteger(tok, 0, 1<<32, bad)
+	case elTCPPort:
+		// TS 103 280 TCPPort is minExclusive 1, so 1 is outside it.
+		return schemaInteger(tok, 2, 65535, bad)
+	case elUDPPort:
+		return schemaInteger(tok, 0, 65535, bad)
+	case elIPv4Address:
+		ip, err := netip.ParseAddr(tok)
+		if err != nil || !ip.Is4() {
+			return bad()
+		}
+
+		return ip.String(), nil
+	case elIPv6Address:
+		// A zone and an IPv4-mapped address both parse, and neither is an address of the
+		// schema's IPv6 type: refused rather than stored in a form the answers could only
+		// render into the wrong arm.
+		ip, err := netip.ParseAddr(tok)
+		if err != nil || ip.Is4() || ip.Is4In6() || ip.Zone() != "" {
+			return bad()
+		}
+
+		return expandIPv6(ip.AsSlice()), nil
+	}
+
+	return bad()
+}
+
+// schemaInteger checks an xs:integer lexical value against a range and returns it in
+// canonical decimal.
+func schemaInteger(tok string, lo, hi int64, bad func() (string, error)) (string, error) {
+	n, err := strconv.ParseInt(tok, 10, 64)
+	if err != nil || n < lo || n > hi {
+		return bad()
+	}
+
+	return strconv.FormatInt(n, 10), nil
+}
+
+// digitsBetween reports whether s is all decimal digits with a length in [lo, hi].
+func digitsBetween(s string, lo, hi int) bool {
+	if len(s) < lo || len(s) > hi {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // populatedArms counts how many arms of the TargetIdentifier choice carry a value.
@@ -2185,6 +2346,11 @@ func populatedArms(t TargetIdentifier) int {
 	if t.Extension != nil {
 		n++
 	}
+	// An arm this element does not model is still an arm: counting it is what refuses a
+	// choice carrying one modelled and one unmodelled arm, rather than narrowing it to the
+	// one understood. A choice carrying only unmodelled arms counts one here and falls
+	// through to mapTarget's refusal with the operation's code, as before.
+	n += len(t.Unmodelled)
 
 	return n
 }
@@ -2493,6 +2659,12 @@ func validIdentifier(field, value string) error {
 	return nil
 }
 
+// deliveryProducts maps a deliveryType onto the products it orders.
+//
+// DeliveryType is a closed enumeration in the schema, so a value outside it is the
+// message violating its own type: 1010. Uncoded, it became 3000 on a task and 1000 on a
+// destination — "cannot be applied here" and "something went wrong", neither of which
+// is what was wrong.
 func deliveryProducts(dt string) ([]types.ProductType, error) {
 	switch dt {
 	case deliveryX2Only:

@@ -69,7 +69,9 @@ func TestParseLIT3Criteria(t *testing.T) {
 		},
 		{
 			"UE IPv6 address", `<ns1:ipv6Address>2001:db8::9</ns1:ipv6Address>`,
-			types.TargetIdentifier{Type: types.TargetUEIPv6, Value: "2001:db8::9"},
+			// Stored in the schema's expanded spelling whatever form the peer sent, so the
+			// answers render a value the schema's IPv6 pattern accepts.
+			types.TargetIdentifier{Type: types.TargetUEIPv6, Value: "2001:0db8:0000:0000:0000:0000:0000:0009"},
 		},
 		{
 			"UE TCP port", `<ns1:tcpPort>443</ns1:tcpPort>`,
@@ -321,7 +323,7 @@ func TestReportedIdentifiersRoundTrip(t *testing.T) {
 		{Type: types.TargetPEI, Value: "35342500000001"},
 		{Type: types.TargetGPSI, Value: "4915123456789"},
 		{Type: types.TargetUEIPv4, Value: "10.250.0.9"},
-		{Type: types.TargetUEIPv6, Value: "2001:db8::9"},
+		{Type: types.TargetUEIPv6, Value: "2001:0db8:0000:0000:0000:0000:0000:0009"},
 		{Type: types.TargetTCPPort, Value: "443"},
 		{Type: types.TargetUDPPort, Value: "2152"},
 		{Type: types.TargetFSEID, Value: "14426627323429955319"},

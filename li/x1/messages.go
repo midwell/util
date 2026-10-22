@@ -329,6 +329,18 @@ type TargetIdentifier struct {
 	// one modeled is the 3GPP LI_T3 packet-detection criteria a CC Triggering
 	// Function sends a triggered CC-POI.
 	Extension *TargetIdentifierExtension `xml:"targetIdentifierExtension,omitempty"`
+	// Unmodelled collects every child element no field above claims — an arm TS 103
+	// 221-1 defines that this element does not model, such as macAddress. encoding/xml
+	// otherwise drops such an element silently, and a choice carrying one modelled and
+	// one unmodelled arm then looked like a single modelled arm: the element narrowed
+	// the interception to the arm it understood and acknowledged it.
+	Unmodelled []UnmodelledElement `xml:",any"`
+}
+
+// UnmodelledElement is one child element a decoded structure has no field for. Only its
+// name is kept: it is evidence that the element was present, not something to act on.
+type UnmodelledElement struct {
+	XMLName xml.Name
 }
 
 // ExtensionOwner3GPP is the Extension/Owner value for identifier types 3GPP
