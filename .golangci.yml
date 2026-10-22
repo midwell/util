@@ -97,6 +97,21 @@ linters:
       - common-false-positives
       - legacy
       - std-error-handling
+    rules:
+      # li's message structs mirror the field order of the TS 33.128 ASN.1 and TS 103 221-1
+      # XSD sequences they encode (encoding/xml marshals in field order), and its test tables
+      # use positional literals, so reordering fields for alignment would trade conformance
+      # and readability for GC scan bytes. The network-function repositories disable this
+      # check entirely.
+      - path: ^li/
+        linters:
+          - govet
+        text: fieldalignment
+      # li's tests assert against record and field names and disposition text taken from the
+      # specification tables; naming each repeated literal would hide what is being checked.
+      - path: ^li/.*_test\.go$
+        linters:
+          - goconst
     paths:
       - third_party$
       - builtin$
