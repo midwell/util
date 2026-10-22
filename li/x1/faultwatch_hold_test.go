@@ -38,9 +38,9 @@ func (c *holdClock) recover(t *testing.T, w *DestinationWatcher, admf *collectin
 
 // TestADestinationFaultIsRetractedWhenItsDestinationLeavesTheHealthSet: a destination fails,
 // and then its last task is deactivated, so it is no longer among the destinations the
-// supplier lists. Retracting only on a healthy sample left the fault standing at the ADMF
-// indefinitely, against clause 5.3's "the NE shall also indicate that a fault has been
-// cleared" — nothing would ever sample that destination again.
+// supplier lists. Nothing will sample that destination again, so a fault retracted only on a
+// healthy sample would stand at the ADMF indefinitely, against clause 5.3's "the NE shall also
+// indicate that a fault has been cleared".
 func TestADestinationFaultIsRetractedWhenItsDestinationLeavesTheHealthSet(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -72,8 +72,8 @@ func TestADestinationFaultIsRetractedWhenItsDestinationLeavesTheHealthSet(t *tes
 
 // TestTheElementFaultIsRetractedWhenItsLastUnnamedDestinationGoes: the same at element scope.
 // The un-identified destinations that raised the element fault are gone, so nothing remains
-// that could recover — and the scope's "say nothing without such a destination" rule, right
-// for a fault this watcher never raised, left its own fault standing for good.
+// that could recover. The scope's "say nothing without such a destination" rule is right for
+// a fault this watcher never raised, and must not leave its own fault standing for good.
 func TestTheElementFaultIsRetractedWhenItsLastUnnamedDestinationGoes(t *testing.T) {
 	admf := newCollectingADMF(t)
 	rep := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -96,9 +96,10 @@ func TestTheElementFaultIsRetractedWhenItsLastUnnamedDestinationGoes(t *testing.
 }
 
 // TestAFlappingDestinationIsReportedOncePerHold: reachability is the last exchange's outcome,
-// and each failed delivery nudges a sample, so a destination failing every other send used to
-// produce a fault and its retraction per failure. Inside one hold it now produces the fault
-// once and no retraction; the retraction comes when it has stayed healthy for an interval.
+// and each failed delivery nudges a sample, so without a hold a destination failing every
+// other send would produce a fault and its retraction per failure. Inside one hold it
+// produces the fault once and no retraction; the retraction comes when it has stayed healthy
+// for an interval.
 func TestAFlappingDestinationIsReportedOncePerHold(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -130,8 +131,8 @@ func TestAFlappingDestinationIsReportedOncePerHold(t *testing.T) {
 }
 
 // TestTheReportRecordStaysBoundedUnderTaskReports: a triggering function reports per XID, and
-// a task-scoped report has no retraction. Both of the reporter's records used to keep an entry
-// for every XID that ever had a fault — reported forever, and lastSent long past the window in
+// a task-scoped report has no retraction. Neither of the reporter's records may keep an entry
+// for every XID that ever had a fault — reported forever, or lastSent long past the window in
 // which it could suppress anything.
 func TestTheReportRecordStaysBoundedUnderTaskReports(t *testing.T) {
 	r := NewReporter("https://admf.invalid", "admfID", "neID", nil)

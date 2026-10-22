@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,89 +63,40 @@ func (a *collectingADMF) counting(substrings ...string) map[string]int {
 	return out
 }
 
-// reachability is a delivery destination whose reachability a test controls. It is
-// the shape both Pool.UnreachableAmong and the UPF's own unreachableDestinations
-// answer from — a sender that knows whether it can currently reach its endpoint —
-// so a watcher built against the count function works against either.
+// reachability is a delivery destination whose reachability a test controls, answered
+// from state it holds — the shape every supplier the watcher is used with answers from.
 type reachability struct {
-	mu          sync.Mutex
-	unreachable map[string]bool
-	inUse       []string
+	down atomic.Bool
 }
 
-func newReachability(inUse ...string) *reachability {
-	return &reachability{unreachable: make(map[string]bool), inUse: inUse}
-}
-
-func (r *reachability) set(addr string, down bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.unreachable[addr] = down
-}
-
-// count is the shape MDFUnreachableProbe already takes, and the shape the watcher
-// takes for the same reason: it says how many, and cannot say which.
-func (r *reachability) count() (unreachable, inUse int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, addr := range r.inUse {
-		inUse++
-		if r.unreachable[addr] {
-			unreachable++
-		}
-	}
-
-	return unreachable, inUse
-}
-
-// TestTheFaultChannelSaysNothingWhenAFaultEnds is the before-evidence for this
-// change, and it is here rather than in a lab notebook because the claim it
-// records — "an ADMF told a fault began is never told it ended" — is the whole
-// premise. Inferring it from the absence of a grep hit is not the same as watching
-// the channel stay silent.
-//
-// It also records the other half: what does reach the ADMF names no destination,
-// so an element with several provisioned destinations reports that one of them is
-// unreachable and cannot say which.
-func TestTheFaultChannelSaysNothingWhenAFaultEnds(t *testing.T) {
+// TestAnElementReportNamesNoDestination: a report at network-element scope says that
+// something is wrong with the element and never which destination, so an element with
+// several provisioned destinations that needs to say which uses the destination scope
+// (TestAFaultIsReportedAtDestinationScopeAndThenCleared).
+func TestAnElementReportNamesNoDestination(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
 
-	// A destination fails, which is what the delivery sites notice today.
 	if err := r.ReportNEIssue(NEIssueMDFUnreachable, "MDF3 X3 delivery failed"); err != nil {
 		t.Fatalf("ReportNEIssue: %v", err)
 	}
-	// ... and recovers. There is no call for this, which is the finding.
-	// Nothing in the module emits FaultCleared.
 
-	got := admf.counting("mdfUnreachable", neIssueFaultCleared, "10.0.2.5")
-
-	if got["mdfUnreachable"] != 1 {
-		t.Fatalf("the failure itself was reported %d times, want 1", got["mdfUnreachable"])
+	reports := admf.reports()
+	if len(reports) != 1 {
+		t.Fatalf("sent %d reports, want 1", len(reports))
 	}
-	if got[neIssueFaultCleared] != 0 {
-		t.Errorf("something already emits %s; this change's premise needs re-checking", neIssueFaultCleared)
+	if !strings.Contains(reports[0], `xsi:type="ns1:ReportNEIssueRequest"`) {
+		t.Errorf("not an element-scoped report:\n%s", reports[0])
 	}
-	// The report is network-element scoped: it names the condition and not the
-	// destination, so an ADMF holding several cannot act on it.
-	for _, body := range admf.reports() {
-		if strings.Contains(body, "ReportDestinationIssueRequest") {
-			t.Error("a destination-scoped report already exists; this change's premise needs re-checking")
-		}
+	if strings.Contains(reports[0], "dId") {
+		t.Errorf("an element-scoped report names a destination:\n%s", reports[0])
 	}
 }
 
-// TestTheThrottleCannotDistinguishTwoDestinations pins the second half of why the
-// existing record cannot serve. It is keyed by issue type alone, so two
-// destinations failing inside one window are one report — and which one survives
-// is whichever failed first.
-//
-// This is not a defect in the throttle: one issue type was the right key while
-// every report was network-element scoped. It becomes wrong the moment a report
-// names a destination, which is what makes re-keying part of this change rather
-// than a tidy-up.
-func TestTheThrottleCannotDistinguishTwoDestinations(t *testing.T) {
+// TestAnElementReportIsThrottledPerCondition: a condition that recurs inside the throttle
+// window is reported once — a persistent fault hit on every delivery must not flood the
+// ADMF.
+func TestAnElementReportIsThrottledPerCondition(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
 
@@ -155,52 +107,12 @@ func TestTheThrottleCannotDistinguishTwoDestinations(t *testing.T) {
 	}
 
 	if n := admf.counting("mdfUnreachable")["mdfUnreachable"]; n != 1 {
-		t.Errorf("two reports of one issue type produced %d messages, want 1 — the throttle keys on type alone", n)
+		t.Errorf("one condition reported twice inside its window produced %d messages, want 1", n)
 	}
 }
 
-// TestReachabilityIsReObservableAndDoesNoIO is the assertion fault clearing
-// rests on: a fault that cannot be re-observed cannot be observed
-// to end, so there would be no clearing edge to report.
-//
-// Both suppliers answer the same shape — Pool.UnreachableAmong for the SMF and
-// AMF, liShipper.unreachableDestinations for the UPF — from state each sender
-// already holds, through x2x3.Reachability. That is what lets the watcher live
-// here, parameterised by the count function, rather than being written per network
-// function.
-func TestReachabilityIsReObservableAndDoesNoIO(t *testing.T) {
-	dests := newReachability("10.0.2.5:9000", "10.0.2.6:9000")
-
-	if unreachable, inUse := dests.count(); unreachable != 0 || inUse != 2 {
-		t.Fatalf("count() = (%d, %d), want (0, 2)", unreachable, inUse)
-	}
-
-	dests.set("10.0.2.5:9000", true)
-	if unreachable, _ := dests.count(); unreachable != 1 {
-		t.Errorf("a destination that went down is not observable: unreachable = %d, want 1", unreachable)
-	}
-
-	// The same question asked again gives the answer that holds now, which is what
-	// makes an ending detectable at all.
-	dests.set("10.0.2.5:9000", false)
-	if unreachable, _ := dests.count(); unreachable != 0 {
-		t.Errorf("a destination that recovered is not observable: unreachable = %d, want 0", unreachable)
-	}
-
-	// Cheap enough to sample on a timer. A supplier that grew a network call would
-	// put delivery latency on a schedule inside the LI plane, which is the reason
-	// MDFUnreachableProbe documents its own supplier as I/O-free.
-	start := time.Now()
-	for range 10000 {
-		dests.count()
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("10000 samples took %v; the supplier is doing more than reading state it holds", elapsed)
-	}
-}
-
-// TestCarryingTheIdentifierDidNotChangeDelivery is the assertion that matters most
-// in this change, and it is about something the change did *not* do.
+// TestCarryingTheIdentifierDidNotChangeDelivery: carrying the destination identifier for
+// reporting must not change delivery.
 //
 // Endpoints are deduplicated by address: two destination identifiers naming one
 // address deliver one copy. Putting an identifier on the endpoint makes two
@@ -232,7 +144,7 @@ func TestCarryingTheIdentifierDidNotChangeDelivery(t *testing.T) {
 }
 
 // TestAProvisionedDestinationCarriesItsIdentifier: the identifier survives the
-// boundary between provisioning and delivery, which is where it used to be dropped.
+// boundary between provisioning and delivery.
 func TestAProvisionedDestinationCarriesItsIdentifier(t *testing.T) {
 	srv := NewServer(store.New(), "neID", WithADMF("admfID"))
 
@@ -260,18 +172,16 @@ func TestAProvisionedDestinationCarriesItsIdentifier(t *testing.T) {
 	}
 }
 
-// TestAFaultIsReportedAtDestinationScopeAndThenCleared is the change, end to end at
-// the reporter: a destination fails and the ADMF is told which one; it recovers and
-// the ADMF is told that too.
+// TestAFaultIsReportedAtDestinationScopeAndThenCleared, end to end at the reporter: a
+// destination fails and the ADMF is told which one; it recovers and the ADMF is told
+// that too.
 func TestAFaultIsReportedAtDestinationScopeAndThenCleared(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
 
-	dests := newReachability(endpointA)
+	dests := &reachability{}
 	health := func() []DestinationHealth {
-		unreachable, _ := dests.count()
-
-		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: unreachable > 0}}
+		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: dests.down.Load()}}
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
 	clock := holdClockOn(w)
@@ -283,7 +193,7 @@ func TestAFaultIsReportedAtDestinationScopeAndThenCleared(t *testing.T) {
 		t.Fatalf("a healthy element sent %d reports, want 0", n)
 	}
 
-	dests.set(endpointA, true)
+	dests.down.Store(true)
 	w.sample()
 
 	reports := admf.reports()
@@ -300,7 +210,7 @@ func TestAFaultIsReportedAtDestinationScopeAndThenCleared(t *testing.T) {
 		}
 	}
 
-	dests.set(endpointA, false)
+	dests.down.Store(false)
 	clock.recover(t, w, admf)
 
 	reports = admf.reports()
@@ -323,20 +233,18 @@ func TestRecoveryIsNotThrottledAgainstTheFailure(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
 
-	dests := newReachability(endpointA)
+	dests := &reachability{}
 	health := func() []DestinationHealth {
-		unreachable, _ := dests.count()
-
-		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: unreachable > 0}}
+		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: dests.down.Load()}}
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
 	clock := holdClockOn(w)
 
 	// Fails and recovers well inside one throttle window: the recovery hold is the
 	// watcher's interval, here far shorter than the reporter's throttle.
-	dests.set(endpointA, true)
+	dests.down.Store(true)
 	w.sample()
-	dests.set(endpointA, false)
+	dests.down.Store(false)
 	clock.recover(t, w, admf)
 
 	if got := admf.counting(TaskReportAllClear)[TaskReportAllClear]; got != 1 {
@@ -345,7 +253,7 @@ func TestRecoveryIsNotThrottledAgainstTheFailure(t *testing.T) {
 
 	// And the same fault recurring immediately is reported again rather than
 	// suppressed as a repeat of the one just retracted.
-	dests.set(endpointA, true)
+	dests.down.Store(true)
 	w.sample()
 	if got := admf.counting(TaskReportNonTerminatingFault)[TaskReportNonTerminatingFault]; got != 2 {
 		t.Errorf("a fault that recurred after being cleared was reported %d times, want 2", got)
@@ -372,9 +280,8 @@ func TestAPersistingFaultIsReportedOncePerWindow(t *testing.T) {
 	}
 }
 
-// TestTwoDestinationsAreReportedSeparately is what the re-keyed throttle buys, and
-// what the before-evidence showed was impossible: two destinations failing inside
-// one window used to be one report.
+// TestTwoDestinationsAreReportedSeparately: the throttle is keyed per destination, so two
+// destinations failing inside one window are two reports and neither hides the other.
 func TestTwoDestinationsAreReportedSeparately(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -440,17 +347,15 @@ func TestAConfiguredEndpointIsNotReportedAtDestinationScope(t *testing.T) {
 		t.Errorf("an endpoint with no provisioned identifier produced %d destination-scoped reports, want 0", n)
 	}
 	// It is reported, at the scope that can be named — see
-	// TestAnEndpointWithNoIdentifierIsStillReported, which is the regression the
-	// end-to-end suite caught when this asserted no report at all.
+	// TestAnEndpointWithNoIdentifierIsStillReported.
 	if n := len(admf.reports()); n != 1 {
 		t.Errorf("it produced %d reports in all, want 1 at element scope", n)
 	}
 }
 
-// TestTheJoinKeepsAnAddressProvisioningNeverNamed is the unit that was missing when
-// the end-to-end suite caught the lost report, and again when only the watcher was
-// fixed. The join enumerates identifiers; an address the element delivers to that
-// has none must still come back, or every layer above it is watching an empty list.
+// TestTheJoinKeepsAnAddressProvisioningNeverNamed: the join enumerates identifiers, and an
+// address the element delivers to that has none must still come back, or every layer
+// above it is watching an empty list.
 func TestTheJoinKeepsAnAddressProvisioningNeverNamed(t *testing.T) {
 	// No Deliveries: this is what a task naming no DID looks like once resolveDIDs
 	// has found nothing to resolve.
@@ -489,18 +394,16 @@ func TestADestinationNamedByTwoTasksIsOneDestination(t *testing.T) {
 // TestTheWatcherStopsWithTheElementItBelongsTo. A background goroutine that
 // outlives its element is the shape of a process that leaks one per restart.
 func TestTheWatcherStopsWithTheElementItBelongsTo(t *testing.T) {
-	// Buffered and signalled by a send rather than a close: this package declares its
-	// own close() for XML rendering, which shadows the builtin.
-	stop := make(chan struct{}, 1)
-	done := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
 
 	w := NewDestinationWatcher(func() []DestinationHealth { return nil }, nil, time.Millisecond)
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer close(done)
 		w.Watch(stop)
 	}()
 
-	stop <- struct{}{}
+	close(stop)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -508,15 +411,12 @@ func TestTheWatcherStopsWithTheElementItBelongsTo(t *testing.T) {
 	}
 }
 
-// TestTheStatusAnswerStillNamesNoDestination guards against the
-// obvious next step rather than against a defect.
-//
-// The element can now name a destination in a report, so "the probe should name it
-// too" reads as consistency. It is not: an element's own status says how much is
-// wrong and never whose product is affected, and the probe takes counts precisely
-// so that answering otherwise is impossible rather than merely discouraged. A
-// destination-scoped report and a status answer address the same fact to different
-// questions.
+// TestTheStatusAnswerStillNamesNoDestination: the element names a destination in a
+// destination-scoped report, and "the probe should name it too" reads as consistency. It
+// is not: an element's own status says how much is wrong and never whose product is
+// affected, and the probe takes counts precisely so that answering otherwise is
+// impossible rather than merely discouraged. A destination-scoped report and a status
+// answer address the same fact to different questions.
 func TestTheStatusAnswerStillNamesNoDestination(t *testing.T) {
 	probe := MDFUnreachableProbe(func() (int, int) { return 1, 2 })
 
@@ -534,16 +434,11 @@ func TestTheStatusAnswerStillNamesNoDestination(t *testing.T) {
 	}
 }
 
-// TestAnEndpointWithNoIdentifierIsStillReported is the regression the end-to-end
-// suite caught and the unit tests did not, which is why it is here now.
-//
-// The first version of the watcher skipped an endpoint with no provisioned
-// identifier, reasoning that there is nothing destination-scoped to say about one
-// the ADMF did not create. True, and it does not follow that the element should say
-// *nothing*: a delivery it cannot make is exactly what the network-element-level
-// condition has always been for, and every task delivering to this element's
-// configured default endpoint has no DID. Retiring the sites that used to push that
-// report therefore lost it outright for the commonest configuration there is.
+// TestAnEndpointWithNoIdentifierIsStillReported: there is nothing destination-scoped to
+// say about an endpoint the ADMF did not create, and it does not follow that the element
+// should say *nothing*. A delivery it cannot make is exactly what the
+// network-element-level condition is for, and every task delivering to this element's
+// configured default endpoint has no DID — the commonest configuration there is.
 //
 // The scope changes with what can be named. Whether the fault is reported at all
 // does not.
@@ -551,26 +446,23 @@ func TestAnEndpointWithNoIdentifierIsStillReported(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
 
-	dests := newReachability(endpointA)
-	// Built through DestinationHealthOf rather than by hand, and that is the whole
-	// point of this version. The first one returned the DID-less entry itself, so it
-	// pinned the watcher's branch while the join upstream of it was dropping the
-	// endpoint entirely — the branch was right and unreachable, and the test could
-	// not tell. A task naming no destination resolves no delivery record at all, so
-	// what stands in for production here is a task with no Deliveries and a resolver
-	// that returns the element's configured endpoint, which is what delivery does.
+	dests := &reachability{}
+	// Built through DestinationHealthOf rather than by hand, so the join upstream of the
+	// watcher is exercised too: a hand-built DID-less entry would pin the watcher's branch
+	// even if the join dropped the endpoint entirely. A task naming no destination
+	// resolves no delivery record at all, so what stands in for production here is a task
+	// with no Deliveries and a resolver that returns the element's configured endpoint,
+	// which is what delivery does.
 	task := types.InterceptTask{XID: testXID}
 	health := func() []DestinationHealth {
-		unreachable, _ := dests.count()
-
 		return DestinationHealthOf([]types.InterceptTask{task}, types.DeliveryX2,
 			func(types.InterceptTask) []string { return []string{endpointA} },
-			func(string) bool { return unreachable > 0 })
+			func(string) bool { return dests.down.Load() })
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
 	clock := holdClockOn(w)
 
-	dests.set(endpointA, true)
+	dests.down.Store(true)
 	w.sample()
 
 	reports := admf.reports()
@@ -592,7 +484,7 @@ func TestAnEndpointWithNoIdentifierIsStillReported(t *testing.T) {
 	}
 
 	// The ending too, at the same scope.
-	dests.set(endpointA, false)
+	dests.down.Store(false)
 	clock.recover(t, w, admf)
 
 	reports = admf.reports()
@@ -608,12 +500,11 @@ func TestAnEndpointWithNoIdentifierIsStillReported(t *testing.T) {
 // reported only once the provisioning function has been told" means on this transport.
 //
 // Clause 7.2.2.2 is explicit that HTTP codes indicate HTTP-level errors only and that an
-// X1-level error "shall be … returned as a HTTP 200 OK response". The reporter committed on
-// the status alone, so a 200 wrapping an ErrorResponse was recorded as delivered: the
-// element stopped re-reporting the fault while it held, and then sent an AllClear retracting
-// a fault the ADMF had discarded. The two sides' lists of what is wrong disagree, in the one
-// direction neither can detect — the element believes it has told the ADMF, and the ADMF
-// believes there is nothing to tell.
+// X1-level error "shall be … returned as a HTTP 200 OK response". A reporter that committed
+// on the status alone would record a 200 wrapping an ErrorResponse as delivered: it would
+// stop re-reporting the fault while it held, and then send an AllClear retracting a fault
+// the ADMF had discarded. The two sides' lists of what is wrong would disagree, in the one
+// direction neither can detect.
 //
 // Two properties: the fault stays eligible at the next observation, and no retraction is
 // sent for a fault that was never accepted.
@@ -697,9 +588,9 @@ func TestAReportRefusedInsideA200IsNotRecordedAsDelivered(t *testing.T) {
 }
 
 // TestOneUnnamedDestinationDownLeavesTheFaultStanding is the aggregation, and it pins both
-// orders because the defect was iteration-order dependent — with one un-identified endpoint
-// down and one healthy, whichever the sample reached last decided whether the fault stood.
-// A test that happened to visit them in the surviving order passes against the defect.
+// orders because the outcome must not depend on the order a sample visits the endpoints:
+// reported per entry, with one un-identified endpoint down and one healthy, whichever came
+// last would decide whether the fault stood.
 //
 // An element-scoped report names no destination by construction, so there is exactly one
 // state to be in: a fault while any such destination is unreachable, and a clear only when
