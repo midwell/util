@@ -35,6 +35,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // The Version field (TS 103 221-2 clause 5.2.1) asserts which revision of the
@@ -214,6 +215,9 @@ func (p *PDU) Marshal() ([]byte, error) {
 	}
 
 	headerLen := MandatoryHeaderLength + attrsLen
+	if err := lengthsFit(int64(headerLen), int64(len(p.Payload))); err != nil {
+		return nil, err
+	}
 	out := make([]byte, headerLen, headerLen+len(p.Payload))
 	out[0] = MajorVersion
 	out[1] = MinorVersion
@@ -235,6 +239,20 @@ func (p *PDU) Marshal() ([]byte, error) {
 
 	out = append(out, p.Payload...)
 	return out, nil
+}
+
+// lengthsFit refuses a header or payload too long for the 32-bit length field that states it.
+// Writing the truncated length would produce a PDU whose own framing is wrong, which a
+// receiver reading a stream of them cannot recover from — every PDU after it is misframed.
+func lengthsFit(headerLen, payloadLen int64) error {
+	if headerLen > math.MaxUint32 {
+		return fmt.Errorf("x2x3: header of %d bytes does not fit its 32-bit length field", headerLen)
+	}
+	if payloadLen > math.MaxUint32 {
+		return fmt.Errorf("x2x3: payload of %d bytes does not fit its 32-bit length field", payloadLen)
+	}
+
+	return nil
 }
 
 // Unmarshal decodes a single PDU from the front of b, returning the PDU and the
