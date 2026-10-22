@@ -1196,7 +1196,10 @@ func (s *Server) applyTaskTransition(m X1RequestMessage, isModify bool) (int, er
 	}
 	switch {
 	case isModify && m.TaskDetails == nil:
+		// taskDetails is mandatory in a ModifyTaskRequest, so this is the message
+		// violating its own schema: 1010, not the generic 1000 an uncoded error became.
 		err = fmt.Errorf("missing taskDetails")
+		code = errCodeSchemaError
 	case malformed != nil:
 		// Before the "no such task" check below, deliberately. A ModifyTask naming a
 		// malformed xId reached that check first and was refused with 2020, "XID does
@@ -1369,6 +1372,13 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 		if err != nil && code == 0 {
 			code = errorCode(err)
 		}
+		if err != nil && code == 0 {
+			// What remains is a destination this element declined to create for a reason
+			// the description gives. 6000 is the registry's "details of why the
+			// Destination cannot be created" — the destination equivalent of 3000 — where
+			// 1000 says only that something went wrong.
+			code = errCodeCreateDestFailed
+		}
 		rm.Type = "CreateDestinationResponse"
 	case "KeepaliveRequest":
 		// Liveness from the ADMF (TS 103 221-1). Process already recorded the
@@ -1457,11 +1467,14 @@ func (s *Server) deactivate(xid string) (int, error) {
 // two of these refusals exactly and "implementers shall use the most specific error code
 // available". A zero code leaves the caller to pick the generic one.
 func (s *Server) createDestination(d *DestinationDetails) (int, error) {
+	// destinationDetails and its dId are mandatory in the schema, so a message without
+	// them violates its own format: 1010, the code the package gives every schema error,
+	// rather than the generic 1000 these once fell through to.
 	if d == nil {
-		return 0, fmt.Errorf("missing destinationDetails")
+		return errCodeSchemaError, fmt.Errorf("missing destinationDetails")
 	}
 	if d.DID == "" {
-		return 0, fmt.Errorf("missing dId")
+		return errCodeSchemaError, fmt.Errorf("missing dId")
 	}
 	if err := validIdentifier("dId", d.DID); err != nil {
 		// The schema types a DId as a TS 103 280 UUID, so a value outside that format
@@ -1481,6 +1494,9 @@ func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 		// No destination extension is recognised, so every one reaches this. The rule
 		// is the task's: an extension exists to change the meaning of the message that
 		// carries it, and on a destination that means changing where product goes.
+		//
+		// Uncoded, so the caller answers 6000: an extension the element does not
+		// recognise is a well-formed message it cannot honour, not a schema error.
 		return 0, err
 	}
 	dest, err := destinationFrom(*d)
@@ -1577,10 +1593,12 @@ func destinationFrom(d DestinationDetails) (heldDestination, error) {
 		return heldDestination{}, codedError{errCodeSchemaError, err}
 	}
 
-	host := ap.Address.IPv4
-	if host == "" {
+	// Stored in the schema's own spelling, so the destination answers render what the
+	// schema accepts, and so one endpoint has one address string wherever it is keyed.
+	host := ap.Address.Canonical()
+	if ap.Address.IPv4 == "" {
 		// An IPv6 literal needs brackets before it can be joined to a port.
-		host = "[" + ap.Address.IPv6 + "]"
+		host = "[" + host + "]"
 	}
 	port := ap.Port.Value()
 
@@ -1643,7 +1661,9 @@ func (s *Server) resolveDIDs(dids []string) (endpoints []types.DeliveryEndpoint,
 
 func (s *Server) activate(m X1RequestMessage) (types.InterceptTask, error) {
 	if m.TaskDetails == nil {
-		return types.InterceptTask{}, fmt.Errorf("missing taskDetails")
+		// Mandatory in the schema, as in ModifyTask: a schema error, not a task this
+		// element cannot apply.
+		return types.InterceptTask{}, refuse(errCodeSchemaError, "missing taskDetails")
 	}
 	task, err := s.taskFromDetails(*m.TaskDetails)
 	if err != nil {
@@ -2470,7 +2490,11 @@ func unhonourableExtensions(exts []MessageExtension, on string) error {
 		if ext.Owner != ExtensionOwner3GPP {
 			return fmt.Errorf("%s extension owned by %q is not supported", on, ext.Owner)
 		}
-		if ext.IdentifierAssociation == nil || len(ext.Content) > 0 {
+		// The identifier-association extension is a *task* extension: TS 33.128 defines it
+		// in TaskDetailsExtensions, where it selects records. Recognised on a destination
+		// it was acknowledged and then meant nothing, which is the outcome this function
+		// exists to prevent — so on anything but a task it is as unrecognised as any other.
+		if ext.IdentifierAssociation == nil || len(ext.Content) > 0 || on != "task" {
 			return fmt.Errorf("3GPP %s extension %s is not supported", on, extensionContentNames(ext))
 		}
 		// Only the AMF IRI-POI is given this extension, and only 33.128 table 6.2.2.1-1
@@ -2674,7 +2698,7 @@ func deliveryProducts(dt string) ([]types.ProductType, error) {
 	case deliveryX2andX3:
 		return []types.ProductType{types.ProductIRI, types.ProductCC}, nil
 	}
-	return nil, fmt.Errorf("unknown deliveryType %q", dt)
+	return nil, refuse(errCodeSchemaError, "deliveryType %q is not one of the enumerated values", dt)
 }
 
 // localType strips any namespace prefix from an xsi:type value

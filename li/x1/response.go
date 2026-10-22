@@ -6,6 +6,7 @@ package x1
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -334,11 +335,16 @@ func deliveryAddress(ind int, address string) string {
 	var b strings.Builder
 	b.WriteString(open(ind, "ipAddressAndPort"))
 	b.WriteString(openNS(ind+2, "c", "address"))
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		b.WriteString(elNS(ind+4, "c", "IPv6Address", escapeXML(host)))
-	} else {
-		b.WriteString(elNS(ind+4, "c", "IPv4Address", escapeXML(host)))
+	// Rendered in the schema's spelling of each family whatever form the address was
+	// stored in — a configured destination is written by an operator, not normalised on
+	// the way in. A zone has no representation in the schema's IPv6 type and is dropped
+	// rather than letting the address fail to parse and land in the IPv4 arm, and an
+	// IPv4-mapped address is the IPv4 endpoint it names.
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.WithZone("").Unmap().String()
 	}
+	name, value := addressArm(host)
+	b.WriteString(elNS(ind+4, "c", name, escapeXML(value)))
 	b.WriteString(closeNS(ind+2, "c", "address"))
 	b.WriteString(openNS(ind+2, "c", "port"))
 	// X2 and X3 are carried over TCP (TS 103 221-2), so the port is a TCPPort.

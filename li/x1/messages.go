@@ -209,11 +209,37 @@ func (a IPAddress) Valid() error {
 		return nil
 	}
 	ip, err := netip.ParseAddr(a.IPv6)
-	if err != nil || ip.Is4() {
+	if err != nil || ip.Is4() || ip.Is4In6() || ip.Zone() != "" {
+		// A zone or an IPv4-mapped address parses, but neither is an address of the
+		// schema's IPv6 type: a zone has no representation in it, and a mapped address
+		// names an IPv4 endpoint. Accepting either stored a value this element could
+		// not render back into the arm it came in.
 		return fmt.Errorf("IPv6Address %q is not an IPv6 address", a.IPv6)
 	}
 
 	return nil
+}
+
+// Canonical returns the address in the form the schema's type spells it: dotted-quad for
+// IPv4, and eight four-digit lowercase groups for IPv6. Call it only on an address Valid
+// accepted.
+//
+// The IPv6 pattern admits only the expanded form, so a destination stored as the peer
+// sent it — "::1", or upper case — made this element's own destination answers invalid
+// against the schema the request was validated with.
+func (a IPAddress) Canonical() string {
+	if a.IPv4 != "" {
+		if ip, err := netip.ParseAddr(a.IPv4); err == nil {
+			return ip.String()
+		}
+
+		return a.IPv4
+	}
+	if ip, err := netip.ParseAddr(a.IPv6); err == nil {
+		return expandIPv6(ip.AsSlice())
+	}
+
+	return a.IPv6
 }
 
 // Valid reports whether this port is one arm carrying a value a peer can be dialled on.
