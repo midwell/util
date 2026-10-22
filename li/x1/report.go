@@ -571,14 +571,11 @@ func NewReporter(admfURL, admfID, neID string, tlsConfig *tls.Config) *Reporter 
 		admfID:        admfID,
 		neID:          neID,
 		authenticated: tlsConfig != nil,
-		client: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
-			Timeout:   10 * time.Second,
-		},
-		now:      monotonicNow,
-		lastSent: make(map[reportKey]time.Time),
-		sending:  make(map[reportKey]bool),
-		reported: make(map[reportKey]bool),
+		client:        newX1Client(tlsConfig),
+		now:           monotonicNow,
+		lastSent:      make(map[reportKey]time.Time),
+		sending:       make(map[reportKey]bool),
+		reported:      make(map[reportKey]bool),
 	}
 }
 

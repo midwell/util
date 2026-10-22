@@ -42,6 +42,24 @@ type Requester struct {
 	now           func() time.Time
 }
 
+// newX1Client is the HTTP client this element's outbound X1 requests go out on.
+//
+// It does not follow redirects. net/http follows up to ten by default, and a 307 or 308
+// re-sends the POST body — a trigger's SEID and correlation, a fault report — to wherever
+// the answer points, and only the last hop's certificate is ever checked against the peer
+// this element meant to reach, after the body has already gone. A redirect is instead
+// handed back as the answer, and readBoundResponse refuses any answer but 200, so it is a
+// failed request.
+func newX1Client(tlsConfig *tls.Config) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Timeout:   10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // NewRequester returns a Requester that POSTs to a triggered POI's X1 endpoint
 // over mutual TLS, asserting ourID and addressing neID.
 func NewRequester(neURL, ourID, neID string, tlsConfig *tls.Config) *Requester {
@@ -52,11 +70,8 @@ func NewRequester(neURL, ourID, neID string, tlsConfig *tls.Config) *Requester {
 		// Whether this element has credentials at all, which is what decides whether an
 		// answer must prove whose it is. See bindsResponder.
 		authenticated: tlsConfig != nil,
-		client: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
-			Timeout:   10 * time.Second,
-		},
-		now: monotonicNow,
+		client:        newX1Client(tlsConfig),
+		now:           monotonicNow,
 	}
 }
 
