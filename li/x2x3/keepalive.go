@@ -212,7 +212,11 @@ type KeepaliveConfig struct {
 	// parse. It carries the same meaning as a delivery failure — the destination is
 	// not working — so a POI wires it to whatever it already reports those with.
 	//
-	// It runs on the keepalive goroutine and must not block.
+	// It runs on the connection's keepalive or read goroutine — and NewPool wires the
+	// delivery worker's error callback to it too — so it may be called concurrently with
+	// itself and with that callback, and must be safe for that. It must not block:
+	// Client.Close waits for these goroutines to exit, so a callback blocked on something
+	// the closing goroutine holds would hang the close.
 	OnFault func(error)
 }
 
@@ -315,7 +319,6 @@ func (c *Client) startKeepaliveLocked(st *connState) {
 
 		return
 	}
-
 
 	st.acks = make(chan struct{}, 1)
 	st.wg.Add(2)

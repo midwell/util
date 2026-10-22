@@ -41,12 +41,20 @@ type Pool struct {
 // mechanism on every connection it opens as keepalive describes — the zero value being
 // the specification's own defaults.
 //
-// onError is called with each worker delivery error and onDrop when a full queue costs a
-// PDU; both may be nil, and both run on a delivery worker goroutine, so neither may block.
+// onError is called with each worker delivery error and onDrop when a PDU is dropped before
+// any delivery was attempted for it — a full queue, a closed sender, or a close that gave up
+// waiting; both may be nil. A delivery error says how many product units it cost (LostUnits),
+// so a failed batch is accounted per unit and not per call.
 //
 // A keepalive fault means the same thing as a delivery error — this destination is not
 // working — so it is reported through onError rather than through a callback of its own.
 // One condition, one report, whichever of the two mechanisms noticed it.
+//
+// **onError is therefore called from more than one goroutine at once**: each destination's
+// delivery worker, and each connection's keepalive and read goroutines. It must be safe for
+// concurrent use and must not block — Close waits for those goroutines, so a callback blocked
+// on something the closing goroutine holds would stall the close (bounded here by
+// closeTimeout, and unbounded for a caller closing a sender directly).
 func NewPool(tlsConfig *tls.Config, keepalive KeepaliveConfig, onError func(error), onDrop func()) *Pool {
 	if keepalive.OnFault == nil {
 		keepalive.OnFault = onError

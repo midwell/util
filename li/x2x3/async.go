@@ -41,7 +41,9 @@ type Reachability interface {
 // PDU rather than block — LI product may be lost under sustained MDF outage, but
 // the target's service is never delayed — and invokes onDrop so the fault can be
 // surfaced to the ADMF over X1. Worker delivery errors invoke onError for the
-// same purpose. Both callbacks run on the worker goroutine and must not block.
+// same purpose, each carrying the number of units it cost (LostUnits). Both
+// callbacks run on the worker goroutine, and onDrop on whichever goroutine called
+// Send as well, so they must be safe for concurrent use and must not block.
 type AsyncSender struct {
 	inner   Sender
 	queue   chan *PDU
