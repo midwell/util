@@ -216,7 +216,9 @@ element holds against what it believes it sent.
 
 A device is matched by its fourteen-digit IMEI, whichever element names it: `peiImei` and
 `imei` carry the IMEI, and `peiImeiCheckDigit` carries it with its TS 23.003 check digit,
-which is verified (a wrong one is refused with 1010) and re-derived in the answer.
+which is verified and re-derived in the answer. A wrong check digit is schema-valid, so it is
+refused as the operation's failure (3000 on activation) naming the check digit; a value of
+the wrong length is outside the type and refused with 1010.
 
 ### What the status answer does not cover — declared 2026-08-25
 

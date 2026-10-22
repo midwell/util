@@ -1920,6 +1920,16 @@ func mapTarget(t TargetIdentifier) ([]types.TargetIdentifier, error) {
 			}
 		}
 
+		if arm.element == elPEIIMEICD {
+			// Schema-valid -- the type is fifteen digits, not a valid IMEI -- so not 1010: the
+			// operation's own refusal, as for a TEID above, and a message that sends the
+			// operator to the digit rather than to the XML. canonicalArmValue has already made
+			// the value fifteen digits, so the indexing is safe.
+			if tok := strings.TrimSpace(arm.value); imeiCheckDigit(tok[:14]) != tok[14] {
+				return nil, fmt.Errorf("%s: the check digit does not match the IMEI", arm.element)
+			}
+		}
+
 		return one(armTypes[arm.element], value), nil
 	}
 
@@ -2288,7 +2298,8 @@ func canonicalArmValue(a targetArm) (string, error) {
 		// functions present, which drops the check digit -- so the check digit is verified
 		// rather than discarded unread: a wrong one means the ADMF's value names no device,
 		// and the answer re-derives it, so only a correct one round-trips exactly.
-		if !digitsBetween(tok, 15, 15) || imeiCheckDigit(tok[:14]) != tok[14] {
+		// The check digit is verified in mapTarget, not here: a wrong one is schema-valid.
+		if !digitsBetween(tok, 15, 15) {
 			return bad()
 		}
 
@@ -2350,7 +2361,6 @@ func schemaInteger(tok string, lo, hi int64, bad func() (string, error)) (string
 	return strconv.FormatInt(n, 10), nil
 }
 
-// digitsBetween reports whether s is all decimal digits with a length in [lo, hi].
 // imeiCheckDigit is the check digit TS 23.003 Annex B defines for a fourteen-digit IMEI:
 // the Luhn digit, doubling every second digit from the right of the fourteen.
 func imeiCheckDigit(imei string) byte {
@@ -2369,6 +2379,7 @@ func imeiCheckDigit(imei string) byte {
 	return byte('0' + (10-sum%10)%10)
 }
 
+// digitsBetween reports whether s is all decimal digits with a length in [lo, hi].
 func digitsBetween(s string, lo, hi int) bool {
 	if len(s) < lo || len(s) > hi {
 		return false

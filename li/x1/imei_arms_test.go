@@ -50,16 +50,29 @@ func TestEveryIMEIArmNamesTheSameDevice(t *testing.T) {
 // stored, so it is verified rather than discarded unread. A wrong one means the value
 // names no device; acknowledging it would intercept whatever device the first fourteen
 // digits happen to name, on a warrant that named something else.
+//
+// A wrong digit is schema-valid -- the type is fifteen digits -- so it is the operation's own
+// refusal and says what is wrong; a wrong length is outside the type and stays 1010.
 func TestACheckDigitThatDoesNotMatchIsRefused(t *testing.T) {
-	for _, value := range []string{"490154203237517", "49015420323751", "4901542032375180"} {
+	for _, c := range []struct {
+		value, mention string
+		code           int
+	}{
+		{"490154203237517", "check digit does not match", errCodeActivateFailed},
+		{"49015420323751", "does not conform to its schema type", errCodeSchemaError},
+		{"4901542032375180", "does not conform to its schema type", errCodeSchemaError},
+	} {
 		st := store.New()
-		m := serve(t, testServer(st), withTarget("<ns1:peiImeiCheckDigit>"+value+"</ns1:peiImeiCheckDigit>"))
+		m := serve(t, testServer(st), withTarget("<ns1:peiImeiCheckDigit>"+c.value+"</ns1:peiImeiCheckDigit>"))
 
-		if m.ErrorInformation == nil || m.ErrorInformation.ErrorCode != errCodeSchemaError {
-			t.Errorf("%s: want a 1010 refusal, got %+v", value, m.ErrorInformation)
+		if m.ErrorInformation == nil || m.ErrorInformation.ErrorCode != c.code {
+			t.Errorf("%s: want a %d refusal, got %+v", c.value, c.code, m.ErrorInformation)
+		} else if !strings.Contains(m.ErrorInformation.ErrorDescription, c.mention) {
+			t.Errorf("%s: the refusal says %q, want it to say %q", c.value,
+				m.ErrorInformation.ErrorDescription, c.mention)
 		}
 		if _, held := st.Get(testXID); held {
-			t.Errorf("%s: a refused task was stored", value)
+			t.Errorf("%s: a refused task was stored", c.value)
 		}
 	}
 }
