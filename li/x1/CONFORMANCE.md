@@ -484,7 +484,14 @@ through. Refused unless all of the following hold:
 | `x1TransactionId` equals the one sent | This message is the answer to *this* request |
 | `neIdentifier` is the element addressed | The only check that can detect a misroute |
 | `admfIdentifier` is this element | The client-side form of the binding the server already performs |
-| The version is one this element speaks | |
+| The version is a v1.x.y | Table 6.1-1 defines Version as the version the sender used to encode the message, so a peer answers in its own version rather than echoing the request's, and clause 4.5 keeps minor increments compatible. A major version this element does not speak is refused |
+
+Outbound requests and reports accept an answer in any v1.x.y version: table 6.1-1 defines
+Version as the version the sender used to encode the message, so a peer answers in its own
+version rather than echoing the request's (clause 4.5).
+
+Outbound X1 requests do not follow HTTP redirects; a redirect is a failed request. An answer to
+an outbound request is read up to 16 MiB; a larger one is refused.
 
 Every field checked is a member of the schema's `X1ResponseMessage` base type, so every
 response type carries all of them and each check can be **required** rather than applied only

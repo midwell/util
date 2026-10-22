@@ -34,10 +34,16 @@ const (
 	endpointA = "10.0.60.122:42069"
 )
 
-// createDestinationXML builds a CreateDestinationRequest. portXML is the contents of the
-// TS 103 280 `port` element, so a test can send the shape the schema defines or one it
-// does not.
+// createDestinationXML builds a CreateDestinationRequest with an IPv4 address. portXML is the
+// contents of the TS 103 280 `port` element, so a test can send the shape the schema defines
+// or one it does not.
 func createDestinationXML(did, deliveryType, addr, portXML, extra string) string {
+	return createDestinationXMLIn("IPv4Address", did, deliveryType, addr, portXML, extra)
+}
+
+// createDestinationXMLIn builds a CreateDestinationRequest whose address is in the named arm
+// of the TS 103 280 IPAddress choice.
+func createDestinationXMLIn(arm, did, deliveryType, addr, portXML, extra string) string {
 	return string(request("CreateDestinationRequest", `
     <ns1:destinationDetails>
       <ns1:dId>`+did+`</ns1:dId>
@@ -45,7 +51,7 @@ func createDestinationXML(did, deliveryType, addr, portXML, extra string) string
       <ns1:deliveryAddress>
         <ns1:ipAddressAndPort>
           <c:address xmlns:c="http://uri.etsi.org/03280/common/2017/07">
-            <c:IPv4Address>`+addr+`</c:IPv4Address>
+            <c:`+arm+`>`+addr+`</c:`+arm+`>
           </c:address>
           <c:port xmlns:c="http://uri.etsi.org/03280/common/2017/07">`+portXML+`</c:port>
         </ns1:ipAddressAndPort>

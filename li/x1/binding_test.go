@@ -90,7 +90,7 @@ func TestEachEnvelopeFieldIsChecked(t *testing.T) {
 			"a version this element does not speak", "version",
 			func(s string) string {
 				return strings.Replace(s, "<version>"+supportedVersion+"</version>",
-					"<version>v1.99.0</version>", 1)
+					"<version>v2.0.0</version>", 1)
 			},
 		},
 	}

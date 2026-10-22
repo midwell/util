@@ -283,15 +283,8 @@ func TestProcessDeactivate(t *testing.T) {
 	st.Activate(types.InterceptTask{XID: testXID, Targets: []types.TargetIdentifier{{Type: types.TargetGPSI, Value: "2125552368"}}})
 	srv := testServer(st)
 
-	deactivateXML := `<ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ns1:x1RequestMessage xsi:type="ns1:DeactivateTaskRequest">
-    <ns1:admfIdentifier>admfID</ns1:admfIdentifier>
-    <ns1:neIdentifier>neID</ns1:neIdentifier>
-    <ns1:version>v1.6.1</ns1:version>
-    <ns1:x1TransactionId>tx-2</ns1:x1TransactionId>
-    <ns1:xId>` + string(testXID) + `</ns1:xId>
-  </ns1:x1RequestMessage>
-</ns1:X1Request>`
+	deactivateXML := string(request("DeactivateTaskRequest", `
+    <ns1:xId>`+string(testXID)+`</ns1:xId>`))
 
 	resp, err := srv.Process([]byte(deactivateXML), admfPeer(t))
 	if err != nil {
@@ -701,16 +694,8 @@ func TestOnTaskChangeCarriesBothSides(t *testing.T) {
 	}
 
 	// Removal is the same event with no next.
-	deactivateXML := `<ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ns1:x1RequestMessage xsi:type="ns1:DeactivateTaskRequest">
-    <ns1:admfIdentifier>admfID</ns1:admfIdentifier>
-    <ns1:neIdentifier>neID</ns1:neIdentifier>
-    <ns1:messageTimestamp>2017-10-06T18:46:21.247432Z</ns1:messageTimestamp>
-    <ns1:version>v1.6.1</ns1:version>
-    <ns1:x1TransactionId>3741800e-971b-4aa9-85f4-466d2b1adc7f</ns1:x1TransactionId>
-    <ns1:xId>50b93d1e-1b53-4d63-aacb-e4d99811bc0b</ns1:xId>
-  </ns1:x1RequestMessage>
-</ns1:X1Request>`
+	deactivateXML := string(request("DeactivateTaskRequest", `
+    <ns1:xId>`+string(testXID)+`</ns1:xId>`))
 	if _, err := srv.Process([]byte(deactivateXML), admfPeer(t)); err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}
@@ -808,16 +793,8 @@ func TestPurgeReasonNamesThePath(t *testing.T) {
 		}),
 	)
 
-	deactivateXML := `<ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ns1:x1RequestMessage xsi:type="ns1:DeactivateTaskRequest">
-    <ns1:admfIdentifier>admfID</ns1:admfIdentifier>
-    <ns1:neIdentifier>neID</ns1:neIdentifier>
-    <ns1:messageTimestamp>2017-10-06T18:46:21.247432Z</ns1:messageTimestamp>
-    <ns1:version>v1.6.1</ns1:version>
-    <ns1:x1TransactionId>3741800e-971b-4aa9-85f4-466d2b1adc7f</ns1:x1TransactionId>
-    <ns1:xId>50b93d1e-1b53-4d63-aacb-e4d99811bc0b</ns1:xId>
-  </ns1:x1RequestMessage>
-</ns1:X1Request>`
+	deactivateXML := string(request("DeactivateTaskRequest", `
+    <ns1:xId>`+string(testXID)+`</ns1:xId>`))
 
 	if _, err := srv.Process([]byte(activateXML), admfPeer(t)); err != nil {
 		t.Fatalf("activate: %v", err)

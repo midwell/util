@@ -12,19 +12,7 @@ import (
 
 // createIPv6DestinationXML is createDestinationXML with the address in the IPv6 arm.
 func createIPv6DestinationXML(did, addr, extra string) string {
-	return string(request("CreateDestinationRequest", `
-    <ns1:destinationDetails>
-      <ns1:dId>`+did+`</ns1:dId>
-      <ns1:deliveryType>X2Only</ns1:deliveryType>
-      <ns1:deliveryAddress>
-        <ns1:ipAddressAndPort>
-          <c:address xmlns:c="http://uri.etsi.org/03280/common/2017/07">
-            <c:IPv6Address>`+addr+`</c:IPv6Address>
-          </c:address>
-          <c:port xmlns:c="http://uri.etsi.org/03280/common/2017/07"><c:TCPPort>42069</c:TCPPort></c:port>
-        </ns1:ipAddressAndPort>
-      </ns1:deliveryAddress>`+extra+`
-    </ns1:destinationDetails>`))
+	return createDestinationXMLIn("IPv6Address", did, deliveryX2Only, addr, tcpPort("42069"), extra)
 }
 
 // destinationsAnswer asks for every destination and returns the marshalled answer.

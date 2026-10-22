@@ -27,7 +27,7 @@ func TestARequestWithNoMessageIsATopLevelError(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(emptyRequestXML)))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(emptyRequestXML)))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status %d, want 200: the fault is X1-level (clause 7.2.2.2)", rec.Code)
@@ -44,7 +44,7 @@ func TestAnOversizedRequestIsRefusedWhole(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	body := strings.NewReader(strings.Repeat(" ", maxRequestBytes+1))
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", body))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", body))
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
@@ -56,7 +56,7 @@ func TestOnlyPOSTIsAccepted(t *testing.T) {
 	srv := testServer(store.New())
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status %d, want %d", rec.Code, http.StatusMethodNotAllowed)
