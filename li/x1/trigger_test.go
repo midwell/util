@@ -138,8 +138,8 @@ func TestTriggerRoundTripThroughListener(t *testing.T) {
 	// HTTP, so the peer certificate is supplied to Process directly, as the other
 	// listener tests do.
 	// The trigger's destination is declared, because a task naming one this element
-	// cannot resolve is now refused — and what this test is about is the trigger round
-	// trip, not destination resolution.
+	// cannot resolve is refused — and what this test is about is the trigger round trip,
+	// not destination resolution.
 	srv := NewServer(st, "upf-1", WithADMF("smf-1"), HonoursCorrelationID(),
 		WithConfiguredDestinations(ConfiguredDestination{
 			DID:          testTrigger().DIDs[0],

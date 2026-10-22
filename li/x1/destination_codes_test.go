@@ -32,9 +32,9 @@ func destinationsAnswer(t *testing.T, srv *Server) string {
 }
 
 // TestIPv6DestinationsAreAnsweredInTheSchemasSpelling: the schema's IPv6 type admits only
-// eight four-digit lowercase groups, and a destination stored as the peer spelled it made
-// the element's destination answers invalid — "::1" failed the pattern outright. A zone or
-// an IPv4-mapped address was accepted too, and rendered into the IPv4 arm.
+// eight four-digit lowercase groups, so a destination stored as the peer spelled it would make
+// the element's destination answers invalid — "::1" fails the pattern outright. A zone or an
+// IPv4-mapped address in the IPv6 arm is refused rather than rendered into the IPv4 arm.
 func TestIPv6DestinationsAreAnsweredInTheSchemasSpelling(t *testing.T) {
 	requireXmllint(t)
 
@@ -96,8 +96,8 @@ func TestAConfiguredIPv6DestinationIsAnsweredInTheSchemasSpelling(t *testing.T) 
 }
 
 // TestAnIdentifierAssociationExtensionOnADestinationIsRefused: the extension is a task
-// extension. Recognised on a destination, it was acknowledged and then meant nothing —
-// the outcome the package's rule on extensions exists to prevent.
+// extension. Acknowledged on a destination, it would mean nothing — the outcome the package's
+// rule on extensions exists to prevent.
 func TestAnIdentifierAssociationExtensionOnADestinationIsRefused(t *testing.T) {
 	srv := NewServer(store.New(), "neID")
 	m := serve(t, srv, createDestinationXML(didAgencyA, deliveryX2Only, "10.0.60.122", tcpPort("42069"),

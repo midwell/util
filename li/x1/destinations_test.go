@@ -130,20 +130,19 @@ func endpointsOf(t *testing.T, st *store.Store, xid types.XID, dt types.Delivery
 // marks ListOfDIDs mandatory on an ActivateTask and requires the endpoints to have been
 // provisioned with CreateDestination beforehand.
 //
-// It exists because the element now refuses a task naming a destination identifier it
-// cannot resolve — storing it with the subset meant an agency the warrant names received
-// nothing while provisioning reported success — so a test whose subject is something
-// other than destination resolution has to provision the one its fixture names.
+// The element refuses a task naming a destination identifier it cannot resolve — storing it
+// with the subset would mean an agency the warrant names receives nothing while provisioning
+// reports success — so a test whose subject is something other than destination resolution
+// has to provision the one its fixture names.
 func provisionAgencyA(t *testing.T, srv *Server) {
 	t.Helper()
 
 	mustAck(t, srv, createDestinationXML(didAgencyA, deliveryX2Only, "10.0.60.122", tcpPort("42069"), ""))
 }
 
-// TestTaskCarriesTheX2DestinationsItNamed is the conformance fix itself. TS 33.128 marks
-// ListOfDIDs mandatory in every ActivateTask table it defines and requires the endpoints
-// to have been provisioned with CreateDestination beforehand; this is the element holding
-// up its end.
+// TestTaskCarriesTheX2DestinationsItNamed: TS 33.128 marks ListOfDIDs mandatory in every
+// ActivateTask table it defines and requires the endpoints to have been provisioned with
+// CreateDestination beforehand; this is the element holding up its end.
 func TestTaskCarriesTheX2DestinationsItNamed(t *testing.T) {
 	st := store.New()
 	srv := NewServer(st, "neID")
@@ -157,16 +156,13 @@ func TestTaskCarriesTheX2DestinationsItNamed(t *testing.T) {
 	}
 }
 
-// TestATaskNamingAnUnresolvableDestinationIsRefused replaces the test that asserted such
-// a task was accepted and resolved nothing.
-//
-// That was the behaviour, and it was wrong in the direction this plane must not fail in.
-// The task was stored, reported as active, and produced product for whichever endpoints
-// *did* resolve — so an agency named in the warrant received nothing while provisioning
-// reported success, which is undiscoverable from outside. The case the leniency was
-// written for is still served two ways: a task that names no destination at all falls
-// back to the element's configured endpoint, and a destination agreed out of band is
-// declared in the element's own configuration, where it resolves.
+// TestATaskNamingAnUnresolvableDestinationIsRefused: accepting such a task would store it,
+// report it as active and produce product for whichever endpoints *did* resolve — so an agency
+// named in the warrant would receive nothing while provisioning reported success, which is
+// undiscoverable from outside. An ADMF relying on configured destinations is served two ways:
+// a task that names no destination at all falls back to the element's configured endpoint, and
+// a destination agreed out of band is declared in the element's own configuration, where it
+// resolves.
 //
 // Refused before it is stored, so nothing is left behind — a task in the store is one
 // this element reports as active and acts on.
@@ -209,9 +205,8 @@ func TestAPartiallyResolvableDestinationListIsRefusedWhole(t *testing.T) {
 	}
 }
 
-// An X2andX3 destination is one destination serving two interfaces. Collapsing it to a
-// single endpoint type is what stopped it from ever yielding an X2 endpoint — the
-// destination was stored as X3 and the IRI never saw it.
+// An X2andX3 destination is one destination serving two interfaces. Collapsed to a single
+// endpoint type it would never yield an X2 endpoint, and the IRI would never see it.
 func TestX2andX3DestinationServesBothInterfaces(t *testing.T) {
 	st := store.New()
 	srv := NewServer(st, "neID")
@@ -227,8 +222,8 @@ func TestX2andX3DestinationServesBothInterfaces(t *testing.T) {
 	}
 }
 
-// Two warrants, two provisioned endpoints, no crossing. This is the assertion the
-// previous behaviour fails: both tasks resolved, and both delivered to configuration.
+// Two warrants, two provisioned endpoints, no crossing: neither task may fall back to the
+// configured endpoint the other's product goes to.
 func TestTwoTasksKeepTheirOwnDestinations(t *testing.T) {
 	st := store.New()
 	srv := NewServer(st, "neID")
@@ -575,9 +570,8 @@ func TestARefusedModificationCarriesTheModifyCode(t *testing.T) {
 	}
 }
 
-// The other half of the rule. Both of these are fields an earlier reading of this design
-// intended to refuse, and both readings were wrong — reasoning from the field names
-// rather than from the field descriptions. Refusing them would have refused a conformant
+// The other half of the rule. Both of these fields read, from their names, like ones to
+// refuse; their descriptions say otherwise, and refusing them would refuse a conformant
 // task.
 func TestDisregardedTaskFieldsAreAcceptedAndApplied(t *testing.T) {
 	for _, c := range []struct{ name, afterDIDs string }{
@@ -805,11 +799,10 @@ func TestTaskIdentifiersMustBeUUIDs(t *testing.T) {
 		})
 	}
 
-	// A ModifyTask naming a malformed xId gets the same code, not "no such task". It
-	// reached the not-held check first and was refused with 2020 — true, since no task
-	// with that identifier exists, but it pointed the ADMF at activating a task that
-	// would fail for the same reason. The registry says to use the most specific code
-	// available, and 1010 names the actual fault.
+	// A ModifyTask naming a malformed xId gets the same code, not "no such task". 2020
+	// would be true — no task with that identifier exists — but it would point the ADMF at
+	// activating a task that would fail for the same reason. The registry says to use the
+	// most specific code available, and 1010 names the actual fault.
 	t.Run("a modification naming a malformed xId", func(t *testing.T) {
 		st := store.New()
 		srv := NewServer(st, "neID")

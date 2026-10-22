@@ -23,13 +23,10 @@ import (
 	"github.com/omec-project/util/li/types"
 )
 
-// This is the check whose absence let six defects into the X1 responses.
-//
 // Every other test in this package renders a response and then reads it back with the
 // same Go structs that produced it, which proves the renderer and the parser agree —
-// something they do perfectly while both are wrong. Comments elsewhere claim the element
-// names come from the published schema; a comment is not a check, and reads as evidence,
-// which is how a reviewer looking for verification found a claim and stopped.
+// something they do perfectly while both are wrong. A comment saying the element names come
+// from the published schema is not a check.
 //
 // So this validates what we put on the wire against the schema ETSI publishes. It is the
 // X1 counterpart of decoding xIRI against the published ASN.1 module, which is why the
@@ -119,18 +116,7 @@ func checkVendoredSchemas(t *testing.T) {
 // of X1 being schema-conformant, and its length is the honest measure of how far off that
 // is.
 //
-// It is currently **empty**, which is the whole point of having kept it: every entry it
-// held was removed by the fix for its defect, because leaving one behind fails the
-// test. What it held:
-//
-//   - a reported taskDetails omitting its mandatory listOfDIDs, on all three answers
-//     that report a task;
-//   - the destination port rendered as element text where the schema defines a
-//     TCPPort/UDPPort choice — two-way, so a conformant peer's port also parsed as zero;
-//   - a refusal echoing a peer's malformed version and x1TransactionId, which let an
-//     unauthenticated peer make its own rejection unreportable.
-//
-// An empty map is not a reason to delete this: a violation that is not listed here fails
+// It is currently **empty**. An empty map is not a reason to delete it: a violation that is not listed here fails
 // the test, which is what stops the next one arriving unnoticed.
 var knownSchemaDefects = map[string][]string{}
 
@@ -196,8 +182,7 @@ func validateAgainstSchema(t *testing.T, doc []byte) []string {
 	_ = f.Close()
 
 	// --noout so only diagnostics come back. CommandContext rather than Command so a
-	// wedged validator fails the test instead of hanging it — the linter's noctx rule, and
-	// a lesson from an exec that once stalled a suite run for twenty minutes.
+	// wedged validator fails the test instead of hanging it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "xmllint", "--noout",
@@ -210,8 +195,7 @@ func validateAgainstSchema(t *testing.T, doc []byte) []string {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		// Keep diagnostics only. xmllint echoes the offending source line and a caret
-		// beneath it, which are not findings and made one namespace mistake look like
-		// twelve.
+		// beneath it, which are not findings and would make one mistake look like many.
 		if line == "" || strings.HasSuffix(line, "fails to validate") ||
 			!strings.Contains(line, "error :") {
 			continue
@@ -348,14 +332,9 @@ func TestRenderedResponsesValidate(t *testing.T) {
         </ns1:ipAddressAndPort>
       </ns1:deliveryAddress>
     </ns1:destinationDetails>`)},
-		// The refusal path: every error this element sends takes it.
-		//
-		// This case is older than the behaviour it describes. Deactivating an XID the element
-		// does not hold was acknowledged rather than refused, so for a long time the case named
-		// "ErrorResponse (no such task)" was validating a DeactivateTaskResponse — the name and
-		// the comment above recorded an intent the code did not have. TS 103 221-1
-		// table 6.2.3-2 settles it: "it is an error if the XID is not already present at the
-		// NE", and it now is.
+		// The refusal path: every error this element sends takes it. Deactivating an XID the
+		// element does not hold is an error — TS 103 221-1 table 6.2.3-2: "it is an error if
+		// the XID is not already present at the NE".
 		{
 			name: "ErrorResponse (no such task)",
 			req:  request("DeactivateTaskRequest", "\n    <ns1:xId>cccccccc-cccc-4ccc-8ccc-cccccccccccc</ns1:xId>"),
@@ -428,9 +407,9 @@ func TestRenderedResponsesValidate(t *testing.T) {
 		},
 
 		// The refusal path this element sends to a peer it will not talk to. It is the one
-		// case where the request's contents have been trusted by nothing, and it was the only
-		// response type never validated — the request type has to reach the renderer from a
-		// message refused before anything else about it was accepted.
+		// case where the request's contents have been trusted by nothing — the request type
+		// has to reach the renderer from a message refused before anything else about it was
+		// accepted.
 		{
 			name: "ErrorResponse (peer authentication failed)",
 			req:  request("ActivateTaskRequest", ""),
@@ -460,8 +439,7 @@ func TestRenderedResponsesValidate(t *testing.T) {
 			}
 			// A fixed instant whose microseconds end in four zeros. Go's
 			// trailing-zero-stripping formats render this as ".12", so any regression to
-			// one fails *every* case here rather than one run in ten — which is how the
-			// defect this pins survived into a live deployment.
+			// one fails *every* case here rather than one run in ten.
 			srv.now = func() time.Time { return zeroTailInstant }
 
 			peer := admfPeer(t)
@@ -491,11 +469,9 @@ func TestRenderedResponsesValidate(t *testing.T) {
 }
 
 // TestOriginatedRequestsValidate covers the other half of what this element puts on the
-// wire. Two of the five timestamp sites are on this path, and nothing validated it: a
-// response is answered to a peer that may check it, but a *request* we originate — the
-// LI_T3 trigger a CC-TF sends a UPF, and the fault reports by which an element tells an
-// ADMF something is wrong — is checked by whatever receives it, which until now was only
-// ever our own parser.
+// wire: a *request* it originates — the LI_T3 trigger a CC-TF sends a UPF, and the fault
+// reports by which an element tells an ADMF something is wrong — is checked only by whatever
+// receives it. Two of the five timestamp sites are on this path.
 //
 // The bodies are captured from the real send paths rather than rendered from the templates
 // directly, so what is validated is what a peer receives.
@@ -505,9 +481,8 @@ func TestOriginatedRequestsValidate(t *testing.T) {
 
 	// One element across the whole exchange, not one per request. The sequence below is a
 	// sequence — provision a destination, task against it, then withdraw *that* task — and a
-	// fresh store per request made the last step a deactivation of something that had never
-	// existed. It passed anyway while an unheld deactivation was acknowledged; once that
-	// became the 2020 the specification requires, the test said so.
+	// fresh store per request would make the last step a deactivation of something that never
+	// existed, which is refused with 2020.
 	srv := NewServer(store.New(), "upf-1", WithADMF("smf-1"), HonoursCorrelationID())
 	srv.now = func() time.Time { return zeroTailInstant }
 
@@ -548,10 +523,9 @@ func TestOriginatedRequestsValidate(t *testing.T) {
 		}
 	})
 
-	// The IPv6 arm of the same two addresses. Unreachable in this deployment — there
-	// are no IPv6 PDU sessions to intercept — which is exactly why it needs a
-	// validator rather than a reviewer: the trigger rendered an IPv6 literal into the
-	// IPv4Address element and nothing that ever ran would have said so.
+	// The IPv6 arm of the same two addresses. Rare in practice — few deployments carry IPv6
+	// PDU sessions — which is exactly why it needs a validator rather than a reviewer: an
+	// IPv6 literal rendered into the IPv4Address element would pass everything else.
 	t.Run("trigger and destination with IPv6 addresses", func(t *testing.T) {
 		req, body := requesterTo(t, ok)
 		req.now = func() time.Time { return zeroTailInstant }

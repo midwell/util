@@ -17,13 +17,10 @@ import (
 // This file measures what a peer actually returns before anything is made to
 // depend on it.
 //
-// The precedent is the X1 timestamp defect, whose severity was mis-estimated by
-// two orders of magnitude because it was reasoned about from this project's own
-// code instead of observed on the wire. A check that becomes a refusal has to be
-// grounded the same way: a required check against a field the peer never sends is
-// a permanent refusal by construction, and on the withdrawal path a permanent
-// refusal holds open both the withdrawal and the fail-safe that would have
-// completed it.
+// A check that becomes a refusal has to be grounded in what is observed on the wire, not in
+// what the code is expected to send: a required check against a field the peer never sends
+// is a permanent refusal by construction, and on the withdrawal path a permanent refusal
+// holds open both the withdrawal and the fail-safe that would have completed it.
 
 // echoedEnvelope drives one real request through a real Server and returns the
 // response envelope the requester received.
@@ -32,8 +29,8 @@ func echoedEnvelope(t *testing.T, send func(*Requester) error) X1ResponseMessage
 
 	st := store.New()
 	// The trigger's destination is declared, because a task naming one this element
-	// cannot resolve is now refused — and what this test is about is the response
-	// envelope, not destination resolution.
+	// cannot resolve is refused — and what this test is about is the response envelope,
+	// not destination resolution.
 	srv := NewServer(st, "upf-1", WithADMF("smf-1"), HonoursCorrelationID(),
 		WithConfiguredDestinations(ConfiguredDestination{
 			DID:          testTrigger().DIDs[0],

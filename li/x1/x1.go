@@ -116,8 +116,7 @@ type Server struct {
 	// onPurge names why tasking went, after it has gone. See OnPurge.
 	onPurge func(types.InterceptTask, PurgeReason)
 	// onAuthFailure is told the X1 error code when a peer fails clause 8.2.4
-	// authentication. Nil leaves such failures unreported, which is the earlier
-	// behaviour: refused and invisible.
+	// authentication. Nil leaves such failures unreported: refused and invisible.
 	onAuthFailure func(code int)
 	// canApply asks the POI whether it can actually carry out a task before it is
 	// acknowledged. Nil accepts everything, which is right for a POI whose only
@@ -129,18 +128,19 @@ type Server struct {
 	faultProbes []FaultProbe
 	// taskFaults answers what is wrong with one task, now. Consulted when a task's status is
 	// rendered; nil means this element supplies none, and every task then answers with an
-	// empty fault list as it always did. See WithTaskFaults.
+	// empty fault list. See WithTaskFaults.
 	taskFaults func(types.XID) []X1Error
 	// destinationReachable answers whether this element can currently deliver to one
 	// address. Consulted when a destination's details are assembled, never cached, for the
 	// same reason the probes are not.
 	//
 	// nil means the element supplied no answer, and every destination then reports
-	// activeAndWorking — which is what it did unconditionally before, and is now a stated
-	// configuration rather than a hard-coded claim. See WithDestinationReachability.
+	// activeAndWorking, as a stated default rather than a claim made on the element's
+	// behalf. See WithDestinationReachability.
 	destinationReachable func(addr string) bool
 	// deactivateAllDisabled and removeAllDestinationsEnabled carry the two bulk operations'
-	// *different* defaults, which is the specification's asymmetry rather than ours.
+	// *different* defaults. The specification enables both; this element keeps that default
+	// for the first and deliberately not for the second.
 	//
 	// DeactivateAllTasks is enabled unless disabled: "By default (if there has been no
 	// agreement in advance) then DeactivateAllTasks is enabled." It fails safe — interception
@@ -176,7 +176,7 @@ type Server struct {
 	// store is cleared first, so a POI re-deriving during its own teardown sees an
 	// empty one"; "what is being reported is that interception stopped, so it must
 	// have stopped") which mean nothing unless no other transition can interleave.
-	// The lock makes an assumption that was already relied on true.
+	// The lock is what makes those guarantees hold.
 	//
 	// It is not taken by the fault probes or by recordActivity. Probes are documented
 	// as safe to call from the X1 request goroutine and perform no I/O, so a
@@ -401,10 +401,10 @@ func TaskFault(condition, detail string) X1Error {
 // MDFUnreachableProbe returns the probe every POI registers: whether the mediation functions
 // this element delivers to can be reached right now.
 //
-// count answers how many destinations are currently unreachable and how many are in use at
-// all — x2x3.Pool.UnreachableAmong over the destinations in use answers it, and a POI keeping
-// its own clients supplies the equivalent. It is called on the X1 request goroutine, so it must not perform I/O
-// (see FaultProbe).
+// count answers how many destinations are currently unreachable and how many are in use at all —
+// x2x3.Pool.UnreachableAmong over the destinations in use answers it, and a POI keeping its own
+// clients supplies the equivalent. It is called on the X1 request goroutine, so it must not
+// perform I/O (see FaultProbe).
 //
 // It takes counts rather than the destinations themselves so that the answer *cannot* name
 // one. An element's own status says how much is wrong, never whose product is affected, and
@@ -435,9 +435,8 @@ func WithFaultProbes(probes ...FaultProbe) Option {
 
 // faultsForTasks asks the element what is wrong with each task it is about to report.
 //
-// Returns nil when no supplier is registered, so the answer is byte-identical to what this
-// element sent before there was one — an element that supplies nothing must not start
-// answering differently.
+// Returns nil when no supplier is registered: an element that supplies nothing answers with
+// empty fault lists, not with an invented condition.
 //
 // The supplier is called outside the server's lock, once per task in the answer. A supplier
 // that is slow makes an interrogation slow, which is the same trade WithFaultProbes takes and
@@ -478,10 +477,11 @@ func (s *Server) faultsForTasks(tasks []types.InterceptTask) map[types.XID][]X1E
 // one warrant, and cannot be raised by a function that cannot tell which warrant a fault
 // concerned.
 //
-// **Asked, not stored**, which is the same choice WithFaultProbes and
-// WithDestinationReachability make, and for the same reason: a recorded fault goes stale, needs an expiry or an explicit clear, and gets reported after the
-// condition has ended. Every condition here is re-observable from state the element already
-// holds, so the honest answer is computed when the question is asked.
+// **Asked, not stored**, which is the same choice WithFaultProbes and WithDestinationReachability
+// make, and for the same reason: a recorded fault goes stale, needs an expiry or an explicit
+// clear, and gets reported after the condition has ended. Every condition here is re-observable
+// from state the element already holds, so the honest answer is computed when the question is
+// asked.
 //
 // The supplier is keyed by XID and returns codes and descriptions only. It cannot be handed a
 // target identity because it is never given one: a task-scoped answer already names the
@@ -498,12 +498,11 @@ func WithTaskFaults(faults func(types.XID) []X1Error) Option {
 // WithDestinationReachability supplies the answer to "can this element deliver to that
 // address right now", for the destination status a provisioning function can ask for.
 //
-// Without it, GetDestinationDetails and GetAllDestinationDetails answered activeAndWorking
-// for every destination unconditionally — while the same element was reporting the same
-// endpoint as unreachable over ReportDestinationIssue. Two answers about one fact, from one
-// element, disagreeing: the pushed report says the product is not arriving and the
-// interrogation says it is. An ADMF that reconciles them has to decide which of its own
-// element's statements to believe, and the interrogation is the one it will trust, because
+// Without it, GetDestinationDetails and GetAllDestinationDetails answer activeAndWorking for
+// every destination, while the same element may be reporting the same endpoint as
+// unreachable over ReportDestinationIssue. Two answers about one fact, from one element,
+// would then disagree: the pushed report says the product is not arriving and the
+// interrogation says it is. An ADMF reconciling them would trust the interrogation, because
 // asking is how it checks.
 //
 // The function is the delivery layer's own — the same `unreachable` a network function
@@ -1305,8 +1304,8 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 			err = fmt.Errorf("RemoveAllDestinations request is not enabled")
 			code = errCodeRemoveAllOff
 		} else {
-			// The in-use guard moved inside, so it is evaluated atomically with the
-			// removal rather than a few instructions before it.
+			// The in-use guard is inside removeAllDestinations, so it is evaluated
+			// atomically with the removal rather than a few instructions before it.
 			code, err = s.removeAllDestinations()
 		}
 		rm.Type = "RemoveAllDestinationsResponse"
@@ -1374,7 +1373,7 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 		// The answer omits listOfGenericObjectResponseDetails, which is what the specification
 		// defines for an element in this position: "May be omitted if Generic Objects are not
 		// supported by the NE". The same sentence governs the object lists inside GetAllDetails
-		// and ListAllDetails, which this element already omits, so all three answers now say the
+		// and ListAllDetails, which this element also omits, so all three answers say the
 		// same thing about Generic Objects. An *empty* list would be a different and false
 		// claim — that they are implemented and none is held.
 		rm.Type = "GetAllGenericObjectDetailsResponse"
@@ -1839,14 +1838,13 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 // targetXML renders one target identifier as the contents of a
 // <targetIdentifier> element, in the form the schemas define for it.
 //
-// It exists because an identifier cannot be reported as "element name plus value":
-// the LI_T3 packet-detection criteria are not plain identifier elements but arms of
-// a 3GPP extension, nested inside targetIdentifierExtension with an Owner. Rendered as
-// a plain element they would be XML no ADMF could validate, and a criterion with no
-// mapping of its own would tell an auditing ADMF the element was tasked by a subscriber
-// identity when it was tasked by a tunnel, a port or a direction. GetTaskDetails and GetAllDetails exist so an ADMF
-// can discover what an element actually holds; answering them wrongly defeats the
-// only mechanism it has.
+// It exists because an identifier cannot be reported as "element name plus value": the LI_T3
+// packet-detection criteria are not plain identifier elements but arms of a 3GPP extension, nested
+// inside targetIdentifierExtension with an Owner. Rendered as a plain element they would be XML no
+// ADMF could validate, and a criterion with no mapping of its own would tell an auditing ADMF the
+// element was tasked by a subscriber identity when it was tasked by a tunnel, a port or a
+// direction. GetTaskDetails and GetAllDetails exist so an ADMF can discover what an element
+// actually holds; answering them wrongly defeats the only mechanism it has.
 //
 // The output round-trips: what this emits, mapTarget parses back to the same
 // identifier.

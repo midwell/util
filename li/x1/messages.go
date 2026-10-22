@@ -160,13 +160,9 @@ type IPAddressPort struct {
 }
 
 // Port is the TS 103 280 Port CHOICE: a TCPPort or a UDPPort *child element*, never a
-// number in the element's own text.
-//
-// It was bound as a bare uint16 until a schema validator was pointed at this path, and
-// the mistake was two-way — we rendered a destination no peer could validate, and a
-// conformant peer's port parsed as zero, so the element would have stored a destination
-// pointing nowhere and delivered nothing to it. It went unnoticed because the only peer
-// this code has ever spoken to is another copy of itself, sending the same wrong shape.
+// number in the element's own text. Bound as the choice rather than as a bare number,
+// because a number in the element's text is what a conformant peer never sends: it would
+// parse a conformant port as zero and store a destination pointing nowhere.
 type Port struct {
 	TCPPort *uint16 `xml:"http://uri.etsi.org/03280/common/2017/07 TCPPort,omitempty"`
 	UDPPort *uint16 `xml:"http://uri.etsi.org/03280/common/2017/07 UDPPort,omitempty"`
@@ -417,8 +413,8 @@ type TargetIdentifier struct {
 	// Unmodelled collects every child element no field above claims — an arm TS 103
 	// 221-1 defines that this element does not model, such as macAddress. encoding/xml
 	// otherwise drops such an element silently, and a choice carrying one modelled and
-	// one unmodelled arm then looked like a single modelled arm: the element narrowed
-	// the interception to the arm it understood and acknowledged it.
+	// one unmodelled arm would look like a single modelled arm: the element would narrow
+	// the interception to the arm it understood and acknowledge it.
 	Unmodelled []UnmodelledElement `xml:",any"`
 }
 

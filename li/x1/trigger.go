@@ -21,14 +21,14 @@ import (
 	"github.com/omec-project/util/li/types"
 )
 
-// Requester is the requesting side of X1 — the role TS 103 221-1 calls the
-// "ADMF". A Triggering Function uses it to task a triggered POI: TS 33.128
-// clause 5.2.6 realises the LI_T3 triggering interface as TS 103 221-1: "the CC-TF
-// plays the role of the "ADMF" as defined in ETSI TS 103 221-1 [7] reference model
-// (clause 4.2), and the triggered CC-POI plays the role of the "NE"". So triggering is an
-// ordinary X1 exchange rather than a private protocol. Requests carry the requester's own identifier, which the NE
-// authenticates against the certificate presented (clause 8.2.4) exactly as it
-// would a real ADMF's — being the SMF is not authority in itself.
+// Requester is the requesting side of X1 — the role TS 103 221-1 calls the "ADMF". A
+// Triggering Function uses it to task a triggered POI: TS 33.128 clause 5.2.6 realises the
+// LI_T3 triggering interface as TS 103 221-1, where "the CC-TF plays the role of the "ADMF"
+// as defined in ETSI TS 103 221-1 [7] reference model (clause 4.2), and the triggered CC-POI
+// plays the role of the "NE"". So triggering is an ordinary X1 exchange rather than a private
+// protocol. Requests carry the requester's own identifier, which the NE authenticates against
+// the certificate presented (clause 8.2.4) exactly as it would a real ADMF's — being the SMF
+// is not authority in itself.
 //
 // It logs nothing: what is tasked, and that anything is tasked at all, must not
 // reach general operator logs.

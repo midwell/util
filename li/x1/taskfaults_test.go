@@ -144,10 +144,10 @@ func TestASuppliedTaskFaultIsAttributedToThatTask(t *testing.T) {
 	}
 }
 
-// TestAnElementSupplyingNoTaskFaultsAnswersAsBefore: registering no supplier is a legitimate
-// configuration, and it must produce the answer this element sent before the option existed —
-// not an omitted element, and not a claim it has nothing to say about the task.
-func TestAnElementSupplyingNoTaskFaultsAnswersAsBefore(t *testing.T) {
+// TestAnElementSupplyingNoTaskFaultsAnswersWithAnEmptyFaultList: registering no supplier is a
+// legitimate configuration, and it produces an empty fault list — not an omitted element, and
+// not a claim it has nothing to say about the task.
+func TestAnElementSupplyingNoTaskFaultsAnswersWithAnEmptyFaultList(t *testing.T) {
 	withNothing := answerTo(t, twoTaskServer(t), "GetAllTaskDetailsRequest", "")
 
 	sup := &faultSupplier{faults: map[types.XID][]X1Error{}}
@@ -307,7 +307,7 @@ func TestATaskFaultMustNameADeclaredCondition(t *testing.T) {
 
 // TestTheFaultSupplierIsAskedOnlyForAnswersThatReportFaults: the supplier may walk every
 // session the element holds, once per task. ListAllDetails names tasks by XID and renders no
-// fault, so asking it there was work done and thrown away — but the answers that do render
+// fault, so asking it there would be work done and thrown away — but the answers that do render
 // faults must still ask, or they would report a faulty task as healthy.
 func TestTheFaultSupplierIsAskedOnlyForAnswersThatReportFaults(t *testing.T) {
 	for msgType, wantAsked := range map[string]bool{

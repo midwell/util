@@ -16,10 +16,10 @@ import (
 
 // Each X1 response type defines its own body, and they are not variations on one shape: a
 // details response carries content and no acknowledgement, an acknowledgement carries the
-// reverse, and an error carries the type of the request it is refusing. Rendering them from
-// one uniform template produced four schema violations that survived review — an `oK` in
-// responses that define none, a `taskStatus` emitted as a string where the schema defines a
-// complex type, and `GetAllDetails` missing three mandatory elements.
+// reverse, and an error carries the type of the request it is refusing. One uniform template
+// cannot express that — it would put an `oK` in responses that define none, render a
+// `taskStatus` as a string where the schema defines a complex type, and omit the mandatory
+// elements of `GetAllDetails`.
 //
 // So the shape is decided here, per type, where it can be read against the schema and
 // tested. `TestRenderedResponsesValidate` validates every one of these against the
@@ -96,9 +96,9 @@ func responseBody(m X1ResponseMessage) string {
 	}
 }
 
-// errorBody renders an ErrorResponse. `requestMessageType` is mandatory and was omitted
-// entirely, so every refusal this element sent was invalid — including the refusals that
-// tell an ADMF its request was not authorised.
+// errorBody renders an ErrorResponse. `requestMessageType` is mandatory: without it every
+// refusal would be invalid against the schema — including the refusals that tell an ADMF its
+// request was not authorised.
 func errorBody(m X1ResponseMessage) string {
 	var b strings.Builder
 	b.WriteString(el(4, "requestMessageType", requestMessageType(m.RequestType)))
@@ -269,7 +269,7 @@ func destinationResponseDetails(ind int, d ReportedDestination) string {
 	b.WriteString(open(ind+2, "destinationStatus"))
 	// activeAndWorking or deliveryFault are the only enumerated values, and the element's
 	// own delivery layer decides which: see WithDestinationReachability for why answering
-	// activeAndWorking unconditionally was worse than answering nothing.
+	// activeAndWorking unconditionally would be worse than answering nothing.
 	status, faults := "activeAndWorking", []X1Error(nil)
 	if d.Unreachable {
 		status = "deliveryFault"
@@ -596,9 +596,9 @@ func (s *Server) destinationByDIDUnannotated(did string) (ReportedDestination, b
 // annotateReachability fills in each entry's delivery status from the element's own delivery
 // layer. Called with s.mu released.
 //
-// An element that supplied no answer leaves every entry as it was, which reports
-// activeAndWorking — the same answer this package gave unconditionally before, now a
-// consequence of the element having nothing to say rather than a claim made on its behalf.
+// An element that supplies no answer leaves every entry as it is, which reports
+// activeAndWorking: a consequence of the element having nothing to say, not a claim made on
+// its behalf.
 func (s *Server) annotateReachability(dests []ReportedDestination) {
 	s.mu.Lock()
 	unreachable := s.destinationReachable

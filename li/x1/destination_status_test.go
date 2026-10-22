@@ -10,14 +10,13 @@ import (
 	"github.com/omec-project/util/li/store"
 )
 
-// TestAnUnreachableDestinationIsNotReportedAsWorking is the discrepancy this closes: one
-// element making two statements about one fact, and disagreeing with itself.
+// TestAnUnreachableDestinationIsNotReportedAsWorking: one element must not make two
+// statements about one fact that disagree.
 //
-// destinationDeliveryStatus was hard-coded to activeAndWorking, so an element that had just
-// told the ADMF over ReportDestinationIssue that an endpoint was unreachable answered "working"
-// the moment the ADMF asked about it. Interrogation is how a provisioning function checks a
-// pushed report, so the answer it will act on is the one that was wrong — and the direction of
-// the error is the unsafe one: it says product is arriving when it is not.
+// An element that has told the ADMF over ReportDestinationIssue that an endpoint is unreachable
+// must not answer "working" when the ADMF asks about it. Interrogation is how a provisioning
+// function checks a pushed report, so the answer it acts on is the interrogation — and a wrong
+// one errs in the unsafe direction: it says product is arriving when it is not.
 func TestAnUnreachableDestinationIsNotReportedAsWorking(t *testing.T) {
 	const (
 		did  = "11111111-1111-1111-1111-111111111111"
@@ -130,8 +129,8 @@ func TestGetAllDestinationDetailsCarriesTheSameAnswer(t *testing.T) {
 	}
 }
 
-// TestAnElementThatSuppliesNoReachabilityAnswerStillReportsWorking keeps the previous
-// behaviour available where it is the honest answer. An element with no delivery layer to ask
+// TestAnElementThatSuppliesNoReachabilityAnswerStillReportsWorking: activeAndWorking stays the
+// answer where it is the honest one. An element with no delivery layer to ask
 // — a test, or one built before its pool exists — has nothing to say about reachability, and
 // activeAndWorking is then a default rather than a claim contradicted elsewhere.
 func TestAnElementThatSuppliesNoReachabilityAnswerStillReportsWorking(t *testing.T) {
