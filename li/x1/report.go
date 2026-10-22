@@ -5,7 +5,6 @@ package x1
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"fmt"
@@ -20,9 +19,11 @@ import (
 // flood the ADMF.
 const reportThrottle = 30 * time.Second
 
-// TS 103 221-1 typeOfNeIssueMessage values for the LI-plane faults a POI reports.
-// These are NE-level (no target/warrant identifier). The exact XSD enumeration
-// should be confirmed against a conformant ADMF during in-cluster e2e (group 7).
+// The LI-plane conditions an element reports at network-element scope. Each is a condition
+// name, not a TS 103 221-1 TypeOfNEIssueMessage value: the name leads the report's free-text
+// description, where an ADMF can tell one fault from another, and neIssueEncodings maps it
+// onto the closed TypeOfNEIssueMessage enumeration and the issue code the schema provides.
+// None names a target or a warrant.
 //
 // Each condition is carried by exactly one of this element's two mechanisms, and which
 // one is decided by the condition's nature rather than by convenience.
@@ -34,22 +35,28 @@ const reportThrottle = 30 * time.Second
 // discards real faults on a timer nobody can justify, or none at all, which makes an
 // element permanently faulty. Both end with the answer no longer being read.
 //
-//	mdfUnreachable      state  both   the mediation function is reachable or it is not
-//	x3EgressDown        state  probe  the datapath egress socket is up or it is not
-//	x3PuntLost          event  push   a copy the datapath could not hand over
-//	x3FramingLost       event  push   a copy this element could not frame in time
-//	x3DeliveryLost      event  push   a copy the delivery queue had no room for
-//	contentUntasked     event  push   a copy that arrived under no warrant
-//	x3TagInvalid        event  push   a copy that arrived uncorrelatable
-//	contentTaskOverlap  event  push   a copy delivered under one of several warrants
-//	taskingPurged       event  push   tasking the fail-safe removed, once
-//	reconcileFailed     event  push   a restart this element could not reconcile
-//	taskingWithdrawalFailed  event push a withdrawal a POI did not acknowledge
-//	taskingWithdrawalStuck   event push a withdrawal outstanding long enough to matter
-//	x1AuthFailed        event  push   a provisioning attempt that was refused
-//	taskingAbsent       state  push   observable, deliberately not a probe (below)
-//	x1ListenFailed      state  push   observable, but unaskable (below)
-//	invalidConfig       state  push   observable, but unaskable (below)
+//	condition                  kind   carried by  meaning
+//	mdfUnreachable             state  both        the mediation function is reachable or it is not
+//	x3EgressDown               state  probe       the datapath egress socket is up or it is not
+//	x3PuntLost                 event  push        a copy the datapath could not hand over
+//	x3FramingLost              event  push        a copy this element could not frame in time
+//	x3DeliveryLost             event  push        a copy the delivery queue had no room for
+//	x2DeliveryLost             event  push        a record the delivery queue had no room for
+//	contentUntasked            event  push        a copy that arrived under no warrant
+//	x3TagInvalid               event  push        a copy that arrived uncorrelatable
+//	contentTaskOverlap         event  push        a copy delivered under one of several warrants
+//	duplicationRefused         event  push        a rule the datapath refused or did not confirm
+//	recordValueSubstituted     event  push        a record field carrying the nearest permitted value
+//	triggerFaulty              event  push        a POI reporting a trigger as not running
+//	taskingPurged              event  push        tasking the fail-safe removed, once
+//	reconcileFailed            event  push        a restart this element could not reconcile
+//	taskingWithdrawalFailed    event  push        a withdrawal a POI did not acknowledge
+//	taskingWithdrawalStuck     event  push        a withdrawal outstanding long enough to matter
+//	x1AuthFailed               event  push        a provisioning attempt that was refused
+//	x1ResponseUnattributable   event  push        an answer that could not be bound to its request
+//	taskingAbsent              state  push        observable, deliberately not a probe (below)
+//	x1ListenFailed             state  push        observable, but unaskable (below)
+//	invalidConfig              state  push        observable, but unaskable (below)
 //
 // mdfUnreachable is the one condition carried by *both*, and it is not an exception to
 // the rule above but the rule followed all the way. A state has an ending as well as a
@@ -74,9 +81,9 @@ const reportThrottle = 30 * time.Second
 //   - invalidConfig. The same shape: an element that refuses its configuration never
 //     reaches the point of answering questions about itself.
 //
-// Adding a condition means answering this question first, and getting it wrong in the
-// probe direction is what withdrew the first probe this package shipped — it reasoned
-// about delivery it could not see, and every healthy element answered "Faults".
+// Adding a condition means answering this question first. Getting it wrong in the probe
+// direction makes the status answer useless: a probe that reasons about delivery it cannot
+// see answers "Faults" on every healthy element.
 const (
 	NEIssueX1ListenFailed = "x1ListenFailed"
 	NEIssueX3EgressDown   = "x3EgressDown"
@@ -327,24 +334,19 @@ type Reporter struct {
 	client  *http.Client
 	now     func() time.Time
 	// authenticated says whether this element holds TLS material, which is what decides
-	// whether an answer must prove whose it is. Same rule and same reason as on the
-	// requester side: the certificate-less mode this project supports deliberately has no
-	// certificate to bind.
+	// whether an answer must prove whose it is. Same rule as on the requester side: a
+	// Reporter built without TLS speaks plain HTTP and has no certificate to bind.
 	authenticated bool
 
 	mu sync.Mutex
-	// lastSent throttles a repeat of the same report, keyed by reportKey rather than
-	// by issue type alone.
-	//
-	// The type alone was the right key while every report was network-element
-	// scoped, and becomes wrong the moment one names a destination: two destinations
-	// failing inside one window would be one report, and which survived would be
-	// whichever failed first.
+	// lastSent throttles a repeat of the same report, keyed by reportKey — condition and
+	// scope — rather than by issue type alone, so two destinations failing inside one
+	// window are two reports and neither hides the other.
 	lastSent map[reportKey]time.Time
 	// sending is the set of keys whose report or retraction is in flight right now.
 	//
-	// It exists because the decision to send and the record of having sent are no
-	// longer one step, and something has to hold the key in between. It is also what
+	// It exists because the decision to send and the record of having sent are two
+	// steps, and something has to hold the key in between. It is also what
 	// bounds the dispatch form in NotifyAsync: a report site driven by packet rate
 	// finds its key reserved while the previous attempt is still outstanding, so one
 	// condition costs one attempt at a time however fast the condition recurs.
@@ -387,11 +389,10 @@ type reportKey struct {
 // the key for the send that follows. It is the throttle, keyed per condition per
 // scope rather than per issue type.
 //
-// It is the first half of what one step used to do: deciding to send and recording
-// that a send happened were the same operation, and that made both of them wrong. A
-// report that failed to reach the ADMF was recorded as made — suppressed for a
-// throttle window the ADMF never saw, and left in reported, from where a later
-// clearing report announced the end of something nobody had been told began.
+// Deciding to send and recording that a send happened are separate steps — reserve, then
+// commit or release — so that a report which failed to reach the ADMF is neither
+// suppressed for a throttle window the ADMF never saw nor left in reported, from where a
+// later clearing report would announce the end of something nobody had been told began.
 //
 // **The reservation is held for the duration of the send, not merely across the
 // decision.** That is what bounds NotifyAsync: releasing it at the decision would let
@@ -432,10 +433,11 @@ func (r *Reporter) commit(k reportKey) {
 	delete(r.sending, k)
 	r.lastSent[k] = now
 
-	// Recorded as standing only where something can retract it. A task-scoped report has
-	// no clearing counterpart, so an entry for it could never be removed, and a triggering
-	// function reports per XID: the record grew with every interception that ever had a
-	// fault, for the life of the process.
+	// Task-scoped reports are not recorded as standing: nothing retracts one, and a
+	// triggering function reports per XID, so the record would grow with every
+	// interception that ever had a fault. Element- and destination-scoped reports are
+	// recorded. An element-scoped *event* (Notify) is never retracted either, but its entry
+	// is keyed by condition alone, so there is at most one per condition.
 	if k.scope != scopeTask {
 		r.reported[k] = true
 	}
@@ -455,13 +457,9 @@ func (r *Reporter) forgetExpiredLocked(now time.Time) {
 }
 
 // release gives back a reservation whose send did not reach the ADMF. Nothing is
-// recorded: the condition is eligible again at the next observation, and no clearing
-// report can later refer to a fault that was never delivered.
-//
-// The exposure this closes was bounded — reportThrottle is 30s and faultwatch
-// re-observes at the same cadence, so a persistent condition was retried — but the
-// two lasting halves were not: the retraction for a fault nobody received, and a
-// failed retraction forgotten while the ADMF still held the fault.
+// recorded: the condition is eligible again at the next observation, no clearing report
+// can later refer to a fault that was never delivered, and a retraction that failed leaves
+// the fault recorded so it can be sent again.
 func (r *Reporter) release(k reportKey) {
 	if r == nil {
 		return
@@ -498,11 +496,11 @@ func (r *Reporter) settle(k reportKey, err error) {
 // fault clearing are two events and not a repetition, and an element that throttled
 // the second against the first would report a fault it never retracts — which is
 // worse than reporting neither, because the ADMF acts on the first.
-// It no longer forgets in front of the send. A retraction that failed used to leave
-// the ADMF holding a fault this element believed it had cleared and would never
-// mention again — the mirror of the report committed before its own send, and the
-// worse direction of the two, since nothing re-observes a fault that has gone away.
-// The record now survives until commitClear, so a failed retraction can be sent again.
+//
+// The record is kept until commitClear rather than dropped here, so a retraction that
+// fails can be sent again. Dropping it in front of the send would leave the ADMF holding a
+// fault this element believes it has cleared, and nothing re-observes a fault that has
+// gone away.
 func (r *Reporter) clearing(k reportKey) bool {
 	if r == nil {
 		return false
@@ -605,10 +603,9 @@ var reportTemplate = template.Must(template.New("x1report").Funcs(x1TemplateFunc
 // table rather than decided at each call site.** The scope of a condition is a property of the
 // condition — "the mediation functions I deliver to are unreachable" is true of every task this
 // element holds; "the datapath is not duplicating what this task requires" is true of one — and
-// deciding it per author is how a condition ends up reported at a scope that cannot act on it.
-// That is not hypothetical: `triggerFaulty` existed for a year and was raised at element scope,
-// which told a provisioning function that something among its warrants had stopped and left it
-// unable to say which.
+// deciding it per author is how a condition ends up reported at a scope that cannot act on it:
+// a task's fault reported at element scope tells a provisioning function that something among
+// its warrants has stopped and leaves it unable to say which.
 //
 // The description a POI sends is prose because that is the only free-form field a task's fault
 // list has — errorCode and errorDescription, nothing else — so the condition name leads it, as
@@ -659,15 +656,12 @@ var taskScoped = map[string]bool{
 const (
 	// TaskReportAllClear: a fault previously reported at this scope has cleared.
 	//
-	// The task- and destination-scoped counterpart of FaultCleared, which is the
-	// network-element one. Clause 5.3 requires both — "The NE shall also indicate
-	// that a fault has been cleared (see clauses 6.5.2 and 6.5.3) unless otherwise
-	// configured" — and clauses 6.5.2 and 6.5.3 each repeat it for their own message.
-	//
-	// It was declared here and emitted by nothing until 2026-08-15, as FaultCleared
-	// was: an element that reports every beginning and no ending leaves a
-	// provisioning function holding a list that only grows, and one that cannot tell
-	// a current fault from a historical one treats all of them as historical.
+	// The counterpart of FaultCleared, which is the network-element one, at the two
+	// scopes whose report type is this enumeration. Clause 5.3 requires both — "The NE
+	// shall also indicate that a fault has been cleared (see clauses 6.5.2 and 6.5.3)
+	// unless otherwise configured". This element sends it at destination scope
+	// (NotifyDestinationClear); its task-scoped reports are events, which have no ending
+	// to report.
 	TaskReportAllClear = "AllClear"
 	// TaskReportWarning: something is wrong but the interception continues.
 	TaskReportWarning = "Warning"
@@ -707,12 +701,10 @@ var reportTaskTemplate = template.Must(template.New("x1taskissue").Funcs(x1Templ
 // callers may still, and must when they hold the Reporter behind an interface (a nil
 // interface value cannot be called at all).
 //
-// **"Nothing to do" stopped being true when settle began consuming the outcome.** The
-// caller has nowhere to put the error, and that is still so; the reporter does. A
-// report that did not arrive leaves its key unreserved rather than recorded as told, so
-// the condition is eligible at the next observation and no retraction is later sent for
-// a fault the ADMF never had. The discarding here is the *caller's* — the outcome is
-// read before it reaches this line, by whichever settle path called it.
+// **The outcome is not lost, only not returned.** The caller has nowhere to put the error;
+// the reporter does, and settles it before this returns. A report that did not arrive
+// leaves its key unreserved rather than recorded as told, so the condition is eligible at
+// the next observation and no retraction is later sent for a fault the ADMF never had.
 //
 // It stays silent on failure for the same reason ReportNEIssue does: writing the
 // error anywhere general would be the very disclosure this plane exists to avoid.
@@ -737,7 +729,8 @@ func (r *Reporter) Notify(issueType, description string) {
 // churn on the one path that must stay cheap. With the check first, an admitted report
 // costs one goroutine per condition per throttle window and a suppressed one costs a
 // lock acquisition. The reservation is held until the send settles, so a condition
-// recurring at packet rate has at most one attempt outstanding.
+// recurring at packet rate has at most one attempt outstanding, and the goroutine that
+// makes it ends within x1RequestTimeout.
 //
 // It dispatches reportNEIssueAs and not Notify or ReportNEIssue: those consult the
 // throttle themselves, so reserving here and then calling one of them reserves twice
@@ -781,7 +774,8 @@ func (r *Reporter) NotifyTask(xid, reportType, details string) {
 // condition is the token the throttle keys on, separate from details so that two different
 // conditions about one task cannot suppress each other. As in NotifyAsync the reservation is taken
 // *before* the goroutine is spawned, so a condition recurring quickly costs a lock acquisition
-// rather than a goroutine.
+// rather than a goroutine; reports are throttled per (xid, condition), and the goroutine ends
+// within x1RequestTimeout.
 func (r *Reporter) NotifyTaskAsync(xid, reportType, condition, details string) {
 	if r == nil || xid == "" {
 		return
@@ -804,10 +798,13 @@ func (r *Reporter) NotifyTaskAsync(xid, reportType, condition, details string) {
 // triggering function is the only party that knows.
 //
 // Unlike ReportNEIssue this names an XID, because the issue is with one
-// interception rather than with the element. It is therefore not throttled — each
-// task's failure is its own fact — and details must still describe the fault
-// without naming the target.
+// interception rather than with the element, and details must still describe the fault
+// without naming the target. This method sends every time it is called; NotifyTaskAsync
+// is the throttled form, keyed per (xid, condition). A nil Reporter sends nothing.
 func (r *Reporter) ReportTaskIssue(xid, reportType, details string) error {
+	if r == nil {
+		return nil
+	}
 	// Held rather than generated inline, because the answer has to be bound to it.
 	txID := newUUID()
 
@@ -823,10 +820,10 @@ func (r *Reporter) ReportTaskIssue(xid, reportType, details string) error {
 		ReportType: reportType,
 		Details:    details,
 	}); err != nil {
-		return err
+		return fmt.Errorf("x1: rendering ReportTaskIssueRequest: %w", err)
 	}
 
-	resp, err := r.postXML(r.admfURL, &body)
+	resp, err := postX1(r.client, r.admfURL, &body)
 	if err != nil {
 		return err
 	}
@@ -916,8 +913,7 @@ func (r *Reporter) NotifyElementFault(condition, description string) {
 // and does nothing if none was.
 //
 // Clause 5.3 again, at the third scope: FaultCleared is the TypeOfNeIssueMessage
-// for it, as AllClear is the TaskReportType at the other two. Like them it was
-// declared here and emitted by nothing.
+// for it, as AllClear is the TaskReportType at the other two.
 func (r *Reporter) NotifyElementClear(condition string) {
 	if r == nil {
 		return
@@ -949,8 +945,11 @@ func (r *Reporter) NotifyDestinationClear(did, condition string) {
 // ReportDestinationIssue POSTs a ReportDestinationIssueRequest to the ADMF
 // (TS 103 221-1 clause 6.5.3). Prefer NotifyDestinationFault and
 // NotifyDestinationClear, which carry the throttling and the record of what has
-// been reported; this is the message on its own.
+// been reported; this is the message on its own. A nil Reporter sends nothing.
 func (r *Reporter) ReportDestinationIssue(did, reportType, details string) error {
+	if r == nil {
+		return nil
+	}
 	txID := newUUID()
 
 	var body bytes.Buffer
@@ -965,10 +964,10 @@ func (r *Reporter) ReportDestinationIssue(did, reportType, details string) error
 		ReportType: reportType,
 		Details:    details,
 	}); err != nil {
-		return err
+		return fmt.Errorf("x1: rendering ReportDestinationIssueRequest: %w", err)
 	}
 
-	resp, err := r.postXML(r.admfURL, &body)
+	resp, err := postX1(r.client, r.admfURL, &body)
 	if err != nil {
 		return err
 	}
@@ -1006,12 +1005,14 @@ func (r *Reporter) ReportNEIssue(issueType, description string) error {
 // It exists because a condition and its retraction are the same condition and
 // different messages: the registry maps a condition to the kind that *announces*
 // it, and there is no second entry for the kind that ends it. Deriving the kind
-// would make FaultCleared unreachable, which is how it came to be declared and
-// never sent.
+// would make FaultCleared unreachable.
 //
 // It does not consult the throttle. Its callers have already decided that this
-// message is a state change rather than a repetition.
+// message is a state change rather than a repetition. A nil Reporter sends nothing.
 func (r *Reporter) reportNEIssueAs(issueType, kind string, code int, description string) error {
+	if r == nil {
+		return nil
+	}
 	encoding := neIssueEncoding{kind: kind, code: code}
 
 	txID := newUUID()
@@ -1029,10 +1030,10 @@ func (r *Reporter) reportNEIssueAs(issueType, kind string, code int, description
 		IssueCode:   encoding.code,
 		Description: issueType + ": " + description,
 	}); err != nil {
-		return err
+		return fmt.Errorf("x1: rendering ReportNEIssueRequest: %w", err)
 	}
 
-	resp, err := r.postXML(r.admfURL, &body)
+	resp, err := postX1(r.client, r.admfURL, &body)
 	if err != nil {
 		return err
 	}
@@ -1054,10 +1055,9 @@ func (r *Reporter) reportNEIssueAs(issueType, kind string, code int, description
 //
 // It reuses the requester side's binding rather than adding a second decoder, because both
 // senders on this interface have the same obligation and the only difference is which role
-// the peer holds. That also brings the checks a hand-written reader here would have
-// omitted: the response type derived from the request's, the transaction identity, and the
-// responder's certificate — so an answer from something other than the responsible ADMF
-// cannot commit a report either.
+// the peer holds: the response type derived from the request's, the transaction identity,
+// and the responder's certificate in the ADMF role — so an answer from something other than
+// the responsible ADMF cannot commit a report either.
 func (r *Reporter) readReportResponse(requestType, txID string, resp *http.Response) error {
 	h := header{OurID: r.admfID, NeID: r.neID, TxID: txID, Type: requestType}
 
@@ -1080,23 +1080,8 @@ func NewUUID() string {
 	return newUUID()
 }
 
-// postXML sends an X1 request body to url and returns the response, which the
-// caller must close. It exists so both report kinds go out the same way, and
-// because net/http's Post helper carries no context — this plane's requests are
-// bounded by the client's own timeout, but the linter is right that the shape
-// should be explicit.
-func (r *Reporter) postXML(url string, body *bytes.Buffer) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/xml")
-
-	return r.client.Do(req)
-}
-
 // newUUID returns a random RFC 4122 v4 UUID for the x1TransactionId, without an
-// external dependency (the li module has none).
+// external dependency (this package uses the standard library only).
 func newUUID() string {
 	var b [16]byte
 	//nolint:errcheck // crypto/rand.Read never returns an error

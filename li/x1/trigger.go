@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -42,6 +43,25 @@ type Requester struct {
 	now           func() time.Time
 }
 
+// x1RequestTimeout bounds one outbound X1 exchange end to end — connection, request and the
+// whole answer. It is what bounds every caller of postX1, which takes no context.
+const x1RequestTimeout = 10 * time.Second
+
+// maxResponseBytes bounds the answer this element reads to one of its own requests.
+//
+// Larger than maxRequestBytes, the server's limit on a request, because an answer's size is
+// set by the state the peer holds rather than by what was asked: a GetAllDetailsResponse lists
+// every task, at roughly 850 bytes for a minimal one, so the request limit would refuse the
+// reconciliation answer of an element holding about 1,200 tasks — permanently, on every
+// attempt. 16 MiB covers about twenty thousand while still bounding what a peer can make this
+// element buffer.
+const maxResponseBytes = 16 << 20
+
+// maxDrainBytes is how much of an unread answer is discarded before its body is closed, so
+// the connection can carry the next request. Small, because an answer this element refuses is
+// not one it owes any further reading.
+const maxDrainBytes = 64 << 10
+
 // newX1Client is the HTTP client this element's outbound X1 requests go out on.
 //
 // It does not follow redirects. net/http follows up to ten by default, and a 307 or 308
@@ -53,7 +73,7 @@ type Requester struct {
 func newX1Client(tlsConfig *tls.Config) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
-		Timeout:   10 * time.Second,
+		Timeout:   x1RequestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -76,10 +96,12 @@ func NewRequester(neURL, ourID, neID string, tlsConfig *tls.Config) *Requester {
 }
 
 // Trigger describes an LI_T3 task a Triggering Function installs at a triggered
-// CC-POI (TS 33.128 table 6.2.3-6). Every field is mandatory there: without
-// ProductID and CorrelationID the POI's product cannot be attributed to a warrant
-// or joined to the signalling, and without the detection criteria it cannot
-// isolate the session at all.
+// CC-POI (TS 33.128 table 6.2.3-6). XID, ProductID, CorrelationID, SEID and at least one
+// DID are required, and ActivateTask and ModifyTask refuse a trigger without them: without
+// ProductID and CorrelationID the POI's product cannot be attributed to a warrant or joined
+// to the signalling, and without the SEID it cannot isolate the session at all.
+// SEIDAddress is optional, as the FSEID's address is in the 3GPP X1 extension schema, and
+// is omitted from the request when empty.
 type Trigger struct {
 	// XID identifies the trigger task itself and is allocated by the Triggering
 	// Function. It is not the warrant's XID — that travels in ProductID.
@@ -134,8 +156,7 @@ func (e *RequestError) Error() string {
 // concerned is exactly what has not been established. That is an element-level
 // condition, and the operator action differs: a refusal is something to take up
 // with the point of interception, an unattributable answer is a configuration or
-// routing fault on this side. `reconcileTriggers` already draws the same
-// distinction for the same reason.
+// routing fault on this side.
 type ResponseError struct {
 	// Field names what did not match — "neIdentifier", "x1TransactionId", the
 	// response type. It is the operator's first clue and is safe to log on the LI
@@ -159,52 +180,33 @@ func responseTypeFor(requestType string) string {
 	return strings.TrimSuffix(requestType, "Request") + "Response"
 }
 
-// validate binds a decoded response to the request that produced it.
+// validateBound binds a decoded response to the request that produced it.
 //
-// This is the client-side half of a property the server has had all along. The
-// server checks every inbound message against a configured peer identity
-// (clause 8.2.4) precisely because mutual TLS establishes that a peer is in the LI
-// domain and not *which* element it is. The requester inherited none of that and
-// trusted the transport alone, so any endpoint a misroute or a stale DNS record
-// put in the path could answer OK — and the triggering function would record
-// content interception as installed at a point of interception that never
-// received the trigger. Nothing downstream reveals that, because the product that
-// would be missing was never produced.
+// It is shared by both senders on this interface, which sit on opposite sides of it: a
+// Requester is an ADMF or a triggering function asking an NE, and a Reporter is an NE telling
+// an ADMF. Both must bind their answers to their requests, and one implementation keeps the
+// two from checking different things.
 //
-// Three of the four fields are echoes a conformant peer copies straight off the
-// request, so any endpoint that *received* the request can return them correctly.
-// Only neIdentifier is the peer's own assertion of who it is, and an endpoint that
-// wants to be believed states whatever the requester expects. So these checks catch
-// a *wrong* element and not a lying one, and readResponse adds the check that bounds
-// the second case: the responder's certificate must bind the addressed identifier in
-// the NE role, exactly as the server checks a requester's certificate inbound.
+// h names the identifiers as the answer must carry them: OurID in admfIdentifier and NeID in
+// neIdentifier. Which of the two is the peer's own assertion depends on the direction. An NE
+// answering a Requester states neIdentifier about itself and echoes admfIdentifier; an ADMF
+// answering a Reporter states admfIdentifier about itself and echoes neIdentifier. The
+// asserted one is what detects a misroute — the other, like the transaction identifier and
+// the response type, is derived from the request and any endpoint that received it can return
+// it correctly.
 //
-// This comment used to say mutual TLS and the certificate binding bounded the lying
-// case already. On the server side that is true. On this side it was not: the client
-// verified the chain and the hostname and nothing checked the clause 8.2.4 binding, so
-// the holder of any LI-CA certificate whose SANs covered the dialled address could
-// assert the configured neIdentifier and convince this element that an LI_T3 trigger
-// was installed. A hostname binds a name; the annex G binding binds an X1 identifier,
-// and inside one trust domain those are not the same statement.
+// So these checks catch a *wrong* peer and not a lying one, which can state whatever is
+// expected. readBoundResponse adds the check that bounds the second case: the responder's
+// certificate must bind the expected identifier in the peer's role (clause 8.2.4), as the
+// server checks a requester's certificate inbound. A hostname binds a name; the annex G
+// binding binds an X1 identifier, and inside one LI trust domain those are not the same
+// statement.
 //
-// Every field checked here is a member of the schema's X1ResponseMessage base
-// type, so every response type carries all of them and each check can be
-// required. Deliberately absent is the acknowledgement: `oK` is *not* on the base
-// type — a GetAllDetailsResponse carries none — so requiring one would refuse
-// every details answer, permanently. That is the check callers apply for
+// Every field checked here is a member of the schema's X1ResponseMessage base type, so every
+// response type carries all of them and each check can be required. Deliberately absent is the
+// acknowledgement: `oK` is *not* on the base type — a GetAllDetailsResponse carries none — so
+// requiring one would refuse every details answer. That is the check callers apply for
 // themselves where their own response type defines one.
-// validateBound is the message binding, shared by both senders on this interface.
-//
-// There are two, and they sit on opposite sides of it: a Requester is an ADMF or a
-// triggering function asking an NE, and a Reporter is an NE telling an ADMF. Both must bind
-// their answers to the requests that produced them, and neither may grow a second
-// implementation of the binding — the two readers this replaced had already drifted apart
-// once, one checking that a message carried an acknowledgement and the other not, which is
-// what a second hand-written path costs.
-//
-// The header names the two identifiers as they must appear in the answer, whichever of the
-// two parties this element is: OurID is what this element states about itself and NeID what
-// the peer states, and a conformant answer echoes both.
 func validateBound(h header, out X1Response) (X1ResponseMessage, error) {
 	if len(out.Messages) == 0 {
 		return X1ResponseMessage{}, &ResponseError{Field: "message count", Want: "1", Got: "0"}
@@ -235,23 +237,21 @@ func validateBound(h header, out X1Response) (X1ResponseMessage, error) {
 		// property cannot quietly stop holding.
 		return X1ResponseMessage{}, &ResponseError{Field: "x1TransactionId", Want: h.TxID, Got: m.X1TransactionID}
 	}
+	// One of these two is the peer's assertion about itself, and that one detects a
+	// misroute; the other is an echo. Both are required either way — see the doc comment.
 	if m.NeIdentifier != h.NeID {
-		// The one check that can detect a misroute, because it is the only field the
-		// peer states about itself rather than copies from the request.
 		return X1ResponseMessage{}, &ResponseError{Field: "neIdentifier", Want: h.NeID, Got: m.NeIdentifier}
 	}
 	if m.AdmfIdentifier != h.OurID {
 		return X1ResponseMessage{}, &ResponseError{Field: "admfIdentifier", Want: h.OurID, Got: m.AdmfIdentifier}
 	}
-	if m.Version != supportedVersion {
-		// Equality rather than "any version we could parse", because a conformant
-		// server *echoes* the request's version (echoVersion), and this requester
-		// sends supportedVersion. So an answer carrying anything else is not an echo,
-		// whatever else it might be. Clause 4.5 makes minor increments backwards
-		// compatible, so a peer stating its own newer version would be readable — but
-		// it would also not be answering in the version it was asked in, and accepting
-		// that is parsing optimistically rather than checking.
-		return X1ResponseMessage{}, &ResponseError{Field: "version", Want: supportedVersion, Got: m.Version}
+	if !versionPattern.MatchString(m.Version) {
+		// Table 6.1-1 defines Version as the version of the present document "used for
+		// encoding the message", so a peer answers in its own version rather than echoing
+		// this element's, and clause 4.5 keeps minor and patch increments backwards
+		// compatible within a major version. What is refused is anything outside the
+		// schema's v1.x.y restriction: another major version, or no version at all.
+		return X1ResponseMessage{}, &ResponseError{Field: "version", Want: "v1.x.y", Got: m.Version}
 	}
 
 	return m, nil
@@ -260,21 +260,21 @@ func validateBound(h header, out X1Response) (X1ResponseMessage, error) {
 // bindsResponderCert checks the TS 103 221-1 clause 8.2.4 binding on the answering side:
 // the certificate the peer presented must carry identifier in the given role.
 //
-// It is the mirror of what the server applies to every inbound request, and the asymmetry it
-// removes was the one with the silent consequence. A misrouted, stale or compromised
-// endpoint inside the LI domain could acknowledge tasking, and the triggering function
-// would record an interception as installed at an element that never received it — with
-// nothing downstream to reveal it, because the product that would be missing was never
-// produced.
+// It is the mirror of what the server applies to every inbound request. Without it, a
+// misrouted, stale or compromised endpoint inside the LI domain could acknowledge tasking,
+// and the triggering function would record an interception as installed at an element that
+// never received it — with nothing downstream to reveal it, because the product that would
+// be missing is never produced.
 //
 // Shared by both senders on this interface, because both have the same obligation and the
 // only thing that differs is which role the peer holds — an NE answering a triggering
 // function, or an ADMF answering an NE's fault report.
 //
-// authenticated says whether this element holds TLS material at all. Where it does not,
-// there is no certificate to bind and no chain to have verified, so requiring a binding
-// would refuse the certificate-less mode this project supports deliberately, so a
-// deployment can be brought up before its PKI is.
+// authenticated says whether this element holds TLS material at all. A Requester or
+// Reporter built without a TLS configuration speaks plain HTTP: there is no certificate to
+// bind and no chain to have verified, so none is required. That mode is outbound only — an
+// X1 server without TLS answers every request with 1030, because it cannot authenticate the
+// requester.
 func bindsResponderCert(resp *http.Response, authenticated bool, role, identifier string) error {
 	if !authenticated {
 		return nil
@@ -296,14 +296,9 @@ func bindsResponderCert(resp *http.Response, authenticated bool, role, identifie
 	return nil
 }
 
-// readResponse is every step between an HTTP response and a message this element
-// is entitled to act on: status, decode, the responder's certificate binding, and
-// the message binding above.
-//
-// One function so that a new request type cannot reach a response without passing
-// it. The two readers this replaces had drifted apart — one checked that a message
-// carried an acknowledgement and the other did not — which is what a second
-// hand-written path costs.
+// readResponse is the Requester's entry into readBoundResponse, with the peer in the NE
+// role. Every request type reads its answer through it, so none can reach a response
+// without the status, decode and binding checks.
 func (r *Requester) readResponse(h header, resp *http.Response) (X1ResponseMessage, error) {
 	return readBoundResponse(h, resp, r.authenticated, roleNE, h.NeID)
 }
@@ -322,22 +317,29 @@ func readBoundResponse(
 	if resp.StatusCode != http.StatusOK {
 		// Clause 7.2.2.2: HTTP error codes indicate HTTP-level errors only, and an
 		// X1-level error "shall be … returned as a HTTP 200 OK response". So a non-200
-		// is a transport fault, not a refusal, and must not be read as one.
-		return X1ResponseMessage{}, fmt.Errorf("x1: NE returned status %d", resp.StatusCode)
+		// is a transport fault, not a refusal, and must not be read as one. What is left
+		// of the body is discarded so the connection can be reused.
+		//nolint:errcheck // a drain that fails only costs the connection's reuse
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+
+		return X1ResponseMessage{}, fmt.Errorf("x1: peer returned status %d", resp.StatusCode)
 	}
 
-	// Bounded by the same limit the server applies to a request. The body has to be
-	// buffered rather than streamed, because a TopLevelError is a different root
-	// element and telling one from a malformed response means looking at the bytes
-	// again — and buffering without a limit would let a peer inside the LI domain
-	// hold this element's memory as well as its connection.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRequestBytes))
+	// Buffered rather than streamed, because a TopLevelError is a different root element
+	// and telling one from a malformed response means looking at the bytes again — and
+	// bounded, so a peer inside the LI domain cannot hold this element's memory as well
+	// as its connection. One byte past the limit is read so that an answer over it is
+	// refused as too large rather than misreported as malformed XML.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return X1ResponseMessage{}, fmt.Errorf("x1: reading response: %w", err)
 	}
+	if len(body) > maxResponseBytes {
+		return X1ResponseMessage{}, fmt.Errorf("x1: response exceeds %d bytes", maxResponseBytes)
+	}
 
 	// The responder is who its certificate says it is, before anything it says about
-	// itself is read. Placed here rather than in validate because validate works on a
+	// itself is read. Placed here rather than in validateBound because that works on a
 	// decoded message and this is a property of the connection that carried it — and
 	// because putting it here means no request type can reach a response without it.
 	//
@@ -464,10 +466,8 @@ var deactivateTemplate = template.Must(template.New("x1deact").Funcs(x1TemplateF
 // likewise elementFormDefault="qualified".
 //
 // `port` is a CHOICE of a TCPPort or a UDPPort *child element*, not a number in the
-// element's text. It was rendered as text until a validator was pointed at this path:
-// the request validated against nothing, because the only peer it has ever been sent to
-// is our own X1 server, which parsed the same wrong shape back. X2 and X3 are carried
-// over TCP (TS 103 221-2), so the arm is TCPPort.
+// element's text; a peer that parsed it as text would accept a request no validating
+// peer does. X2 and X3 are carried over TCP (TS 103 221-2), so the arm is TCPPort.
 var destinationTemplate = template.Must(template.New("x1dest").Funcs(x1TemplateFuncs).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:c="http://uri.etsi.org/03280/common/2017/07">
   <ns1:x1RequestMessage xsi:type="ns1:CreateDestinationRequest">
@@ -501,7 +501,7 @@ var destinationTemplate = template.Must(template.New("x1dest").Funcs(x1TemplateF
 // destinations "shall be configured … prior to first use").
 func (r *Requester) CreateDestination(d Destination) error {
 	if d.DID == "" || d.Address == "" || d.Port == 0 {
-		return fmt.Errorf("x1: destination needs a DID, address and port")
+		return errors.New("x1: destination needs a DID, address and port")
 	}
 	if _, err := deliveryProducts(d.DeliveryType); err != nil {
 		return fmt.Errorf("x1: destination: %w", err)
@@ -542,19 +542,19 @@ func (r *Requester) ModifyTask(t Trigger) error {
 func (r *Requester) task(msgType string, t Trigger) error {
 	switch {
 	case t.XID == "":
-		return fmt.Errorf("x1: trigger needs an XID")
+		return errors.New("x1: trigger needs an XID")
 	case t.ProductID == "":
 		// Without it the POI would label product with the trigger's XID, which
 		// no MDF can attribute to the warrant.
-		return fmt.Errorf("x1: trigger needs a ProductID (the warrant XID)")
+		return errors.New("x1: trigger needs a ProductID (the warrant XID)")
 	case t.CorrelationID == 0:
 		// Zero is indistinguishable from "unset" and leaves the content
 		// unjoinable to the session's IRI.
-		return fmt.Errorf("x1: trigger needs a non-zero CorrelationID")
+		return errors.New("x1: trigger needs a non-zero CorrelationID")
 	case t.SEID == 0:
-		return fmt.Errorf("x1: trigger needs a SEID to detect the session")
+		return errors.New("x1: trigger needs a SEID to detect the session")
 	case len(t.DIDs) == 0:
-		return fmt.Errorf("x1: trigger needs at least one destination")
+		return errors.New("x1: trigger needs at least one destination")
 	}
 	h := r.header(msgType)
 	seidAddressElement, seidAddress := addressArm(t.SEIDAddress)
@@ -576,10 +576,8 @@ func (r *Requester) task(msgType string, t Trigger) error {
 		SEID:          t.SEID,
 		// The FSEID's address is a choice of two elements, exactly as a
 		// destination's is (see CreateDestination), and its IPv6 arm demands the
-		// expanded eight-group form. Rendering a Go-formatted IPv6 literal into
-		// the IPv4 element produced a trigger no validating peer accepts, and the
-		// two paths in this file disagreeing about the same question is how it went
-		// unnoticed: there is one way to answer it and both use it.
+		// expanded eight-group form. addressArm answers both questions for both
+		// paths, so they cannot disagree.
 		SEIDAddress:        seidAddress,
 		SEIDAddressElement: seidAddressElement,
 		DIDs:               t.DIDs,
@@ -617,6 +615,9 @@ var detailsTemplate = template.Must(template.New("x1all").Funcs(x1TemplateFuncs)
 // record of what it installed, while the NE still holds all of it, and tasking
 // nobody can withdraw is exactly what must not exist. A liveness signal cannot
 // substitute — a restarted requester is perfectly alive.
+//
+// A task reported with no xId is left out: DeactivateTask could not name it, and xId is
+// mandatory in the schema's TaskDetails, so a conformant NE never reports one.
 func (r *Requester) TaskXIDs() ([]types.XID, error) {
 	reported, err := r.ReportedTasks()
 	if err != nil {
@@ -645,10 +646,10 @@ func (r *Requester) ReportedTasks() ([]TaskResponseDetails, error) {
 
 	var body bytes.Buffer
 	if err := detailsTemplate.Execute(&body, struct{ Header header }{Header: h}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("x1: rendering %s: %w", h.Type, err)
 	}
 
-	resp, err := r.postXML(&body)
+	resp, err := postX1(r.client, r.neURL, &body)
 	if err != nil {
 		return nil, err
 	}
@@ -687,7 +688,7 @@ func (r *Requester) Keepalive() error {
 // the warrant it derives from is withdrawn.
 func (r *Requester) DeactivateTask(xid types.XID) error {
 	if xid == "" {
-		return fmt.Errorf("x1: deactivate needs an XID")
+		return errors.New("x1: deactivate needs an XID")
 	}
 	h := r.header("DeactivateTaskRequest")
 
@@ -704,9 +705,9 @@ func (r *Requester) DeactivateTask(xid types.XID) error {
 func (r *Requester) send(tmpl *template.Template, h header, data any) error {
 	var body bytes.Buffer
 	if err := tmpl.Execute(&body, data); err != nil {
-		return err
+		return fmt.Errorf("x1: rendering %s: %w", h.Type, err)
 	}
-	resp, err := r.postXML(&body)
+	resp, err := postX1(r.client, r.neURL, &body)
 	if err != nil {
 		return err
 	}
@@ -726,18 +727,21 @@ func (r *Requester) send(tmpl *template.Template, h header, data any) error {
 	return nil
 }
 
-// postXML sends an X1 request body to the NE and returns the response, which the
-// caller must close. net/http's Post helper carries no context; these requests
-// are bounded by the client's own timeout, but the linter is right that the shape
-// should be explicit.
-func (r *Requester) postXML(body *bytes.Buffer) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, r.neURL, body)
+// postX1 sends an X1 request body to url on client and returns the response, which the
+// caller must close. Both senders on this interface go out through it.
+//
+// It takes no context, deliberately: every exchange is bounded by the client's
+// x1RequestTimeout, and none of this element's callers holds a context that should cut a
+// report or a trigger short — a fault report abandoned because the code path that noticed the
+// fault moved on would be a report lost for no reason.
+func postX1(client *http.Client, url string, body *bytes.Buffer) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("x1: building request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/xml")
 
-	return r.client.Do(req)
+	return client.Do(req)
 }
 
 // escapeXML escapes text for inclusion in an XML element body.
@@ -754,8 +758,9 @@ func escapeXML(s string) string {
 //
 // The X1 schemas carry an address as a choice of an IPv4 and an IPv6 element in
 // several places — a destination's deliveryAddress, an FSEID's or an FTEID's node
-// address. Answering "which arm" in one of them and hard-coding IPv4 in another is
-// what this file did, and a deployment with no IPv6 never exercises the difference.
+// address — and every one of them is rendered here, so they cannot answer "which arm"
+// differently. An IPv4-mapped IPv6 address (::ffff:a.b.c.d) names an IPv4 endpoint and
+// is rendered in the IPv4 arm.
 //
 // The rendering half is the part that is easy to miss, and it is the same shape as
 // the six-digit timestamp rule. TS 103 280 types an IPv6Address as
@@ -768,29 +773,22 @@ func escapeXML(s string) string {
 // precisely the form the schema refuses, and picking the right element for it
 // still yields a message a validating peer discards.
 //
-// An address that does not parse is passed through unchanged, on the arm the
-// colon heuristic picks. There is nothing to normalise and nothing to be gained by
-// guessing: the schema refuses it either way, which is the honest outcome.
+// An address that does not parse is passed through unchanged, on the arm a colon
+// picks — IPv4 literals contain none and IPv6 literals always do. There is nothing to
+// normalise and nothing to be gained by guessing further: the schema refuses it
+// either way, which is the honest outcome.
 func addressArm(addr string) (element, value string) {
 	ip := net.ParseIP(addr)
 	switch {
+	case ip == nil && strings.Contains(addr, ":"):
+		return "IPv6Address", addr
 	case ip == nil:
-		return addressElement(addr), addr
+		return "IPv4Address", addr
 	case ip.To4() != nil:
 		return "IPv4Address", ip.To4().String()
 	default:
 		return "IPv6Address", expandIPv6(ip.To16())
 	}
-}
-
-// addressElement is addressArm's element half, for a caller that has nothing to
-// render — the details answer, which echoes a value a peer supplied.
-func addressElement(addr string) string {
-	if isIPv6(addr) {
-		return "IPv6Address"
-	}
-
-	return "IPv4Address"
 }
 
 // expandIPv6 renders 16 address octets as the schema's eight four-digit groups.
@@ -806,16 +804,4 @@ func expandIPv6(b []byte) string {
 	}
 
 	return out.String()
-}
-
-// isIPv6 reports whether addr is an IPv6 literal, distinguishing the two
-// TS 103 280 IPAddress arms without pulling in net parsing for a formatting
-// decision. IPv4 literals contain no colon; IPv6 literals always do.
-func isIPv6(addr string) bool {
-	for i := 0; i < len(addr); i++ {
-		if addr[i] == ':' {
-			return true
-		}
-	}
-	return false
 }

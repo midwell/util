@@ -24,10 +24,8 @@ import (
 type blockingADMF struct {
 	srv *httptest.Server
 
-	// A cancellable context rather than a channel a test closes: the builtin close is
-	// shadowed at package scope in response.go, so it is not reachable from a test in
-	// this package. Cancel broadcasts to every held handler and is idempotent, which
-	// is what a release gate needs anyway.
+	// A cancellable context as the release gate: cancel broadcasts to every held handler
+	// and is idempotent, so the cleanup can call it whether or not the test already has.
 	release context.Context
 	unhold  context.CancelFunc
 
@@ -218,11 +216,10 @@ func TestAConditionAtPacketRateCostsOneAttempt(t *testing.T) {
 // TestAFailedReportIsNotRecordedAsMade pins the accuracy half: the element's account
 // of what it has told the ADMF must not diverge from what the ADMF heard.
 //
-// Committing in front of the send made it diverge twice over. The condition was
+// Committing in front of the send would make it diverge twice over. The condition would be
 // suppressed for a window although nothing was delivered, and — the lasting half — it
-// entered the reported set, so if it then cleared, the element retracted a fault the
-// ADMF had never been told about: announcing the end of something that, as far as the
-// receiver knows, never began.
+// would enter the reported set, so if it then cleared, the element would retract a fault
+// the ADMF had never been told about.
 func TestAFailedReportIsNotRecordedAsMade(t *testing.T) {
 	admf := newBlockingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -249,8 +246,8 @@ func TestAFailedReportIsNotRecordedAsMade(t *testing.T) {
 
 // TestAFailedRetractionLeavesTheFaultRetractable is the other direction, and the one
 // with no self-correction: a fault is re-observed and reported again, but nothing
-// re-observes a fault that has gone away. Forgetting it in front of the send left the
-// ADMF holding a fault this element believed it had cleared and would never mention.
+// re-observes a fault that has gone away. Forgetting it in front of the send would leave
+// the ADMF holding a fault this element believed it had cleared and would never mention.
 func TestAFailedRetractionLeavesTheFaultRetractable(t *testing.T) {
 	admf := newBlockingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
@@ -279,12 +276,10 @@ func TestAFailedRetractionLeavesTheFaultRetractable(t *testing.T) {
 // derived from the request's, and the five fields of the schema's X1ResponseMessage base
 // type — the sender's echoed back, its own stated.
 //
-// The stubs used to answer 200 with an empty body, which is not a response any conformant
-// ADMF sends and which the reporter now refuses as unattributable. That is the point of the
-// change: an element that reads a bare 200 as acceptance records a fault as reported, stops
-// re-reporting it, and later retracts a fault the ADMF never had — so the two sides'
-// lists disagree in the one direction neither can detect. A stub that is not conformant
-// tests this element against a fiction.
+// A 200 with an empty body is not a response any conformant ADMF sends, and the reporter
+// refuses it as unattributable: an element that read a bare 200 as acceptance would record a
+// fault as reported, stop re-reporting it, and later retract a fault the ADMF never had. A
+// stub that is not conformant tests this element against a fiction.
 func admfResponse(t *testing.T, request []byte) string {
 	t.Helper()
 

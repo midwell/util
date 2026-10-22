@@ -15,11 +15,11 @@ import (
 // report throttles depend on: the instants they subtract carry Go's monotonic clock reading, so
 // a step in the wall clock cannot move them.
 //
-// time.Time.UTC strips that reading, and every one of these clocks used to return
-// time.Now().UTC(). The watchdog's lapse was then a wall-clock difference: a forward step larger
-// than the keepalive window — a VM resumed, an NTP step — purged every warrant at the next tick
-// while the ADMF was alive, and a backward step kept a dead ADMF's tasking past the window. A
-// stripped time compares equal to its own Round(0), which is how the reading is detected here.
+// time.Time.UTC strips that reading, so a clock returning time.Now().UTC() would make the
+// watchdog's lapse a wall-clock difference: a forward step larger than the keepalive window — a
+// VM resumed, an NTP step — would purge every warrant at the next tick while the ADMF was alive,
+// and a backward step would keep a dead ADMF's tasking past the window. A stripped time compares
+// equal to its own Round(0), which is how the reading is detected here.
 func TestTheDefaultClocksKeepTheMonotonicReading(t *testing.T) {
 	for name, now := range map[string]func() time.Time{
 		"server":    NewServer(store.New(), "neID").now,
@@ -35,8 +35,8 @@ func TestTheDefaultClocksKeepTheMonotonicReading(t *testing.T) {
 	}
 }
 
-// TestTimestampsAreStillRenderedInUTC: UTC moved from the clocks to the one place an instant is
-// formatted, so a clock in any zone still produces the "Z" form every existing message carried.
+// TestTimestampsAreStillRenderedInUTC: UTC is applied in the one place an instant is formatted,
+// so a clock in any zone produces the "Z" form the schema's timestamps use.
 func TestTimestampsAreStillRenderedInUTC(t *testing.T) {
 	stockholm := time.FixedZone("CEST", 2*60*60)
 	at := time.Date(2026, 10, 22, 14, 0, 0, 120000*1000, stockholm)

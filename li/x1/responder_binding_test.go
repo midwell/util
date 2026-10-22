@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -84,10 +85,9 @@ func answeringPOI(t *testing.T, cert tls.Certificate, pool *x509.CertPool) (*htt
 	t.Helper()
 
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := make([]byte, 1<<16)
-		n, _ := r.Body.Read(body) //nolint:errcheck // test handler
-		txID := between(string(body[:n]), "<ns1:x1TransactionId>", "</ns1:x1TransactionId>")
-		reqType := between(string(body[:n]), `xsi:type="ns1:`, `"`)
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test handler
+		txID := between(string(body), "<ns1:x1TransactionId>", "</ns1:x1TransactionId>")
+		reqType := between(string(body), `xsi:type="ns1:`, `"`)
 
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusOK)
@@ -125,16 +125,14 @@ func between(s, open, closing string) string {
 	return rest[:j]
 }
 
-// TestAnAnswerIsRefusedUnlessTheCertificateBindsTheAddressedElement closes the
-// asymmetry between the two sides of this interface.
+// TestAnAnswerIsRefusedUnlessTheCertificateBindsTheAddressedElement: the requester binds
+// the answer to the peer's certificate, as the server binds every inbound message.
 //
-// The server binds every inbound message to the peer's certificate. The requester did
-// not: it verified the chain and the hostname, and then believed the one field the
-// peer asserts about itself. A hostname binds a name; the annex G binding binds an X1
-// identifier, and inside one LI trust domain the holder of any CA-issued certificate
-// whose SANs cover the dialled address could assert the configured neIdentifier and
-// convince a triggering function that a trigger was installed at an element that never
-// received it. Nothing downstream reveals that — the product that would be missing was
+// Verifying the chain and the hostname is not enough. A hostname binds a name; the annex G
+// binding binds an X1 identifier, and inside one LI trust domain the holder of any CA-issued
+// certificate whose SANs cover the dialled address could assert the configured neIdentifier
+// and convince a triggering function that a trigger was installed at an element that never
+// received it. Nothing downstream would reveal that — the product that would be missing is
 // never produced.
 func TestAnAnswerIsRefusedUnlessTheCertificateBindsTheAddressedElement(t *testing.T) {
 	const neID = "upf-1"
@@ -204,12 +202,10 @@ func TestAnAnswerIsRefusedUnlessTheCertificateBindsTheAddressedElement(t *testin
 // A request that cannot be parsed still has to be answered, and the admfIdentifier
 // cannot come from the message — so it comes from configuration, or from the peer's
 // certificate: "extracting the identifier of the Requester from the X.509 certificate
-// if necessary". This element accepted either a Subject UID or an annex G binding URI
-// when authenticating and read only the first when identifying. A peer carrying its
-// identity solely in the second was therefore answered with an empty admfIdentifier —
-// which does not validate against the schema, so the answer to a fault is a message
-// the peer cannot read. The comment above topLevelError said that would "compound the
-// fault rather than report it", which is exactly what it did.
+// if necessary". This element authenticates a peer by either a Subject UID or an annex G
+// binding URI, so it must identify one by either too: a peer carrying its identity solely
+// in the binding URI would otherwise be answered with an empty admfIdentifier, and could
+// not tell which peer the answer was about.
 func TestAnUnparseableRequestFromAURIBoundPeerIsAnsweredWithItsIdentifier(t *testing.T) {
 	const admfID = "admf-7"
 
@@ -237,11 +233,8 @@ func TestAnUnparseableRequestFromAURIBoundPeerIsAnsweredWithItsIdentifier(t *tes
 			// rather than skipping, which is where the guarantee lives.
 			requireXmllint(t)
 
-			// The answer stays schema-valid either way — an empty admfIdentifier turns
-			// out to validate, so the fault is narrower than topLevelError's comment
-			// claims and no less real: the ADMF is answered and cannot tell which peer
-			// the answer is about. Asserted anyway, because the answer to a fault must
-			// not itself be one.
+			// The answer is schema-valid either way — an empty admfIdentifier validates —
+			// and asserted anyway, because the answer to a fault must not itself be one.
 			if problems := validateAgainstSchema(t, answer); len(problems) > 0 {
 				t.Errorf("the answer to an unparseable request is itself schema-invalid: %v", problems)
 			}
@@ -252,12 +245,11 @@ func TestAnUnparseableRequestFromAURIBoundPeerIsAnsweredWithItsIdentifier(t *tes
 // TestAProvisionedCorrelationIDFollowsTheElement is the requirement's conclusion that a
 // field's disposition can depend on which element is asked.
 //
-// It was accepted everywhere and acted on nowhere but the UPF: parsed, stored, and then
-// ignored by both IRI-POIs, which send a zero correlation and the session's F-SEID
-// respectively. The value decides how a mediation function joins an element's records
-// to a warrant's content, so an ADMF provisioning it per clause 6.2.1.2 was
-// acknowledged and given a different interception from the one it authorised — the
-// silent divergence this refusal exists to prevent, and one no channel could report.
+// Only a content POI acts on it: the IRI-POIs send a zero correlation and the session's
+// F-SEID respectively. The value decides how a mediation function joins an element's
+// records to a warrant's content, so accepting it where it is ignored would acknowledge an
+// ADMF provisioning it per clause 6.2.1.2 and give it a different interception from the one
+// it authorised — a silent divergence no channel could report.
 //
 // Neither uniform answer is available. Refusing everywhere would refuse tasking an ADMF
 // may legitimately send to several elements at once; accepting everywhere is the

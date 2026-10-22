@@ -33,11 +33,9 @@ func testTrigger() Trigger {
 // schema's X1ResponseMessage base type — echoed where the peer echoes them,
 // stated where it states them. payload is the type-specific body.
 //
-// It exists because the stubs here used to answer with a bare `<oK>` and nothing
-// else, which is not a response any conformant NE sends. Building the requester's
-// response validation against such a stub would have been building it against a
-// fiction, and the stub would have gone on passing while a real peer's answer was
-// refused.
+// A bare `<oK>` is not a response any conformant NE sends, and building the
+// requester's response validation against such a stub would be building it against a
+// fiction: the stub would go on passing while a real peer's answer was refused.
 func conformantResponse(t *testing.T, requestBody []byte, payload string) string {
 	t.Helper()
 
@@ -238,13 +236,10 @@ func TestCreateDestinationWireForm(t *testing.T) {
 		}
 	})
 
-	// This case asserted `<c:IPv6Address>2001:db8::1</c:IPv6Address>` until 2026-08-17,
-	// which is the arm right and the value wrong: TS 103 280 types an IPv6Address as
-	// `([0-9a-f]{4}:){7}([0-9a-f]{4})`, so the compressed literal Go hands back from
-	// net.IP.String is the one form the schema refuses. The test passed because it
-	// checked what the code produced rather than what the schema accepts, which is how
-	// a wrong value survives beside a right one — the arm selection here was correct all
-	// along and the address next to it was not.
+	// TS 103 280 types an IPv6Address as `([0-9a-f]{4}:){7}([0-9a-f]{4})`, so the
+	// compressed literal Go hands back from net.IP.String is the one form the schema
+	// refuses: the assertion is the expanded form, which is what the schema accepts rather
+	// than whatever the code happens to produce.
 	t.Run("ipv6 picks the other arm, expanded as the schema types it", func(t *testing.T) {
 		req, body := requesterTo(t, okHandler)
 		if err := req.CreateDestination(Destination{
@@ -328,13 +323,12 @@ func TestDestinationProvisioningResolvesDIDs(t *testing.T) {
 		t.Errorf("destination type = %q, want X3", got)
 	}
 
-	// A DID nobody provisioned fails the task. It used to be skipped, on the reasoning
-	// that an ADMF may legitimately task an IRI-POI whose MDF address comes from
-	// configuration — which is still true and is still served, by declaring that
+	// A DID nobody provisioned fails the task. An ADMF may legitimately task an IRI-POI
+	// whose MDF address comes from configuration, and that is served by declaring the
 	// destination in the element's configuration or by naming no destination at all.
 	// What is refused is an identifier the element genuinely cannot place: accepting it
-	// leaves the triggering function believing content interception is running while the
-	// element has nowhere to send the product, which is the state this whole interface
+	// would leave the triggering function believing content interception is running while
+	// the element has nowhere to send the product, which is the state this whole interface
 	// exists to make visible.
 	tr2 := testTrigger()
 	tr2.XID = "44444444-4444-4444-8444-444444444444"
@@ -529,15 +523,12 @@ func TestTaskXIDsReportsWhatThePOIHolds(t *testing.T) {
 // TestTriggerAddressArmFollowsTheAddress pins the FSEID's address to the element
 // its own family names, and to the form that element's type accepts.
 //
-// Two defects, one of which was invisible behind the other. The two paths in this
-// file answer the same question — a TS 103 280 address is a choice of an IPv4 and
-// an IPv6 element — and only one of them used to ask it: CreateDestination selected
-// the arm, the trigger hard-coded IPv4Address. Selecting the right arm then exposed
-// the second, which the vendored schema caught and no reviewer had: TS 103 280 types
-// an IPv6Address as `([0-9a-f]{4}:){7}([0-9a-f]{4})`, so the "::" compression and
-// dropped leading zeros that Go's net.IP.String produces are both refused. The
-// expanded literals below are the assertion — writing "2001:db8::5" here would pin
-// the defect rather than the fix.
+// Two properties. A TS 103 280 address is a choice of an IPv4 and an IPv6 element,
+// and the trigger and CreateDestination must both pick the arm from the address. And
+// TS 103 280 types an IPv6Address as `([0-9a-f]{4}:){7}([0-9a-f]{4})`, so the "::"
+// compression and dropped leading zeros that Go's net.IP.String produces are both
+// refused. The expanded literals below are the assertion — writing "2001:db8::5" here
+// would pin the refused form.
 //
 // Asserted on the rendered request rather than through the schema, so the case is
 // pinned on a machine with no xmllint as well; TestOriginatedRequestsValidate
