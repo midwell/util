@@ -16,13 +16,11 @@ import (
 )
 
 // The zero exemption in constraintOf is right for optional members and wrong for mandatory
-// ones, and the map that expressed the exception held two entries — `HandoverType` and the five
-// `Cause` arms — each added the day a defect proved it missing. The rule beside the map said
-// what belonged there; nothing had run it.
+// ones; mandatoryEnums and mandatoryEnumFields express the exception.
 //
-// This is the sweep, and it is a test rather than a one-time audit for the reason both prior
-// entries exist: a record type added later, or a field that becomes mandatory later, would join
-// the exemption silently. The source of truth is the published module. A check that derived the
+// This is the sweep that decides what belongs there, and it is a test rather than a one-time
+// audit because a record type added later, or a field that becomes mandatory later, would
+// otherwise join the exemption silently. The source of truth is the published module. A check that derived the
 // answer from `iri.go` would agree with the guard by construction, because the guard is keyed on
 // the same Go types.
 //
@@ -41,7 +39,7 @@ import (
 // Keyed `Record.field` with the module's own spelling of both.
 //
 // Empty, and the emptiness is a result rather than a placeholder: every module-mandatory
-// enumerated field of every emitted record is now guarded, by type where the type is exactly
+// enumerated field of every emitted record is guarded, by type where the type is exactly
 // the right key and by record-and-field where it is not. The map stays so the next exclusion
 // has an established place to be written down, and so writing one is a deliberate act — the
 // same reason asn1_drift_test.go keeps `knownConditionalDefects` after emptying it.
@@ -267,8 +265,7 @@ func mandatoryEnumSweep(t *testing.T) []mandatoryEnumSite {
 	return out
 }
 
-// TestEveryMandatoryEnumeratedFieldRefusesZero is the sweep the rule beside mandatoryEnums
-// described and nobody had run.
+// TestEveryMandatoryEnumeratedFieldRefusesZero runs the sweep.
 //
 // For every field the module makes mandatory in a record this package emits, whose type is an
 // ENUMERATED numbered from one: zero is a value the field's own definition does not define, and
@@ -276,9 +273,9 @@ func mandatoryEnumSweep(t *testing.T) []mandatoryEnumSite {
 // the type is mandatory in every emitted record that carries it, or through mandatoryEnumFields
 // where it is not.
 //
-// A field that reaches neither is what `handoverType` was: emitted as zero, structurally
-// well-formed, and refused outright by a receiver validating against this same module. Every
-// intra-5GS handover record was discarded on receipt, and nothing on this side said so.
+// A field that reaches neither is emitted as zero, structurally well-formed, and refused
+// outright by a receiver validating against this same module — for `handoverType`, every
+// intra-5GS handover record would be discarded on receipt, and nothing on this side would say so.
 func TestEveryMandatoryEnumeratedFieldRefusesZero(t *testing.T) {
 	sites := mandatoryEnumSweep(t)
 	if len(sites) == 0 {
@@ -325,7 +322,7 @@ func TestEveryMandatoryEnumeratedFieldRefusesZero(t *testing.T) {
 
 	// And the field-keyed guard's own stale direction, which is the mechanism's failure applied
 	// to itself: an entry naming a field the module marks OPTIONAL refuses that record its
-	// absence, exactly what keying by record and field was introduced to avoid.
+	// absence, exactly what keying by record and field exists to avoid.
 	// TestAnUnsetOptionalEnumeratedFieldStillEncodes would catch it too, by encoding; this says
 	// so against the module, which is where the answer is.
 	for key := range mandatoryEnumFields {
@@ -440,9 +437,10 @@ func TestEveryZeroGuardHasBoundsToRunUnder(t *testing.T) {
 func TestTheEnumSweepIsNotVacuous(t *testing.T) {
 	enums := enumsNumberedFromOne(t)
 	// TS 33.128 V18.16.0 declares 177 ENUMERATEDs, of which 171 are numbered from one. The
-	// count is a tripwire on the parse, not a claim about the specification: if the module is
-	// upgraded these move, and the sweep's results are then worth re-reading rather than
-	// assumed.
+	// threshold is a tripwire on the parse, not a claim about the specification: 150 leaves room
+	// for a module revision that drops a few, and still fails a parse matching only a fraction
+	// of them. If the module is upgraded the number moves, and the sweep's results are then
+	// worth re-reading rather than assumed.
 	if len(enums) < 150 {
 		t.Errorf("parsed %d ENUMERATEDs numbered from one; the module declares 171, so the "+
 			"parse is now matching something other than the enumerations", len(enums))

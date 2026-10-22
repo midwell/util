@@ -12,16 +12,17 @@ between them.
 
 ## Why decoding is not enough
 
-`golden_test.go` pins the encoder's output byte for byte, and every record decodes against the
-published module. Neither proves conformance:
+`golden_test.go` pins the encoder's output byte for byte, and every record's tags, optionality
+and value bounds are audited against the text of the published module (`emit_tags_test.go`,
+`asn1_drift_test.go`, `constraints_bounds_test.go`). Neither proves conformance:
 
 - **The golden file pins this encoder's own output.** It catches an encoder regression. It
   cannot notice a field that is never populated.
-- **A successful decode proves the record is well formed.** It does not prove the record
-  carries the fields TS 33.128 says it carries: the M/C/O markers live in the payload tables of
-  clause 6.2, and they do not always agree with the module's `OPTIONAL` markers.
-  `gTPTunnelInfo` is `OPTIONAL` in the module and **M** in three payload tables, so a record
-  omitting it would decode cleanly and still be non-conformant.
+- **A record that matches the module is well formed.** That does not prove it carries the
+  fields TS 33.128 says it carries: the M/C/O markers live in the payload tables of clause 6.2,
+  and they do not always agree with the module's `OPTIONAL` markers. `gTPTunnelInfo` is
+  `OPTIONAL` in the module and **M** in three payload tables, so a record omitting it would
+  decode cleanly and still be non-conformant.
 
 So this document compares against the **payload tables**, not only the ASN.1.
 
@@ -103,9 +104,10 @@ whether this project meets its condition:
 
 `MET` and `BLOCKED` are kept at zero rather than removed: an empty verdict is a statement about
 this implementation, while a missing row would read as a category that does not exist. A field
-in either belongs in `asn1_drift_test.go`'s `knownConditionalDefects`, a separate list whose
-size `TestKnownDefectsDoNotGrow` pins — at 0 — so adding one is a deliberate act rather than one
-more line among fields that are fine.
+in either belongs in `asn1_drift_test.go`'s `knownConditionalDefects`, a separate list that
+`TestNoKnownConditionalDefects` requires to be empty, so adding one is a deliberate act rather
+than one more line among fields that are fine. The counts in both tables above are held to the
+disposition list by `TestTheDispositionCountsAreTheDocumentedOnes`.
 
 The two lists are checked differently. `declaredAbsent` is a claim about modelling, so an entry
 for a field that becomes modelled fails the test. `knownConditionalDefects` is a claim about
@@ -116,7 +118,8 @@ The nine `UNTRACED` verdicts are an admission, not a conclusion, and are labelle
 cannot be mistaken for clearance: `pCCRules`, `pCCRuleIDs`, `oldPDUSessionID`,
 `handoverState`, `uEPolicy` and `rRCEstablishmentCause` each have a plausibly corresponding
 field in a network function's context that was not followed through to the point of
-interception.
+interception. One more sits below the records, outside these counts:
+`FiveGSSubscriberID/sUCI`, a `UserIdentifiers` alternative `iri.Identifiers` does not build.
 
 The 26 `N/A` verdicts rest on features this deployment does not implement: EPS/5GS
 interworking over N26 and the SGW/PGW role, non-3GPP access through an N3IWF, TNGF or TWIF,
@@ -231,10 +234,10 @@ record is the AMF transferring a UE policy container. The type is defined as:
 UEPolicy ::= OCTET STRING (SIZE(16..65540))
 ```
 
-A UE policy container is a UE POLICY DELIVERY SERVICE message (TS 24.501 / TS 24.587). The
-shortest ones are three octets — extended protocol discriminator, PTI, message identity — and
-`MANAGE UE POLICY COMPLETE` is exactly that. This package refuses 3, 5 and 15 octets and accepts
-16. So the element must produce the record, and must not encode it; both cannot hold.
+A UE policy container is a UE policy delivery service message (TS 24.501 Annex D). The
+shortest is `MANAGE UE POLICY COMPLETE`: a procedure transaction identity and a message type,
+one octet each (table D.5.2.1.1). This package refuses anything under 16 octets and accepts 16.
+So the element must produce the record, and must not encode it; both cannot hold.
 
 **What this package does: follows the schema, and says so.** The constraint is enforced, the
 record is not delivered, and the network function reports the condition as a task-scoped
@@ -273,6 +276,12 @@ rule that happens to hold for the values seen so far.
 
 - **`gTPTunnelInfo`** is `OPTIONAL` in the module and **M** in tables 6.2.3-1, 6.2.3-2 and
   6.2.3-4. This package follows the tables and populates it.
+- **`SMFStartOfInterceptionWithEstablishedPDUSession/uEEndpoint`** has no `OPTIONAL` in the
+  module, while table 6.2.3-4 marks it **C**, 0..N, "if available". A session with no endpoint
+  address (Unstructured, or Ethernet before a MAC is learned) is reported with the field
+  written as an empty `SEQUENCE OF`, the module's only form for "not available". In the
+  establishment and unsuccessful-procedure records the field is `OPTIONAL` and conditional, so
+  an empty list is omitted.
 - **`SMFPDUSessionModification/requestType`** has no `OPTIONAL` in the module, while table
   6.2.3-2 marks only `gTPTunnelInfo` **M**. The module is what a receiver validates against, so
   the zero guard follows the module; the SMF populates the field either way.
@@ -281,7 +290,9 @@ rule that happens to hold for the values seen so far.
   (`iMSVoiceeEPSFallbackOrRATFallbackTriggered`, `uPIntegrityProtectioNotPossible`, and
   `nPMAccessDenied` for NPN access); each sits at the position its NGAP counterpart predicts, so
   all three are read as the same cause. `enumConstraints` admits 28 because a range cannot
-  express a hole, and an AMF's mapping must never produce it.
+  express a hole, and an AMF's mapping must never produce it. (NGAP numbers its
+  radio-network causes from 0, to 57 in the release the SD-Core AMF uses, so 58 values; TS
+  33.128 numbers from 1.)
 - **`FiveGSMCause`** is `INTEGER (0..255)` and mandatory in `SMFUnsuccessfulProcedure`, while
   TS 24.501's 5GSM cause values start at 8. The module's range is what a receiver validates
   against, so zero is not refused here; a tighter range would be a correction to TS 33.128, not

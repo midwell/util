@@ -16,12 +16,13 @@ rather than going unnoticed.
 |---|---|
 | Specification | 3GPP TS 33.128 **V18.16.0** |
 | Module header | `{… threeGPP(4) ts33128(19) r18(18) version15(15)}` |
-| Attachment archive | `33128-ig0.zip` |
+| Archive | `33128-ig0.zip` → `33128-ig0-attachments.zip` |
 | SHA-256 of `TS33128Payloads.asn` | `e41ab9258f8ea3296a28dcfefd0c93254093475ca87f2caf291c814e4039a965` |
 
 Fetch the archive from
-`https://www.3gpp.org/ftp/Specs/archive/33_series/33.128/33128-ig0.zip` and take
-`TS33128Payloads.asn` from it. Note that `www.3gpp.org` serves 403 to automated clients;
+`https://www.3gpp.org/ftp/Specs/archive/33_series/33.128/33128-ig0.zip`; it holds the
+specification and a nested `33128-ig0-attachments.zip`, and `TS33128Payloads.asn` is in the
+nested archive. Note that `www.3gpp.org` serves 403 to automated clients;
 `curl` with a browser `User-Agent` works.
 
 The digest above is of the module file itself, as extracted from the archive, and is what

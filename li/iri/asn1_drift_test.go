@@ -218,14 +218,14 @@ var declaredAbsent = map[string]map[string]string{
 // each is a record that decodes cleanly and carries less than TS 33.128 says it
 // should, which no decoder can see.
 //
-// They are listed separately so they can be counted, and TestKnownDefectsDoNotGrow
-// pins that count. Adding one therefore has to be a deliberate, reviewed act rather
-// than another line in a list of things that are fine. The findings themselves are
+// They are listed separately so they can be counted, and TestNoKnownConditionalDefects
+// requires the list to be empty. Adding one therefore has to be a deliberate, reviewed act
+// rather than another line in a list of things that are fine. The findings themselves are
 // written up in CONFORMANCE.md.
 var knownConditionalDefects = map[string]map[string]string{
 	// Empty: no field whose condition this project meets goes unreported. The list
 	// stays so the next such field has an established place to be recorded, and so
-	// adding one is a deliberate act that TestKnownDefectsDoNotGrow makes visible.
+	// adding one is a deliberate act that TestNoKnownConditionalDefects makes visible.
 
 }
 
@@ -409,10 +409,9 @@ func TestASN1DriftAuditDetectsAnOmission(t *testing.T) {
 	modelled := modelledTags(t, reflect.TypeOf(SMFPDUSessionModification{}))
 
 	// gTPTunnelInfo is marked M in payload table 6.2.3-2 and OPTIONAL in the
-	// module, which is why no decoder caught its absence. It is modelled now, and
-	// this asserts it stays that way: for this record it is the *only* mandatory
-	// field, so losing it again would leave the record satisfying none of its
-	// mandatory set while still decoding cleanly.
+	// module, so no decoder catches its absence. This asserts it stays modelled: for
+	// this record it is the *only* mandatory field, so losing it would leave the
+	// record satisfying none of its mandatory set while still decoding cleanly.
 	tag, ok := byName["gTPTunnelInfo"]
 	if !ok {
 		t.Fatal("the module no longer defines SMFPDUSessionModification/gTPTunnelInfo")
@@ -462,40 +461,59 @@ func TestASN1DriftAuditDetectsAnOmission(t *testing.T) {
 	}
 }
 
-// TestKnownDefectsDoNotGrow pins the number of fields this project should report
-// and does not.
-//
-// The count is the point. Each of these is a record that decodes cleanly against
-// the published module while carrying less than TS 33.128 requires, so nothing
-// downstream can notice one — and without a pinned total, adding another is a
-// one-line edit indistinguishable from recording an inapplicable field. Changing
-// this number is meant to be a deliberate act with a reason in the commit.
-//
-// Going *down* fails too: a defect that has been fixed should leave the list.
-//
-// A drop has two possible causes and the commit has to say which. Either a defect
-// was fixed, or an entry was reclassified because it was never a defect against
-// this element — AMFPositioningInfoTransfer/sUCI left this way, for a record no
-// POI emits, and is now an N/A in declaredAbsent. A count that moved for two
-// different reasons and does not distinguish them cannot be checked later.
-func TestKnownDefectsDoNotGrow(t *testing.T) {
-	const want = 0
+// TestNoKnownConditionalDefects requires knownConditionalDefects to be empty. Each entry would
+// be a field TS 33.128 says these packages should report and do not — a record that still
+// decodes cleanly against the published module while carrying less than its table requires,
+// so nothing downstream would notice. An entry is a deliberate act: it must be written up in
+// CONFORMANCE.md.
+func TestNoKnownConditionalDefects(t *testing.T) {
+	for record, fields := range knownConditionalDefects {
+		for field, why := range fields {
+			t.Errorf("%s/%s is listed as a known conditional-field defect (%s); fix it, or write it "+
+				"up in CONFORMANCE.md and change this test with the reason", record, field, why)
+		}
+	}
+}
 
-	got := 0
-	for _, fields := range knownConditionalDefects {
-		got += len(fields)
+// TestTheDispositionCountsAreTheDocumentedOnes holds the counts CONFORMANCE.md publishes to the
+// disposition list they summarise: the markers and the verdicts of every recorded field. A field
+// added, removed or re-judged changes a number a reader relies on, so the document has to change
+// with it.
+func TestTheDispositionCountsAreTheDocumentedOnes(t *testing.T) {
+	entry := regexp.MustCompile(`^([CMO]), table [^:]*: ([A-Z][A-Z /]*):`)
+
+	markers, verdicts, total := map[string]int{}, map[string]int{}, 0
+	for record, fields := range declaredAbsent {
+		for field, disposition := range fields {
+			m := entry.FindStringSubmatch(disposition)
+			if m == nil {
+				t.Errorf("%s/%s: disposition %q does not start with a marker, a table and a verdict",
+					record, field, disposition)
+				continue
+			}
+			total++
+			markers[m[1]]++
+			verdicts[m[2]]++
+		}
 	}
-	if got == want {
-		return
+
+	// The numbers in CONFORMANCE.md, "Every unmodelled field, and its marker".
+	if total != 116 {
+		t.Errorf("%d recorded fields, CONFORMANCE.md says 116", total)
 	}
-	verb := "grown"
-	if got < want {
-		verb = "shrunk"
+	for marker, want := range map[string]int{"M": 0, "C": 115, "O": 1} {
+		if markers[marker] != want {
+			t.Errorf("%d fields marked %s, CONFORMANCE.md says %d", markers[marker], marker, want)
+		}
 	}
-	t.Errorf("knownConditionalDefects has %s to %d entries, expected %d. These are fields "+
-		"TS 33.128 says this project should report and it does not; if you have fixed one, "+
-		"remove it and lower the count, and if you have added one, say why in the commit. "+
-		"CONFORMANCE.md is where they are written up.", verb, got, want)
+	for verdict, want := range map[string]int{
+		"NOT HELD": 69, "N/A": 26, "DEFERRED": 9, "UNTRACED": 9, "DEPRECATED": 3,
+		"MET": 0, "BLOCKED": 0,
+	} {
+		if verdicts[verdict] != want {
+			t.Errorf("%d fields judged %s, CONFORMANCE.md says %d", verdicts[verdict], verdict, want)
+		}
+	}
 }
 
 // declaredAbsentNested is declaredAbsent for the structures below a record, and for the
@@ -541,8 +559,8 @@ var declaredAbsentNested = map[string]map[string]string{
 // structure a record reaches, and every CHOICE whose alternatives it carries. It checks
 // both directions, as the record audit does — a module member this package neither
 // models nor declares absent fails, and so does a declared tag or optionality the
-// module does not define. The record audit stops at the record's own fields, so until
-// this existed a nested declaration was authority over nothing but itself.
+// module does not define. The record audit stops at the record's own fields, so without
+// this a nested declaration would be authority over nothing but itself.
 func TestASN1NestedTypeDrift(t *testing.T) {
 	sequences := sequenceFieldTypes(t)
 	choices := parseASN1Choices(t)

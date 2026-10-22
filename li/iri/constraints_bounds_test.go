@@ -193,8 +193,10 @@ func TestEnumBoundsMatchTheModule(t *testing.T) {
 		checked++
 	}
 
-	if checked < 10 {
-		t.Errorf("checked %d enumerations against the module; the table holds eleven outside "+
-			"the cause groups, so the parse is looking at something else", checked)
+	// Every entry outside the cause groups must have been compared: a parse that silently
+	// skipped one would leave its bounds checked against nothing.
+	if want := len(enumConstraints) - len(causeGroups); checked != want {
+		t.Errorf("checked %d enumerations against the module; the table holds %d outside "+
+			"the cause groups, so the parse is looking at something else", checked, want)
 	}
 }

@@ -113,8 +113,8 @@ func declaredCauseValues(t *testing.T) map[string]int64 {
 
 // TestCauseValuesMatchTheModule is what makes the transcription checkable rather than trusted.
 //
-// The values in causevalues.go were generated from the module, and a generated value is only as
-// good as the last time somebody ran the generator. This reads the module every run and
+// The values in causevalues.go are transcribed by hand from the module, and a transcription is
+// only as good as the care taken over it. This reads the module every run and
 // compares it in both directions: a value the module gives that no constant declares, and a
 // constant whose value the module does not agree with. Either is a transcription that has
 // drifted, and drift here is not a compile error — it is a handover record carrying a cause the

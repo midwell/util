@@ -7,8 +7,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"net"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -30,11 +28,11 @@ func sampleRegistration() AMFRegistration {
 	}
 }
 
-// assertEncodes pins a record's complete encoding. The expected bytes are fixtures
-// produced by a second, independent BER encoder, compared byte for byte. A decode round
-// trip cannot stand in for this — it still passes when encode and decode change
-// together, which is exactly the failure that corrupts a receiver while looking healthy
-// from in here.
+// assertEncodes pins a record's complete encoding against fixed hex, compared byte for
+// byte. The fixtures are never regenerated from this encoder, so a change to an encoding
+// fails here and has to be justified. A decode round trip cannot stand in for this — it
+// still passes when encode and decode change together, which is exactly the failure that
+// corrupts a receiver while looking healthy from in here.
 func assertEncodes(t *testing.T, event any, want string) []byte {
 	t.Helper()
 	der, err := EncodeXIRI(event)
@@ -59,14 +57,7 @@ func containsTLV(der []byte, header string, content []byte) bool {
 }
 
 func TestEncodeXIRI(t *testing.T) {
-	der := assertEncodes(t, sampleRegistration(), "306381050413120f01a25aa158810101820101a411810f323632303139383736353433323130a610810e3335333432353030303030303031a70f810d34393135313233343536373839a81a810332363282023031830200c8840101850100860500deadbeef")
-
-	// Dump the DER for an independent structural check (openssl asn1parse).
-	out := filepath.Join(os.TempDir(), "li_xiri_amfreg.der")
-	if err := os.WriteFile(out, der, 0o600); err != nil {
-		t.Fatalf("write der: %v", err)
-	}
-	t.Logf("wrote %d bytes of DER to %s", len(der), out)
+	assertEncodes(t, sampleRegistration(), "306381050413120f01a25aa158810101820101a411810f323632303139383736353433323130a610810e3335333432353030303030303031a70f810d34393135313233343536373839a81a810332363282023031830200c8840101850100860500deadbeef")
 }
 
 // TestAbsentOptionalChoice verifies that absent (nil) optional CHOICE fields are
@@ -210,7 +201,7 @@ func TestIdentifierRecordMandatoryTags(t *testing.T) {
 		GUTI: guti,
 	}.emit)
 	// gUTI [5] constructed = 0xA5. [2] is sUCI in this record, so the GUTI must
-	// not be emitted there as it once was.
+	// not be emitted there.
 	if !bytes.Contains(deassoc, []byte{0xA5}) {
 		t.Errorf("deassociation is missing mandatory gUTI [5]: % x", deassoc)
 	}

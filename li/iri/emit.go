@@ -301,8 +301,7 @@ func xiriEvent(b *builder, field string, v any) {
 		b.fail(missing(field))
 	default:
 		// A pointer to a record lands here too, and is refused rather than dereferenced:
-		// validateEvent's checks are keyed on the value types, so a pointer would pass them
-		// unexamined.
+		// the constraint walk and this switch are keyed on the value types.
 		b.fail(notAnAlternative("XIRIEvent", field, v))
 	}
 }
@@ -527,7 +526,7 @@ func (r SMFPDUSessionEstablishment) emit(b *builder) {
 	if !isZero(r.SNSSAI) {
 		b.constructed(8, r.SNSSAI.emit)
 	}
-	if r.UEEndpoint != nil {
+	if len(r.UEEndpoint) > 0 {
 		b.sequenceOf(9, "SMFPDUSessionEstablishment.UEEndpoint", r.UEEndpoint, ueEndpointAddress)
 	}
 	b.text(12, string(r.DNN))
@@ -733,7 +732,7 @@ func (r SMFUnsuccessfulProcedure) emit(b *builder) {
 	if r.PDUSessionID != 0 {
 		b.integer(9, int64(r.PDUSessionID))
 	}
-	if r.UEEndpoint != nil {
+	if len(r.UEEndpoint) > 0 {
 		b.sequenceOf(10, "SMFUnsuccessfulProcedure.UEEndpoint", r.UEEndpoint, ueEndpointAddress)
 	}
 	if r.DNN != "" {

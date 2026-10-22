@@ -16,8 +16,7 @@ package iri
 //
 // Every value below is asserted against the module in TestCauseValuesMatchTheModule, so a
 // release that renumbers or extends a group fails a test here rather than being discovered
-// downstream. Do not edit these by hand: they are generated from the module, and the test is
-// what keeps them honest.
+// downstream. They are transcribed by hand; the test is what keeps them honest.
 
 // The CauseRadioNetwork group: 51 values, 1..52.
 const (

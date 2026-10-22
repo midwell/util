@@ -197,9 +197,9 @@ var (
 		reflect.TypeOf(CauseProtocol(0)):     true,
 		reflect.TypeOf(CauseMisc(0)):         true,
 
-		// The six the sweep found that are mandatory in every record this package emits that
-		// carries them, so the type is exactly the right key: a record added later that reuses
-		// one inherits the guard without anybody remembering it. Each names the record and the
+		// The six that are mandatory in every record this package emits that carries them, so
+		// the type is exactly the right key: a record added later that reuses one inherits the
+		// guard without anybody remembering it. Each names the record and the
 		// module's lowest defined value.
 		//
 		// AMFDirection ::= ENUMERATED { networkInitiated(1), uEInitiated(2) } —
@@ -539,7 +539,7 @@ func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) e
 
 	if c, ok := identityConstraints[t]; ok {
 		s := v.String()
-		if n := len(s); n < c.min || n > c.max {
+		if n := len([]rune(s)); n < c.min || n > c.max {
 			return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (%s)",
 				path, n, t.Name(), sizeText(c.min, c.max))
 		}

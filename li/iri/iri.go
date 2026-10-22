@@ -8,9 +8,11 @@
 // (DEFINITIONS IMPLICIT TAGS), encoded with DER. We hand-write only the subset of
 // records the AMF/SMF POIs actually emit, as typed structs whose `asn1:"..."` tags
 // record the module's field tags, and encode them with explicit emitters over the
-// standard library's encoding/asn1 (emit.go). The struct tags are declarative:
-// asn1_drift_test.go audits them against the published module, and emit_tags_test.go
-// holds the emitters to them.
+// standard library's encoding/asn1 (emit.go). The emitters write each field's tag
+// themselves; the struct tags state the module's tag and optionality, and are read at run
+// time only for `optional`, which the constraint walk uses to tell an absent member from an
+// empty mandatory one (isOptional in constraints.go). asn1_drift_test.go audits the tags
+// against the published module, and emit_tags_test.go holds the emitters to them.
 //
 // It encodes the seventeen XIRIEvent records listed in emit.go's xiriEvent: eleven
 // produced by the AMF, five by the SMF, and AMFPositioningInfoTransfer, which is
@@ -19,10 +21,7 @@
 // supply, with the rest recorded, with a reason, in asn1_drift_test.go.
 package iri
 
-import (
-	"fmt"
-	"net"
-)
+import "net"
 
 // xIRIPayloadOID is the fixed RELATIVE-OID identifying an xIRI payload for
 // TS 33.128 r18 v15: {threeGPP(4) ts33128(19) r18(18) version15(15) xIRI(1)}.
@@ -554,7 +553,8 @@ type AMFStartOfInterceptionWithRegisteredUE struct {
 // SMFPDUSessionEstablishment is a slice of the same-named TS 33.128 record.
 // Mandatory: pDUSessionID, gTPTunnelID, pDUSessionType, dNN, requestType.
 // uEEndpoint [9] is OPTIONAL here and carries the address assigned to the UE —
-// distinct from gTPTunnelID, which is the serving UPF's tunnel endpoint.
+// distinct from gTPTunnelID, which is the serving UPF's tunnel endpoint. Table 6.2.3-1
+// makes it conditional, "if available": an empty list is omitted.
 // Deferred optionals (deeper subtrees): location [11] and the long tail.
 type SMFPDUSessionEstablishment struct {
 	SUPI                any                            `asn1:"tag:1,explicit,choice:supi,optional"`
@@ -693,10 +693,9 @@ type ServiceType []byte // SIZE(1)
 // UEEndpoint builds the ueEndpoint list for a single UE address, discriminating
 // v4 from v6 the way the rest of the project does — To4 first, because a
 // 4-in-6-mapped address answers To16 as well and would otherwise be reported as
-// IPv6. Returns nil for an absent or unusable address, so a caller that has no
-// address emits no list rather than an empty one: an empty ueEndpoint is a
-// positive claim that the session has no endpoint address, which is never true
-// of an established session.
+// IPv6. Returns nil for an absent or unusable address — an Unstructured session,
+// or an Ethernet session whose MAC is not yet known — which every record treats as
+// "not available", as the TS 33.128 tables make uEEndpoint conditional.
 func UEEndpoint(ip net.IP) []any {
 	if a := UEEndpointAddress(ip); a != nil {
 		return []any{a}
@@ -723,13 +722,14 @@ func UEEndpointAddress(ip net.IP) any {
 // SMFStartOfInterceptionWithEstablishedPDUSession is a slice of the same-named
 // TS 33.128 record (XIRIEvent [9]), generated when interception is activated for
 // a UE that already has an active PDU session. Mandatory: pDUSessionID,
-// gTPTunnelID, pDUSessionType, uEEndpoint, dNN, requestType. servingNetwork and
-// gTPTunnelInfo are modelled; location and the EPS tail are not, as for
-// SMFPDUSessionEstablishment.
+// gTPTunnelID, pDUSessionType, dNN, requestType. servingNetwork and gTPTunnelInfo
+// are modelled; location and the EPS tail are not, as for SMFPDUSessionEstablishment.
 //
-// uEEndpoint is mandatory here and must not be emitted as an empty SEQUENCE: an
-// empty list asserts that an established session has no endpoint address. Build
-// it with UEEndpoint.
+// uEEndpoint is not OPTIONAL in the module, but table 6.2.3-4 makes it conditional
+// (0..N, "if available"). The field is therefore always written, and a session with no
+// endpoint address — Unstructured, or Ethernet before a MAC is learned — is reported with
+// an empty list, the module's only way to say "not available" here. Build it with
+// UEEndpoint.
 type SMFStartOfInterceptionWithEstablishedPDUSession struct {
 	SUPI                any                            `asn1:"tag:1,explicit,choice:supi,optional"`
 	SUPIUnauthenticated *SUPIUnauthenticatedIndication `asn1:"tag:2,optional"`
@@ -852,60 +852,14 @@ type XIRIPayload struct {
 // returns its DER encoding, suitable as the payload of an X2 PDU with payload
 // format 3GPP-33.128.
 func EncodeXIRI(event any) ([]byte, error) {
-	if err := validateEvent(event); err != nil {
-		return nil, err
-	}
-	// **Every constrained leaf, on the one path every record crosses.** validateEvent above
-	// checks the endpoint lists; this checks the restrictions the type definitions themselves
-	// carry. A record violating its own definition would otherwise go out: this element would
-	// believe it delivered, a conformant mediation function would discard what it cannot
-	// validate, and no fault would be raised on either side. See constraints.go.
+	// Every constrained leaf, on the one path every record crosses: the restrictions the
+	// type definitions carry. A record violating its own definition would otherwise go out:
+	// this element would believe it delivered, a conformant mediation function would discard
+	// what it cannot validate, and no fault would be raised on either side. See
+	// constraints.go.
 	if err := validateConstraints(event); err != nil {
 		return nil, err
 	}
 
 	return encodePayload(event)
-}
-
-// validateEvent refuses records whose encoding would be schema-valid but false.
-//
-// The emitter cannot catch these: an empty SEQUENCE OF encodes cleanly, and ueEndpoint
-// carries no SIZE constraint, so nothing downstream rejects it. What it asserts, though,
-// is that a PDU session has no endpoint address, which is never true — and an agency
-// cannot tell that claim apart from one the element meant. Refusing here rather than in
-// each caller keeps the rule on the single path every record crosses.
-//
-// Every record that carries a ueEndpoint list is checked — the three below — because the
-// difference between them is only which shape counts as wrong. In the start-of-interception
-// record the field is mandatory, so absent and empty are both wrong. In the establishment
-// and unsuccessful-procedure records it is OPTIONAL, so absent is correct and only
-// present-and-empty is wrong — a nil slice is omitted, a non-nil empty one would be emitted
-// as a present empty SEQUENCE.
-func validateEvent(event any) error {
-	switch rec := event.(type) {
-	case SMFStartOfInterceptionWithEstablishedPDUSession:
-		if len(rec.UEEndpoint) == 0 {
-			return fmt.Errorf(
-				"iri: SMFStartOfInterceptionWithEstablishedPDUSession has an empty uEEndpoint; " +
-					"the field is mandatory and an empty list asserts the session has no endpoint address")
-		}
-	case SMFPDUSessionEstablishment:
-		if rec.UEEndpoint != nil && len(rec.UEEndpoint) == 0 {
-			return fmt.Errorf(
-				"iri: SMFPDUSessionEstablishment has a present but empty uEEndpoint; " +
-					"the field is optional, so leave it nil to omit it — an empty list " +
-					"asserts the session has no endpoint address")
-		}
-	case SMFUnsuccessfulProcedure:
-		// What failed was a session, and an empty endpoint list says it had no address.
-		if rec.UEEndpoint != nil && len(rec.UEEndpoint) == 0 {
-			return fmt.Errorf(
-				"iri: SMFUnsuccessfulProcedure has a present but empty uEEndpoint; " +
-					"the field is optional, so leave it nil to omit it — an empty list " +
-					"asserts the session has no endpoint address")
-		}
-	}
-	// SMFPDUSessionModification's uEEndpoint is a single CHOICE, not a list, so it has no
-	// empty form to refuse: nil omits it.
-	return nil
 }

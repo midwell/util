@@ -208,10 +208,10 @@ func TestHandoverCauseArms(t *testing.T) {
 	}
 }
 
-// TestNewRecordsDiscriminate: each new record must be carried under its own
+// TestRecordsDiscriminate: each of these records must be carried under its own
 // XIRIEvent alternative. Their tags are 10, 111, 113, 114, 146 and 147 — all but the
 // first use high-tag-number form, which is where a tag typo hides.
-func TestNewRecordsDiscriminate(t *testing.T) {
+func TestRecordsDiscriminate(t *testing.T) {
 	cases := []struct {
 		name  string
 		event any

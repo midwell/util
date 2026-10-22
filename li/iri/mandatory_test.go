@@ -116,9 +116,9 @@ func TestEncodeXIRIRefusesNoEvent(t *testing.T) {
 	}
 }
 
-// TestAPointerToARecordIsRefused: the XIRIEvent CHOICE takes record values. A pointer would pass
-// validateEvent's checks, which are keyed on the value types, unexamined — so it is refused by
-// name rather than dereferenced.
+// TestAPointerToARecordIsRefused: the XIRIEvent CHOICE takes record values, and the checks on the
+// encode path are keyed on the value types, so a pointer is refused by name rather than
+// dereferenced.
 func TestAPointerToARecordIsRefused(t *testing.T) {
 	_, err := EncodeXIRI(&AMFRegistration{
 		RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
@@ -254,18 +254,6 @@ func TestRATTypeIsBoundedByTheModule(t *testing.T) {
 		if _, err := EncodeXIRI(rec(ok)); err != nil {
 			t.Errorf("RATType %d was refused: %v", ok, err)
 		}
-	}
-}
-
-// TestEveryEndpointListRefusesThePresentEmptyForm: SMFUnsuccessfulProcedure carries a ueEndpoint
-// list too, and a present empty one asserts the failed session had no address.
-func TestEveryEndpointListRefusesThePresentEmptyForm(t *testing.T) {
-	_, err := EncodeXIRI(SMFUnsuccessfulProcedure{
-		FailedProcedureType: SMFFailedPDUSessionEstablishment, FailureCause: 1,
-		Initiator: InitiatorNetwork, UEEndpoint: []any{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "present but empty uEEndpoint") {
-		t.Errorf("a present empty endpoint list was not refused: %v", err)
 	}
 }
 

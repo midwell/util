@@ -5,7 +5,9 @@ package iri
 
 import (
 	"bytes"
+	"encoding/hex"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -116,21 +118,28 @@ func TestUEEndpointCarriesMultipleAddresses(t *testing.T) {
 	}
 }
 
-// TestStartOfInterceptionRefusesEmptyEndpoint is the spec rule made enforceable:
-// uEEndpoint is mandatory in this record and an empty list positively asserts the
-// session has no endpoint address, which is never true of an established session.
-// It encodes cleanly and no receiver rejects it, so nothing downstream would catch
-// this — which is exactly why the refusal lives on the encode path.
-func TestStartOfInterceptionRefusesEmptyEndpoint(t *testing.T) {
-	rec := SMFStartOfInterceptionWithEstablishedPDUSession{
-		SUPI:           IMSI("262019876543210"),
-		PDUSessionID:   5,
-		PDUSessionType: PDUSessionTypeIPv4,
-		DNN:            DNN("internet"),
-		RequestType:    SMRequestExisting,
-	}
-	if _, err := EncodeXIRI(rec); err == nil {
-		t.Fatal("encoded a start-of-interception record with an empty uEEndpoint; want an error")
+// TestStartOfInterceptionReportsAnEmptyEndpointList: table 6.2.3-4 makes uEEndpoint
+// conditional, "if available", while the module declares it without OPTIONAL. A session with no
+// endpoint address — Unstructured, or Ethernet before a MAC is learned — is therefore reported,
+// with the field written as an empty SEQUENCE, rather than refused: interception of such a
+// session must still start.
+func TestStartOfInterceptionReportsAnEmptyEndpointList(t *testing.T) {
+	for name, ep := range map[string][]any{"nil": nil, "empty": {}} {
+		der, err := EncodeXIRI(SMFStartOfInterceptionWithEstablishedPDUSession{
+			SUPI:           IMSI("262019876543210"),
+			PDUSessionID:   5,
+			PDUSessionType: PDUSessionTypeUnstructured,
+			UEEndpoint:     ep,
+			DNN:            DNN("internet"),
+			RequestType:    SMRequestExisting,
+		})
+		if err != nil {
+			t.Fatalf("%s: a session with no endpoint address was refused: %v", name, err)
+		}
+		// [9] constructed, zero length: the field is present and the list is empty.
+		if !strings.Contains(hex.EncodeToString(der), "a900") {
+			t.Errorf("%s: uEEndpoint is not written as an empty [9] SEQUENCE: % x", name, der)
+		}
 	}
 }
 
@@ -184,19 +193,11 @@ func TestEndpointIsNotTheTunnelEndpoint(t *testing.T) {
 	}
 }
 
-// TestEstablishmentRefusesPresentButEmptyEndpoint closes the other half of the
-// no-empty-list rule. uEEndpoint is OPTIONAL on this record, so a nil slice is
-// correct and simply omits the field — but a non-nil empty slice is not omitted
-// (the emitter writes the list whenever it is non-nil), so it would be emitted as a
-// present empty SEQUENCE: schema-valid, unrejectable downstream, and asserting the
-// session has no endpoint address.
-//
-// No caller produces that shape; UEEndpoint returns nil or one entry. The guard is
-// here because the rule sits on the encode path every record crosses, and enforcing
-// it for only some of the records carrying a list leaves it one careless edit from
-// being false.
-func TestEstablishmentRefusesPresentButEmptyEndpoint(t *testing.T) {
-	base := SMFPDUSessionEstablishment{
+// TestAnEmptyOptionalEndpointListIsOmitted: in the establishment and unsuccessful-procedure
+// records uEEndpoint is OPTIONAL and conditional, so a list with nothing in it — nil or
+// non-nil — omits the field: the address is not available, and that is what absence says.
+func TestAnEmptyOptionalEndpointListIsOmitted(t *testing.T) {
+	est := SMFPDUSessionEstablishment{
 		SUPI:           IMSI("262019876543210"),
 		PDUSessionID:   5,
 		GTPTunnelID:    FTEID{TEID: 1, IPv4Address: []byte{10, 20, 30, 40}},
@@ -204,23 +205,33 @@ func TestEstablishmentRefusesPresentButEmptyEndpoint(t *testing.T) {
 		DNN:            DNN("internet"),
 		RequestType:    SMRequestInitial,
 	}
-
-	// nil: the field is optional and absent, which is correct.
-	if _, err := EncodeXIRI(base); err != nil {
-		t.Fatalf("absent (nil) endpoint must still encode: %v", err)
+	absent, err := EncodeXIRI(est)
+	if err != nil {
+		t.Fatal(err)
+	}
+	est.UEEndpoint = []any{}
+	empty, err := EncodeXIRI(est)
+	if err != nil {
+		t.Fatalf("an empty establishment endpoint list was refused: %v", err)
+	}
+	if !bytes.Equal(absent, empty) {
+		t.Errorf("an empty establishment endpoint list was not omitted:\nabsent % x\nempty  % x", absent, empty)
 	}
 
-	// present but empty: refused.
-	empty := base
-	empty.UEEndpoint = []any{}
-	if _, err := EncodeXIRI(empty); err == nil {
-		t.Error("encoded an establishment record with a present but empty uEEndpoint; want a refusal")
+	unsuccessful := SMFUnsuccessfulProcedure{
+		FailedProcedureType: SMFFailedPDUSessionEstablishment, FailureCause: 1,
+		Initiator: InitiatorNetwork,
 	}
-
-	// populated: encodes.
-	full := base
-	full.UEEndpoint = UEEndpoint(net.ParseIP("10.45.0.2"))
-	if _, err := EncodeXIRI(full); err != nil {
-		t.Errorf("populated endpoint must encode: %v", err)
+	absent, err = EncodeXIRI(unsuccessful)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsuccessful.UEEndpoint = []any{}
+	empty, err = EncodeXIRI(unsuccessful)
+	if err != nil {
+		t.Fatalf("an empty unsuccessful-procedure endpoint list was refused: %v", err)
+	}
+	if !bytes.Equal(absent, empty) {
+		t.Errorf("an empty unsuccessful-procedure endpoint list was not omitted:\nabsent % x\nempty  % x", absent, empty)
 	}
 }
