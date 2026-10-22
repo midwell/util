@@ -239,3 +239,26 @@ func TestSplitTargetsReturnsEveryMatchAndOnlyTheSubjectsOwnRest(t *testing.T) {
 		t.Errorf("a repeated held identity was matched %d times, want each occurrence", len(matched))
 	}
 }
+
+// TestTheTwoShapesOfOneTEIDAreCompatible: an F-TEID criterion is "TEID" or "TEID@address", and
+// the one without an address is satisfied wherever the addressed one is, so a task naming both
+// shapes of one TEID is not a contradiction. Two TEIDs, or one TEID at two addresses, are.
+func TestTheTwoShapesOfOneTEIDAreCompatible(t *testing.T) {
+	fteid := func(v string) TargetIdentifier { return TargetIdentifier{Type: TargetFTEID, Value: v} }
+
+	for _, c := range []struct {
+		a, b       string
+		contradict bool
+	}{
+		{"5", "5@10.0.0.1", false},
+		{"5@10.0.0.1", "5", false},
+		{"5@10.0.0.1", "5@10.0.0.2", true},
+		{"5", "6@10.0.0.1", true},
+		{"5", "6", true},
+	} {
+		task := InterceptTask{Targets: []TargetIdentifier{fteid(c.a), fteid(c.b)}}
+		if _, _, got := task.ContradictoryTargets(); got != c.contradict {
+			t.Errorf("F-TEID %q with %q: contradictory = %v, want %v", c.a, c.b, got, c.contradict)
+		}
+	}
+}

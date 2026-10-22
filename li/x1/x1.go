@@ -1027,6 +1027,16 @@ func sameTask(a, b types.InterceptTask) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// sameRequest reports whether two tasks were requested identically: every field the
+// ActivateTask carried, which excludes the delivery endpoints its DIDs resolve to. Those are
+// this element's resolution, not the request, so a replay is still the same request if a
+// destination it names has been re-provisioned in between.
+func sameRequest(a, b types.InterceptTask) bool {
+	a.Deliveries, b.Deliveries = nil, nil
+
+	return reflect.DeepEqual(a, b)
+}
+
 // notifyRemoved runs a removal's teardown and then names why it happened. The
 // order is the contract: what is being reported is that interception stopped, so
 // it must have stopped.
@@ -1610,8 +1620,8 @@ func (s *Server) resolveDIDs(dids []string) (endpoints []types.DeliveryEndpoint,
 // identical task is acknowledged instead, and changes nothing: an ADMF that resends an
 // activation whose answer it lost is asking for what this element already does, and
 // refusing it would turn a lost response into a provisioning failure. The comparison is
-// against the task as this element holds it, so a replay is identical in every field a
-// POI acts on, whatever the x1TransactionId.
+// of the request — every field the ActivateTask carried, its DIDs included but not the
+// endpoints they resolve to — so a replay is identical whatever the x1TransactionId.
 func (s *Server) activateHeld(td TaskDetails, held types.InterceptTask) (int, error) {
 	task, err := s.taskFromDetails(td)
 	if err != nil {
@@ -1624,7 +1634,7 @@ func (s *Server) activateHeld(td TaskDetails, held types.InterceptTask) (int, er
 	}
 	// The store stamps the state; the held task carries it, so the replay must too.
 	task.State = types.TaskActive
-	if sameTask(held, task) {
+	if sameRequest(held, task) {
 		return 0, nil
 	}
 
@@ -1743,7 +1753,7 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 		return types.InterceptTask{}, fmt.Errorf("no known X3 destination")
 	}
 
-	return types.InterceptTask{
+	task := types.InterceptTask{
 		XID:            types.XID(td.XID),
 		Targets:        targets,
 		TargetElements: elements,
@@ -1753,7 +1763,19 @@ func (s *Server) taskFromDetails(td TaskDetails) (types.InterceptTask, error) {
 		CorrelationID:  correlation,
 		Deliveries:     deliveries,
 		RecordScope:    recordScope(td),
-	}, nil
+	}
+	// Every criterion must match (TS 103 221-1 table 6.2.1.2-1), so a task naming two values
+	// of a property that holds one at a time can never match, and the table has the element
+	// reject "an inappropriate combination of identifiers" rather than acknowledge it. Decided
+	// here, once, for every element; what an element can evaluate at all is its CanApply's.
+	// The kinds are named and the values are not: they may be a subscriber's identities.
+	if a, b, ok := task.ContradictoryTargets(); ok {
+		return types.InterceptTask{}, fmt.Errorf(
+			"a %s criterion and a %s criterion cannot both match: every criterion of a task must match",
+			a.Type, b.Type)
+	}
+
+	return task, nil
 }
 
 // targetXML renders one target identifier as the contents of a

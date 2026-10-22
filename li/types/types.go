@@ -357,10 +357,17 @@ func (t InterceptTask) NamesOnlyTypes(kinds ...TargetIdentifierType) bool {
 // one value at a time — two SUPIs, two session identities, two directions — can never
 // match, and TS 103 221-1 table 6.2.1.2-1 has an element reject "an inappropriate
 // combination of identifiers" rather than acknowledge it. The single-valued
-// properties are a subscriber's SUPI and GPSI, and a session's or a packet's F-SEID,
-// F-TEID, UE address, network instance, tunnel direction, PDR and rule identifiers.
-// A packet has one UE transport port and one protocol, so two port criteria
-// contradict unless they are the same.
+// properties are a subscriber's SUPI and GPSI, and a packet's F-SEID, F-TEID, UE
+// address, network instance, tunnel direction, PDR and rule identifiers. These are
+// judged per packet, which is how a CC-POI applies them: a session holds many PDRs and
+// rules, but each packet is matched by one of each, so a task naming two PDR IDs selects
+// nothing. A subscriber holds one SUPI; the GPSI is single-valued here because the
+// SD-Core AMF presents one per subscriber. A packet has one UE transport port and one
+// protocol, so two port criteria contradict unless they are the same.
+//
+// An F-TEID criterion is "TEID" or "TEID@address" (see TargetFTEID), and the two shapes of
+// one TEID are compatible: the one without an address names any tunnel endpoint with that
+// TEID, so it is satisfied wherever the addressed one is.
 //
 // A PEI is the exception that needs care: a subscriber presents its IMEISV and the
 // IMEI it contains (TS 23.003: an IMEISV is the eight-digit TAC and six-digit serial
@@ -389,8 +396,11 @@ func contradicts(a, b TargetIdentifier) bool {
 	if a.Type != b.Type {
 		return false
 	}
-	if a.Type == TargetPEI {
+	switch a.Type {
+	case TargetPEI:
 		return !peiCompatible(a.Value, b.Value)
+	case TargetFTEID:
+		return !fteidCompatible(a.Value, b.Value)
 	}
 
 	return slices.Contains(singleValued, a.Type)
@@ -405,6 +415,15 @@ var singleValued = []TargetIdentifierType{
 
 func isPort(t TargetIdentifierType) bool {
 	return t == TargetTCPPort || t == TargetUDPPort
+}
+
+// fteidCompatible reports whether two distinct F-TEID criteria can match one packet: they
+// name the same TEID, and at most one of them names an address.
+func fteidCompatible(a, b string) bool {
+	teidA, addrA, hasA := strings.Cut(a, "@")
+	teidB, addrB, hasB := strings.Cut(b, "@")
+
+	return teidA == teidB && (!hasA || !hasB || addrA == addrB)
 }
 
 // peiCompatible reports whether two distinct PEI values can belong to one device: an
