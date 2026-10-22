@@ -269,6 +269,9 @@ func TestUnreachableFollowsTheLastAttempt(t *testing.T) {
 
 	client := NewClient(addr, &tls.Config{InsecureSkipVerify: true}, KeepaliveConfig{Disabled: true})
 	defer client.Close()
+	// The second delivery follows the failed one at once; what is pinned here is the flag
+	// following each attempt, not the redial interval, which has a test of its own.
+	client.redialInterval = 0
 
 	if client.Unreachable() {
 		t.Error("a client that has attempted no delivery reports its destination unreachable; " +

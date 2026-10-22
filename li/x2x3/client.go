@@ -51,12 +51,41 @@ type Client struct {
 	// depend on its wrapper for a property of its own lifecycle.
 	closed bool
 
+	// lastDialFailure and lastDialErr record the most recent dial that failed, and are
+	// cleared by one that succeeds. Guarded by mu. They are what lets deliver refuse to
+	// dial again within redialInterval — see minRedialInterval.
+	lastDialFailure time.Time
+	lastDialErr     error
+	// redialInterval is minRedialInterval, held per client so a test can shorten it.
+	redialInterval time.Duration
+
 	// unreachable is what the most recent exchange with this destination established,
 	// kept outside mu because a fault probe reads it on the X1 request goroutine: mu is
 	// held across a dial and a write, and an answer to a provisioning function must not
 	// wait for either. See Unreachable.
 	unreachable atomic.Bool
 }
+
+// minRedialInterval is how long a client waits after a failed dial before it dials the same
+// destination again. Deliveries offered in between fail at once, without a dial, and are
+// accounted as lost like any other failed delivery.
+//
+// **Without it an unreachable mediation function costs a dial per batch.** A refusing
+// destination fails each dial in microseconds, so the delivery worker dialled — TCP and a TLS
+// handshake attempt — as fast as product arrived, and reported an error for each: the rate of
+// both tracked the offered load, which on X3 is the subject's packet rate, not any retry
+// schedule.
+//
+// One second bounds that to one dial per destination per second. It is the resolution TS 103
+// 221-2 clause 6.2.4 expresses its own connection timers in, and it is short against how long
+// an outage that refuses connections lasts. What it costs is product offered in the second
+// after a failed dial, which is refused without an attempt — product a dial would almost
+// certainly have lost as well, since the last one a moment ago failed.
+//
+// The redial that follows a write failure on a held connection is not subject to it: that
+// connection was working a moment ago, and the one reconnect deliver makes is how an idle
+// connection the mediation function dropped is restored.
+const minRedialInterval = time.Second
 
 // DeliveryError is a delivery failure together with how many product units it cost.
 //
@@ -122,6 +151,8 @@ func NewClient(addr string, tlsConfig *tls.Config, keepalive KeepaliveConfig) *C
 		dialTimeout:  10 * time.Second,
 		writeTimeout: 5 * time.Second,
 		keepalive:    keepalive.withDefaults(),
+
+		redialInterval: minRedialInterval,
 	}
 }
 
@@ -204,10 +235,15 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 		return lostUnits(units, fmt.Errorf("x2x3: send to %s after Close", c.addr))
 	}
 	if c.live == nil {
+		if since := time.Since(c.lastDialFailure); c.lastDialErr != nil && since < c.redialInterval {
+			return lostUnits(units, fmt.Errorf("x2x3: not redialling %s for another %s after a failed dial: %w",
+				c.addr, (c.redialInterval-since).Round(time.Millisecond), c.lastDialErr))
+		}
 		if err := c.dialLocked(); err != nil {
 			return lostUnits(units, err)
 		}
 	}
+
 	n, err := c.writeLocked(b)
 	if err == nil {
 		return nil
@@ -348,9 +384,14 @@ func (c *Client) dialLocked() error {
 	d := tls.Dialer{NetDialer: &net.Dialer{}, Config: c.tlsConfig}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		return fmt.Errorf("x2x3: dial %s: %w", c.addr, err)
+		err = fmt.Errorf("x2x3: dial %s: %w", c.addr, err)
+		c.lastDialFailure, c.lastDialErr = time.Now(), err
+
+		return err
 	}
+	c.lastDialFailure, c.lastDialErr = time.Time{}, nil
 	c.live = &connState{conn: conn, stop: make(chan struct{})}
+
 	// The keepalive timer and the read path belong to this connection and to no
 	// other: they start here and stop in dropLocked, which is what makes a stale
 	// reader impossible and a keepalive on a connection nobody holds impossible.
