@@ -36,8 +36,8 @@ type Reachability interface {
 // signalling and data-plane processing.
 //
 // A single worker preserves per-POI delivery order (the MDF correlates by
-// CIN/sequence, not arrival, so strict ordering is not required, but it is free
-// and avoids reordering within one POI). When the buffer is full Send drops the
+// Correlation ID and sequence number, not arrival, so strict ordering is not
+// required, but it is free and avoids reordering within one POI). When the buffer is full Send drops the
 // PDU rather than block — LI product may be lost under sustained MDF outage, but
 // the target's service is never delayed — and invokes onDrop so the fault can be
 // surfaced to the ADMF over X1. Worker delivery errors invoke onError for the
@@ -76,7 +76,8 @@ type AsyncSender struct {
 
 // defaultQueueDepth bounds buffered-but-undelivered PDUs. Sized generously for
 // LI product volume; a full queue means the MDF has been unreachable long enough
-// that dropping (and reporting) is the correct, undetectable behaviour.
+// that dropping, and reporting each drop, is the right response — blocking would
+// delay the subscriber's own traffic, which a subject could observe.
 const defaultQueueDepth = 1024
 
 // batchSender is a Sender that can deliver several PDUs in one write. *Client
@@ -93,8 +94,8 @@ const maxDeliveryBatch = 32
 
 // NewAsyncSender wraps inner with a bounded async delivery queue of the given
 // depth (<=0 uses a default). onError is called with each worker delivery error;
-// onDrop is called when Send drops a PDU because the buffer is full. Either may
-// be nil. The worker starts immediately; call Close to stop it and close inner.
+// onDrop is called once per PDU that is dropped before delivery was attempted —
+// a full buffer, a closed sender, or an abandoned queue. Either may be nil. The worker starts immediately; call Close to stop it and close inner.
 func NewAsyncSender(inner Sender, depth int, onError func(error), onDrop func()) *AsyncSender {
 	if depth <= 0 {
 		depth = defaultQueueDepth
@@ -117,8 +118,8 @@ func (a *AsyncSender) run() {
 		// Take whatever else is already waiting and deliver it in one go. A PDU is
 		// self-delimiting, so a batch needs no extra framing, and the saving is
 		// real: one write and one set of TLS records instead of one per PDU. Under
-		// light load the drain finds nothing queued and this is exactly the old
-		// behaviour.
+		// light load the drain finds nothing queued and each PDU is written on its
+		// own.
 		batch := append(a.batch[:0], pdu)
 	drain:
 		for len(batch) < cap(a.batch) {
@@ -135,7 +136,7 @@ func (a *AsyncSender) run() {
 			default:
 			}
 
-			if len(batch) == 0 || len(a.queue) == 0 {
+			if len(a.queue) == 0 {
 				break
 			}
 		}
@@ -145,13 +146,13 @@ func (a *AsyncSender) run() {
 			for range batch {
 				a.dropped()
 			}
-
-			continue
-		}
-
-		if err := a.send(batch); err != nil && a.onError != nil {
+		} else if err := a.send(batch); err != nil && a.onError != nil {
 			a.onError(err)
 		}
+
+		// The reused array would otherwise keep the last batch's PDUs, payloads included,
+		// alive until the next batch overwrote them.
+		clear(batch)
 	}
 }
 
@@ -165,17 +166,22 @@ func (a *AsyncSender) dropped() {
 // reported to onDrop instead. A batch already being written finishes, and its outcome is
 // reported as usual.
 //
-// It exists for a close that will not wait for the queue to drain (see Pool.Close). Leaving
-// the worker to drain on its own after the closer has given up meant the queued product was
-// accounted for by nothing: not delivered before the process exited, and not reported as lost
+// It exists for a close that will not wait for the queue to drain (see Pool.Close). A worker
+// left to drain on its own after the closer has given up would leave the queued product
+// accounted for by nothing: not delivered before the process exits, and not reported as lost
 // either. Abandoning it turns that into a count — one drop per unit — which is what the
 // mediation function will see missing.
 func (a *AsyncSender) abandon() { a.abandoned.Store(true) }
 
 // Send enqueues pdu for asynchronous delivery and returns immediately. It never
 // blocks; a full buffer drops the PDU and invokes onDrop. The caller must not
-// mutate pdu after Send (the worker reads it later). The returned error is always
-// nil — delivery happens on the worker — and exists only to satisfy Sender.
+// mutate pdu after Send (the worker reads it later). The returned error is nil for
+// any PDU, delivered or dropped — delivery happens on the worker, and its outcome is
+// reported through onError and onDrop — and ErrNilPDU for a nil one.
+//
+// A nil pdu is not counted through onDrop: no product unit existed, so none was lost.
+// It is a defect in the caller, and the error returned to that caller is the one place
+// it can be seen and fixed.
 //
 // A sender that has been closed drops too, and reports the drop the same way. The
 // events that close a sender — a purge, a reconfiguration, an element shutting
@@ -224,8 +230,8 @@ func (a *AsyncSender) enqueue(pdu *PDU) bool {
 // destination.
 //
 // Note what this deliberately does not answer: whether the queue is full *right now*, which
-// is the state behind x3DeliveryLost — the mediation function is reachable but slower than
-// the offered rate, so copies are being dropped as this is asked. It is a state, it is
+// is the state a POI reports as delivery loss — the mediation function is reachable but
+// slower than the offered rate, so copies are being dropped as this is asked. It is a state, it is
 // observable here without I/O, and a probe for it would be legitimate. It is left out
 // because a full queue at one instant is not yet a fault an ADMF can act on: the queue is
 // sized to absorb bursts, so it fills and drains under normal load, and a probe sampling it
@@ -250,15 +256,16 @@ func (a *AsyncSender) Unreachable() bool {
 // Close stops accepting new PDUs, drains those already queued, waits for the
 // worker to finish, and closes the inner Sender. Safe to call more than once.
 //
-// **Idempotent in what it does, not only in what it guards.** The once covered the channel
-// close — closing a channel twice panics — and left `a.inner.Close()` outside it, so a
-// second call closed the inner sender again. That is benign with *Client, which guards its
-// own second close, and a broken contract for any other Sender: this type takes the
-// interface, so what a second Close does depended on which implementation was behind it.
-// Reached by the pool now that its own Close can return before every sender has drained.
+// **Idempotent in what it does, not only in what it guards.** Everything, the inner
+// sender's own Close included, happens inside the once, so a second call does not close the
+// inner sender again. *Client guards its own second close, but this type takes the
+// interface, and what a second Close does must not depend on the implementation behind it.
+// Pool.Close can give up on a sender that is still draining, so a sender may be closed more
+// than once.
 //
 // The result is cached rather than recomputed, so every caller is told the same thing about
-// the same teardown.
+// the same teardown. A concurrent second caller blocks in the once until the first has
+// finished, so it never answers before the teardown is done.
 func (a *AsyncSender) Close() error {
 	a.closeOnce.Do(func() {
 		a.closeMu.Lock()
@@ -271,10 +278,6 @@ func (a *AsyncSender) Close() error {
 		a.wg.Wait()
 		a.closeErr = a.inner.Close()
 	})
-
-	// A second caller waits for the first's teardown to finish rather than returning
-	// before it: the once's completion is what makes the error below the real answer.
-	a.wg.Wait()
 
 	return a.closeErr
 }

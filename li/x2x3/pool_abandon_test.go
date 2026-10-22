@@ -70,3 +70,47 @@ func TestAPoolCloseThatGivesUpCountsWhatItAbandons(t *testing.T) {
 		t.Errorf("%d units were delivered, want only the one already being written", got)
 	}
 }
+
+// TestAPoolCloseWaitsForEverySenderAmongSeveral: Close collects one answer per sender and
+// deletes each sender that answers. With several senders, a loop bounded by the map it deletes
+// from ends early — the deleted entries are never reached — so Close returned as soon as the
+// quick senders answered, without waiting out the deadline for the blocked one and without
+// counting what it abandoned.
+func TestAPoolCloseWaitsForEverySenderAmongSeveral(t *testing.T) {
+	var drops atomic.Int64
+
+	inner := &blockingSender{release: make(chan struct{}), entered: make(chan struct{})}
+	blocked := NewAsyncSender(inner, 64, nil, func() { drops.Add(1) })
+
+	p := NewPool(nil, KeepaliveConfig{}, nil, func() { drops.Add(1) })
+	p.senders["blocked.example:1"] = blocked
+	for _, addr := range []string{"a.example:1", "b.example:1", "c.example:1"} {
+		p.senders[addr] = &recordingSender{}
+	}
+
+	if err := blocked.Send(product()); err != nil {
+		t.Fatal(err)
+	}
+	<-inner.entered // the worker holds the first unit, blocked
+
+	for range 10 {
+		if err := blocked.Send(product()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.Close(); !errors.Is(err, errCloseTimedOut) {
+		t.Fatalf("Close() = %v, want the close deadline: it returned before the blocked sender "+
+			"answered", err)
+	}
+
+	close(inner.release)
+	eventually(t, "the abandoned sender's worker to finish", func() bool {
+		return inner.sent.Load()+drops.Load() >= 11
+	})
+
+	if got := drops.Load(); got != 10 {
+		t.Errorf("%d of the 10 units queued behind the blocked sender were reported dropped, "+
+			"want all 10", got)
+	}
+}

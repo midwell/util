@@ -150,6 +150,14 @@ func fastKeepalive(onFault func(error)) KeepaliveConfig {
 	return KeepaliveConfig{TimeP1: 20 * time.Millisecond, TimeP2: 60 * time.Millisecond, OnFault: onFault}
 }
 
+// steadyKeepalive is the mechanism at a speed a loaded test runner can keep up with, for the
+// tests that assert a connection is *not* torn down. Their failure mode is a test peer that
+// answers late because the machine is busy, so they get a TIME_P2 that a scheduling delay
+// cannot reach; fastKeepalive stays for the tests that wait for an expiry. Same ratio.
+func steadyKeepalive(onFault func(error)) KeepaliveConfig {
+	return KeepaliveConfig{TimeP1: 100 * time.Millisecond, TimeP2: 300 * time.Millisecond, OnFault: onFault}
+}
+
 func clientTo(t *testing.T, addr string, ka KeepaliveConfig) *Client {
 	t.Helper()
 
@@ -237,15 +245,16 @@ func TestKeepaliveIsSentWhileProductFlows(t *testing.T) {
 // product because delivery was working hard.
 func TestKeepaliveSurvivesASaturatedDeliveryQueue(t *testing.T) {
 	m := startMDF(t, answerCorrectly)
-	c := clientTo(t, m.addr, fastKeepalive(nil))
+	c := clientTo(t, m.addr, steadyKeepalive(nil))
 
 	var drops atomic.Int64
 	a := NewAsyncSender(c, 1, nil, func() { drops.Add(1) })
 	defer a.Close()
 
 	for range 500 {
-		// Never blocks and never errors: a full queue drops, which is the point.
-		//nolint:errcheck // AsyncSender.Send returns nil by contract
+		// Never blocks: a full queue drops, which is the point. The error is ErrNilPDU or
+		// nothing, and the unit here is never nil.
+		//nolint:errcheck // see above
 		_ = a.Send(product())
 	}
 
@@ -304,31 +313,43 @@ func TestKeepaliveExpiryDisconnectsAndReports(t *testing.T) {
 // timers: TIME_P2 is three TIME_P1s, so two lost acknowledgements are survivable and
 // the deadline runs from the last one seen rather than from each Keepalive.
 func TestKeepaliveToleratesTwoMissedAcknowledgements(t *testing.T) {
-	var answer atomic.Bool
+	var (
+		answer  atomic.Bool
+		acked   atomic.Int64
+		lastAck atomic.Int64 // UnixNano of the most recent acknowledgement sent
+	)
 	answer.Store(true)
 
 	m := startMDF(t, func(c net.Conn, p *PDU) {
-		if answer.Load() {
+		if p.Type == PDUTypeKeepalive && answer.Load() {
 			answerCorrectly(c, p)
+			lastAck.Store(time.Now().UnixNano())
+			acked.Add(1)
 		}
 	})
 
 	faults := make(chan error, 4)
-	c := clientTo(t, m.addr, fastKeepalive(func(err error) {
+	ka := steadyKeepalive(func(err error) {
 		select {
 		case faults <- err:
 		default:
 		}
-	}))
+	})
+	c := clientTo(t, m.addr, ka)
 
 	if err := c.Send(product()); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	eventually(t, "the connection to be established and answering", func() bool { return m.count(PDUTypeKeepalive) >= 1 })
+	// An acknowledgement actually sent, not merely a keepalive received: waiting on the
+	// latter could stop the answers before the first one went out, and the deadline would
+	// then run from the connection rather than from an acknowledgement.
+	eventually(t, "an acknowledgement to be sent", func() bool { return acked.Load() >= 1 })
 
-	// Two periods of silence: less than TIME_P2, so nothing should happen.
+	// Two periods of silence, measured from the last acknowledgement: less than TIME_P2,
+	// so nothing should happen. Measured rather than slept, so a slow machine cannot turn
+	// "two periods" into three.
 	answer.Store(false)
-	time.Sleep(45 * time.Millisecond)
+	time.Sleep(time.Until(time.Unix(0, lastAck.Load()).Add(2 * ka.TimeP1)))
 
 	select {
 	case err := <-faults:
@@ -513,21 +534,24 @@ func TestAValidAcknowledgementDoesPostponeTheDeadline(t *testing.T) {
 	})
 
 	faults := make(chan error, 4)
-	c := clientTo(t, m.addr, fastKeepalive(func(err error) {
+	ka := steadyKeepalive(func(err error) {
 		select {
 		case faults <- err:
 		default:
 		}
-	}))
+	})
+	c := clientTo(t, m.addr, ka)
 
 	if err := c.Send(product()); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 
+	// Four TIME_P2 periods: long enough that a deadline the acknowledgements did not
+	// postpone would have expired several times over.
 	select {
 	case err := <-faults:
 		t.Errorf("a peer answering with the numbers it was sent was disconnected: %v", err)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(4 * ka.TimeP2):
 	}
 	if c.Unreachable() {
 		t.Error("a peer acknowledging every keepalive was reported unreachable")
@@ -729,7 +753,7 @@ func TestKeepaliveReaderIsQuietOnOurOwnClose(t *testing.T) {
 	m := startMDF(t, answerCorrectly)
 
 	faults := make(chan error, 4)
-	c := clientTo(t, m.addr, fastKeepalive(func(err error) { faults <- err }))
+	c := clientTo(t, m.addr, steadyKeepalive(func(err error) { faults <- err }))
 
 	if err := c.Send(product()); err != nil {
 		t.Fatalf("Send() error = %v", err)

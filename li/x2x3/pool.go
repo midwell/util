@@ -14,8 +14,8 @@ import (
 //
 // A POI needs this rather than a single client because destinations arrive per task over
 // X1: they are not known at startup, and several agencies' endpoints may be in use at
-// once. One client per process was the shape that made two warrants provisioned to two
-// agencies both deliver to whichever address configuration happened to name.
+// once. A single client per process would make two warrants provisioned to two agencies
+// both deliver to whichever address configuration happened to name.
 //
 // Each client is wrapped in an AsyncSender, because delivery must not run on the
 // signalling goroutine that produced the record: a slow or unreachable MDF would delay a
@@ -72,15 +72,12 @@ func NewPool(tlsConfig *tls.Config, keepalive KeepaliveConfig, onError func(erro
 // discardSender is what a closed pool hands out: product offered to it is dropped, and
 // nothing is dialled or queued.
 //
-// **The drop is reported, which it was not.** The reasoning for silence was that a closed
-// pool belongs to an element shutting down, so there is no ADMF exchange left to carry a
-// report and no operator action it would prompt. Half of that holds: a shutting-down
-// element's report may well not arrive. The other half does not — a pool is also closed by a
-// reconfiguration, where the ADMF is reachable and this is simply product the element
-// produced and did not deliver — and the shape of the mistake is the one this whole plane
-// keeps making: deciding on the caller's behalf that nobody wants to be told. onDrop is the
-// POI's own hook, it is the hook that already means "product was lost, not a destination
-// fault", and what a POI does with it during teardown is the POI's business.
+// **The drop is reported.** A closed pool usually belongs to an element shutting down,
+// where a report may well not arrive; but a pool is also closed by a reconfiguration, where
+// the ADMF is reachable and this is simply product the element produced and did not deliver.
+// Staying silent would decide on the caller's behalf that nobody wants to be told. onDrop is
+// the POI's own hook, it already means "product was lost, not a destination fault", and what
+// a POI does with it during teardown is the POI's business.
 //
 // It reports itself reachable, because Unreachable answers what the last exchange
 // with a destination established and this has had none. Answering true would put a
@@ -242,7 +239,11 @@ func (p *Pool) Close() error {
 		err  error
 	}
 
-	results := make(chan closed, len(senders))
+	// The count is taken before the loop below deletes from the map: ranging over a map
+	// while deleting from it skips entries not yet reached, so the loop would end before
+	// every sender had answered and before the deadline could abandon the slow ones.
+	n := len(senders)
+	results := make(chan closed, n)
 	for addr, s := range senders {
 		go func(addr string, s Sender) { results <- closed{addr, s.Close()} }(addr, s)
 	}
@@ -250,7 +251,7 @@ func (p *Pool) Close() error {
 	var firstErr error
 
 	deadline := time.After(closeTimeout)
-	for range senders {
+	for range n {
 		select {
 		case r := <-results:
 			delete(senders, r.addr)

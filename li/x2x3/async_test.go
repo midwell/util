@@ -123,10 +123,10 @@ func TestAsyncSenderDropsWhenFull(t *testing.T) {
 	}
 }
 
-// TestAsyncSenderBatchesWhatIsAlreadyQueued covers the delivery coalescing added
-// PDUs that are already waiting share one write, which is where
-// the syscall and TLS-record saving comes from. It must never wait for a batch to
-// fill, or delivery latency would depend on how idle the target is.
+// TestAsyncSenderBatchesWhatIsAlreadyQueued covers delivery coalescing: PDUs that are
+// already waiting share one write, which is where the syscall and TLS-record saving comes
+// from. It must never wait for a batch to fill, or delivery latency would depend on how
+// idle the target is.
 func TestAsyncSenderBatchesWhatIsAlreadyQueued(t *testing.T) {
 	rec := &batchRecorder{}
 	// Depth well above the number queued, so nothing is dropped.
@@ -197,7 +197,7 @@ func TestAsyncSenderCloseDoesNotFaultRealClient(t *testing.T) {
 
 	for range 100 {
 		a := NewAsyncSender(NewClient("127.0.0.1:1", nil, KeepaliveConfig{}), 8, nil, nil)
-		//nolint:errcheck // Send's error is always nil
+		//nolint:errcheck // Send returns an error only for a nil PDU
 		_ = a.Send(&PDU{Type: PDUTypeX3, PayloadFormat: PayloadFormatIPv4})
 		//nolint:errcheck // nothing was ever connected
 		_ = a.Close()
@@ -250,7 +250,7 @@ func TestAsyncSenderSendRacingClose(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for range 64 {
-					//nolint:errcheck // Send's error is always nil
+					//nolint:errcheck // Send returns an error only for a nil PDU
 					_ = a.Send(&PDU{Type: PDUTypeX3, PayloadFormat: PayloadFormatIPv4})
 				}
 			}()
@@ -397,11 +397,9 @@ func TestANilProductUnitIsRefusedAtEveryEntryPoint(t *testing.T) {
 	})
 }
 
-// TestAsyncCloseIsIdempotentInWhatItDoes: the once covered the channel close — closing a
-// channel twice panics — and left the inner sender's Close outside it, so a second call
-// closed the inner sender again. Benign with *Client, which guards its own second close, and
-// a broken contract for any other Sender, which is what this type takes. Reached by the pool
-// now that its own Close can return before every sender has drained.
+// TestAsyncCloseIsIdempotentInWhatItDoes: a second Close must not close the inner sender
+// again. *Client guards its own second close, but this type takes any Sender, and Pool.Close
+// can give up on a sender that is still draining, so a sender may be closed more than once.
 func TestAsyncCloseIsIdempotentInWhatItDoes(t *testing.T) {
 	inner := &recordingSender{}
 	a := NewAsyncSender(inner, 4, nil, nil)
@@ -413,8 +411,8 @@ func TestAsyncCloseIsIdempotentInWhatItDoes(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 	if n := inner.closes(); n != 1 {
-		t.Errorf("the inner sender was closed %d times, want 1: what a second Close does depended "+
-			"on which Sender implementation was behind it", n)
+		t.Errorf("the inner sender was closed %d times, want 1: what a second Close does would "+
+			"depend on which Sender implementation was behind it", n)
 	}
 }
 

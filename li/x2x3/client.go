@@ -73,6 +73,10 @@ type Client struct {
 	// are not covered by a connection's own wait group. Close waits for them.
 	probes sync.WaitGroup
 
+	// dialConn replaces the TLS dial when set, so a test can hand the client a connection
+	// whose writes fail in a chosen way. Set only by tests; nil otherwise.
+	dialConn func(ctx context.Context) (net.Conn, error)
+
 	// unreachable is what the most recent exchange with this destination established,
 	// kept outside mu because a fault probe reads it on the X1 request goroutine: mu is
 	// held across a dial and a write, and an answer to a provisioning function must not
@@ -415,6 +419,10 @@ func (c *Client) dialLocked() error {
 func (c *Client) dial() (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(c.lifetime, c.dialTimeout)
 	defer cancel()
+
+	if c.dialConn != nil {
+		return c.dialConn(ctx)
+	}
 
 	d := tls.Dialer{NetDialer: &net.Dialer{}, Config: c.tlsConfig}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
