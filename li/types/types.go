@@ -38,11 +38,14 @@ const (
 	// meaningful within the UPF whose session state defines them. Clause 6.2.3
 	// requires a CC-POI to support at least all of them.
 	//
-	// TargetFTEID is a GTP tunnel endpoint, carried in the ETSI gtpuTunnelId
-	// identifier. That element is a plain integer in the schema, so the criterion
-	// is the TEID alone with no address beside it: matching it against a session
-	// therefore compares the TEID and cannot distinguish two tunnels that share
-	// one. Value is the TEID in decimal.
+	// TargetFTEID is a GTP tunnel endpoint. Value has one of two shapes, and a consumer
+	// must accept both:
+	//
+	//   - the TEID alone, in decimal, from the ETSI gtpuTunnelId identifier. That element
+	//     is a plain integer in the schema, so matching it against a session compares
+	//     the TEID and cannot distinguish two tunnels that share one;
+	//   - "TEID@address", from the 3GPP LI_T3 F-TEID arm when it carries the address of
+	//     the node terminating the tunnel. The address is IPv4 dotted-quad or IPv6.
 	TargetFTEID TargetIdentifierType = "FTEID"
 	// TargetUEIPv4 and TargetUEIPv6 are the subscriber's own address, so they
 	// select that subscriber's session rather than a rule within it. Value is the
@@ -104,8 +107,18 @@ type XID string
 // the zero XID, which is what an MDF treats as unattributable, so callers that
 // must not deliver unattributable product check the result rather than assuming
 // it.
+//
+// Only the canonical form converts: lowercase hexadecimal in 8-4-4-4-12 groups, the
+// form X1 admits. Tasks are keyed by the XID string, so a looser conversion would let
+// two tasks whose identifiers differ only in case or hyphenation — separate tasks to
+// every store — label their product with the same sixteen bytes, and an MDF could not
+// tell whose warrant a record belongs to.
 func (x XID) Bytes() [16]byte {
 	var out [16]byte
+
+	if !canonicalUUID(string(x)) {
+		return out
+	}
 
 	b, err := hex.DecodeString(strings.ReplaceAll(string(x), "-", ""))
 	if err == nil && len(b) == len(out) {
@@ -113,6 +126,29 @@ func (x XID) Bytes() [16]byte {
 	}
 
 	return out
+}
+
+// canonicalUUID reports whether s is a UUID in lowercase 8-4-4-4-12 form.
+func canonicalUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // IsZero reports whether the XID converts to the all-zero PDU header field, i.e.
@@ -214,6 +250,17 @@ type InterceptTask struct {
 	// task's TaskDetailsExtensions; the zero value is the scope of a task carrying
 	// none. See RecordScope.
 	RecordScope RecordScope
+	// TargetElements records, for each entry of Targets at the same index, the TS 103
+	// 221-1 element it was requested as ("supinai", "peiImeisv", "e164Number", …), or ""
+	// where the identifier carries no plain element of its own (the LI_T3 criteria).
+	//
+	// Matching never reads it: two requests naming the same subject by different
+	// elements select the same traffic. It exists so an element answering what it holds
+	// answers in the vocabulary the request used — the identifier types fold several
+	// elements into one, and rendering a type back as one element misdescribes the rest:
+	// an IMEISV echoed as peiImei, which the schema limits to fourteen digits, or an E.164
+	// number echoed as an MSISDN.
+	TargetElements []string
 }
 
 // RecordScope is the per-task scoping TS 33.128 clause 6.2.2.2.1 puts on the AMF

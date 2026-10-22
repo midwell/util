@@ -16,7 +16,7 @@ func TestXMLFragmentMatchesTheClausesForm(t *testing.T) {
 		want string
 	}{
 		{TargetIdentifier{Type: TargetSUPI, Value: "208930100007488"}, "<supiimsi>208930100007488</supiimsi>"},
-		{TargetIdentifier{Type: TargetPEI, Value: "3578400512345678"}, "<peiImei>3578400512345678</peiImei>"},
+		{TargetIdentifier{Type: TargetPEI, Value: "35784005123456"}, "<peiImei>35784005123456</peiImei>"},
 		{TargetIdentifier{Type: TargetGPSI, Value: "9000000002"}, "<gpsiMsisdn>9000000002</gpsiMsisdn>"},
 	} {
 		got, ok := tc.id.XMLFragment()
@@ -38,7 +38,7 @@ func TestXMLFragmentEscapes(t *testing.T) {
 	if !ok {
 		t.Fatal("no fragment")
 	}
-	if want := "<supiimsi>1&lt;2&amp;&#34;3&#34;</supiimsi>"; got != want {
+	if want := "<supinai>1&lt;2&amp;&#34;3&#34;</supinai>"; got != want {
 		t.Errorf("fragment = %q, want %q", got, want)
 	}
 }
@@ -74,6 +74,41 @@ func TestXMLElementCoversEveryPlainArm(t *testing.T) {
 	for _, typ := range []TargetIdentifierType{TargetSUPI, TargetPEI, TargetGPSI} {
 		if _, ok := typ.XMLElement(); !ok {
 			t.Errorf("%s has no element name, so an xIRI matched on it could carry no matched identity", typ)
+		}
+	}
+}
+
+// TestFoldedIdentifierTypesRenderTheElementTheirValueFits: a SUPI, a PEI and a GPSI each
+// stand for more than one schema element, and the attribute must name the one the value
+// is. Naming one element per type put a sixteen-digit IMEISV inside peiImei, which the
+// schema limits to fourteen digits, and an NAI inside supiimsi, which is all digits — so
+// a mediation function validating the attribute discarded it.
+func TestFoldedIdentifierTypesRenderTheElementTheirValueFits(t *testing.T) {
+	for _, tc := range []struct {
+		id   TargetIdentifier
+		want string // "" when no element fits
+	}{
+		{TargetIdentifier{Type: TargetSUPI, Value: "208930100007488"}, "supiimsi"},
+		{TargetIdentifier{Type: TargetSUPI, Value: "alice@example.com"}, "supinai"},
+		{TargetIdentifier{Type: TargetSUPI, Value: "12345"}, ""},
+		{TargetIdentifier{Type: TargetPEI, Value: "35784005123456"}, "peiImei"},
+		{TargetIdentifier{Type: TargetPEI, Value: "3578400512345678"}, "peiImeisv"},
+		{TargetIdentifier{Type: TargetPEI, Value: "357840051234567"}, ""},
+		{TargetIdentifier{Type: TargetGPSI, Value: "9000000002"}, "gpsiMsisdn"},
+		{TargetIdentifier{Type: TargetGPSI, Value: "ext@example.com"}, "gpsiNai"},
+		{TargetIdentifier{Type: TargetUEIPv4, Value: "10.0.0.1"}, "ipv4Address"},
+	} {
+		got, ok := tc.id.Element()
+		if tc.want == "" {
+			if ok {
+				t.Errorf("%s %q rendered as %q; it fits no element of its type and must render as nothing",
+					tc.id.Type, tc.id.Value, got)
+			}
+
+			continue
+		}
+		if !ok || got != tc.want {
+			t.Errorf("%s %q rendered as %q (ok=%v), want %q", tc.id.Type, tc.id.Value, got, ok, tc.want)
 		}
 	}
 }

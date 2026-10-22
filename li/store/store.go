@@ -140,6 +140,9 @@ func cloneTask(t types.InterceptTask) types.InterceptTask {
 	if t.DIDs != nil {
 		t.DIDs = append([]string(nil), t.DIDs...)
 	}
+	if t.TargetElements != nil {
+		t.TargetElements = append([]string(nil), t.TargetElements...)
+	}
 	return t
 }
 

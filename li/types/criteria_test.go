@@ -59,8 +59,15 @@ func TestSubscriberIdentifiersAreNotPacketCriteria(t *testing.T) {
 // failing and nothing logged. That is the failure this test exists to make loud, and
 // it is here rather than in a POI because here is where the type would be added.
 func TestEverySubscriberIdentifierRenders(t *testing.T) {
+	// A value of the shape each type's own element takes: a PEI is fourteen or sixteen
+	// digits, and one that is neither fits no element and rightly renders as nothing.
+	sample := map[TargetIdentifierType]string{TargetSUPI: "262019876543210", TargetPEI: "35784005123456"}
 	for _, c := range subscriberIdentifiers {
-		id := TargetIdentifier{Type: c, Value: "1234567890"}
+		v, ok := sample[c]
+		if !ok {
+			v = "1234567890"
+		}
+		id := TargetIdentifier{Type: c, Value: v}
 		frag, ok := id.XMLFragment()
 		if !ok {
 			t.Errorf("%q renders no XML fragment, so an xIRI matched on it would carry no matched target identifier", c)
