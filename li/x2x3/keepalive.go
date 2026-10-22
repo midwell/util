@@ -659,14 +659,20 @@ func (c *Client) protocolError(st *connState, err error) {
 // All three, in that order. The reconnect is one attempt rather than a loop — this
 // restores a connection the element was holding, which is not the same as dialling
 // one it never had — and if it fails the next delivery redials as it always would.
+//
+// **Only for the connection this client still holds.** A deadline that fires on a connection
+// already replaced — a delivery's redial racing the timer, which select resolves either way
+// when both are ready — says nothing about the replacement, and marking the destination
+// unreachable and reporting a fault over it would announce a dead mediation function that is
+// answering perfectly well on the new connection.
 func (c *Client) expire(st *connState) {
-	// Set before the fault is reported and before the redial, so that a status
-	// request racing this cannot be answered "reachable" by an element that has just
-	// concluded otherwise.
-	c.unreachable.Store(true)
-
 	c.mu.Lock()
-	if c.live == st {
+	current := c.live == st
+	if current {
+		// Set before the fault is reported and before the redial, so that a status
+		// request racing this cannot be answered "reachable" by an element that has just
+		// concluded otherwise.
+		c.unreachable.Store(true)
 		c.dropLocked()
 		// Failure is not reported here: the dial error says the MDF is unreachable,
 		// which is what has just been reported anyway.
@@ -675,7 +681,9 @@ func (c *Client) expire(st *connState) {
 	}
 	c.mu.Unlock()
 
-	c.fault(fmt.Errorf("x2x3: no keepalive acknowledgement from %s within %s (TIME_P2)", c.addr, c.keepalive.TimeP2))
+	if current {
+		c.fault(fmt.Errorf("x2x3: no keepalive acknowledgement from %s within %s (TIME_P2)", c.addr, c.keepalive.TimeP2))
+	}
 }
 
 func (c *Client) fault(err error) {
