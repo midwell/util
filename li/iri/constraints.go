@@ -7,43 +7,25 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 )
 
-// The record definitions in this package carry their ASN.1 restrictions in comments —
-// `OCTET STRING (SIZE(4))`, `INTEGER (0..255)`, `NumericString(6..15)` — and nothing checked
-// them. `EncodeXIRI` ran a validation that covered two endpoint-list cases and no constraint
-// at all, so a record whose values violate their own definitions encoded cleanly and went out.
+// The record definitions in this package carry their ASN.1 restrictions in their type
+// comments — `OCTET STRING (SIZE(4))`, `INTEGER (0..255)`, `NumericString (SIZE(6..15))` — and
+// this file is where those restrictions are enforced. EncodeXIRI refuses a record whose values
+// violate their own definitions instead of encoding it: a conformant mediation function would
+// discard such a record, and because the delivery itself would succeed, no fault would be raised
+// on either side.
 //
-// **The consequence is the unattributable-record failure arriving through the payload instead
-// of the header.** This element believes it delivered; a conformant mediation function
-// discards what it cannot validate; and because delivery succeeded, no fault is raised on
-// either side. The evidence that nothing would catch it was in this package's own test suite:
-// `records_test.go` encoded a seven-byte `UEPolicy` against a definition its own type comment
-// records as `SIZE(16..65540)`.
+// The checks sit on the *path* every record crosses rather than beside each builder, so a record
+// added later inherits them. They are keyed by **type** rather than by field name for the same
+// reason: a named type is inherited and a field name is not, so a record that reuses `UEPolicy`
+// or `PDUSessionID` gets the check without anybody remembering to add it, and a leaf that grows
+// a new named type is visibly missing from the tables below rather than silently unchecked.
 //
-// So the checks go on the *path* every record crosses rather than beside each builder. A check
-// written beside one call site is not inherited by the next, and the next one is added by
-// somebody who does not know the check exists — which is the same mistake, in the same file,
-// that left the constraints unchecked in the first place.
-//
-// They are keyed by **type** rather than by field name, because a named type is inherited and
-// a field name is not: a record added later that reuses `UEPolicy` or `PDUSessionID` gets the
-// check without anybody remembering to add it, and a leaf that grows a new named type is
-// visibly missing from the table below rather than silently unchecked.
-//
-// **Every leaf with a restriction now has a name, and the sweep that established that found
-// more than the three the previous version of this paragraph named.** It listed
-// `SliceDifferentiator`, the `FTEID` addresses and `ServiceType`; naming those and then reading
-// every field of every emitted record turned up `SliceServiceType`, `TEID` and all six members
-// of `FiveGGUTI` in the same condition — restriction in a comment, nothing keyed on it. The
-// `FiveGGUTI` ones are in every record that carries a GUTI. A list of examples is not a survey,
-// and the reason this one read as complete is that it had been written from the leaves somebody
-// had noticed.
-//
-// So what remains outside is stated as a property rather than as a list: a restriction on a
-// leaf whose Go declaration is a bare `[]byte`, `int` or `string` field is not enforced, and
-// there are no such leaves left among the records this project emits. A field added as a bare
-// type is the way back in, which is what `TestEveryRestrictedLeafIsNamed` exists to refuse.
+// Every restricted leaf of an emitted record has a named type. A restriction on a leaf declared
+// as a bare `[]byte`, `int` or `string` would not be enforced, which is why
+// TestEveryRestrictedLeafIsNamed refuses such a field.
 
 // octetSize is an OCTET STRING's permitted length range, inclusive. A single permitted length
 // is expressed as min == max.
@@ -119,34 +101,54 @@ var (
 
 		// The network identifier of a stand-alone non-public network, carried by TAI and
 		// SMFServingNetwork. homeNetworkIdentifier is a UTF8String the module leaves
-		// unconstrained and is deliberately absent.
+		// unconstrained in size, so it is in utf8Strings and not here.
 		reflect.TypeOf(NID("")): {11, 11},
 	}
 
-	// numericConstraints are the NumericString leaves, whose restriction is a length *and* an
-	// alphabet: `NumericString` admits digits and space, and TS 33.128 uses it for values that
-	// are digits throughout.
+	// utf8Strings are every UTF8String leaf of an emitted record. Their content must be valid
+	// UTF-8: a strict decoder refuses a UTF8String that is not, and a DNN or NAI reaches a record
+	// from the UE or the session context without anything else having looked at it.
 	//
-	// The alphabet is the half worth having. A length check on an MCC would pass "abc", and a
-	// PLMN read from configuration is exactly where a non-digit arrives.
+	// A mandatory one must not be empty either. The module bounds the size of only NID and
+	// lcsCorrelationId (utf8Constraints), so an empty DNN or NAI is schema-valid — but it names
+	// nothing: a PDU session always has a data network, and a SUPI or GPSI with no characters
+	// identifies no subscriber.
+	utf8Strings = map[reflect.Type]bool{
+		reflect.TypeOf(NAI("")):                   true,
+		reflect.TypeOf(DNN("")):                   true,
+		reflect.TypeOf(LCSCorrelationID("")):      true,
+		reflect.TypeOf(HomeNetworkIdentifier("")): true,
+		reflect.TypeOf(NID("")):                   true,
+	}
+
+	// numericConstraints are the NumericString leaves, whose restriction is a length *and* an
+	// alphabet.
+	//
+	// The alphabet is the half worth having: a length check on an MCC would pass "abc", and a
+	// PLMN read from configuration is exactly where a stray character arrives. NumericString
+	// also admits a space, but an MCC or MNC is decimal digits throughout (TS 23.003), so only
+	// digits are accepted.
 	numericConstraints = map[reflect.Type]utf8Size{
 		reflect.TypeOf(MCC("")): {3, 3},
 		reflect.TypeOf(MNC("")): {2, 3},
 	}
 
 	// identityConstraints are the target-identity leaves: the SUPI, PEI and GPSI alternatives
-	// every record carries. Digits only, at the length the module gives each.
+	// every record carries, at the length the module gives each. The module defines them as
+	// NumericString, which also admits a space; an identity contains none, so only digits are
+	// accepted.
 	//
-	// **These are checked here because nothing upstream checks them.** An earlier version of this
-	// file left them out on the grounds that their values come from the task, which li/x1
-	// validates. They do not: a record's SUPI, PEI and GPSI are read from the network
-	// function's own UE or session context, which holds them in TS 29.571 form ("imei-" followed
-	// by fifteen digits, check digit included). A value that violates its own type is a record
-	// naming the wrong subject, or none, and a conformant mediation function discards it.
+	// They are checked here because a record's SUPI, PEI and GPSI come from the network
+	// function's own UE or session context rather than from an X1 task, and that context holds
+	// them in TS 29.571 form ("imei-" followed by fifteen digits, check digit included). A value
+	// that violates its own type names the wrong subject, or none, and a conformant mediation
+	// function discards the record.
 	//
-	// Unlike the other tables, empty is never absence here. These types only ever appear as an
-	// alternative of a CHOICE, where absence is a nil member, so an empty alternative is a
-	// present identity with no digits.
+	// For a mandatory member, empty is never absence here. These types appear only as an
+	// alternative of a CHOICE, where absence is a nil member, so an empty alternative in a
+	// mandatory member is a present identity with no digits. An OPTIONAL member holding an
+	// empty alternative is omitted by the emitter (see present in emit.go), and the walk skips
+	// it the same way.
 	identityConstraints = map[reflect.Type]utf8Size{
 		reflect.TypeOf(IMSI("")):   {6, 15},
 		reflect.TypeOf(IMEI("")):   {14, 14},
@@ -166,32 +168,23 @@ var (
 	// mandatoryEnums are the enumerated types for which zero is *wrong* rather than absent.
 	//
 	// The check below exempts zero everywhere else, and correctly: an unset optional member
-	// reads as zero in Go and the codec omits it, so refusing zero would refuse every record
+	// reads as zero in Go and the emitter omits it, so refusing zero would refuse every record
 	// that legitimately leaves one out.
 	//
-	// **That exemption is what let two defects reach a mediation function.** Both were an
-	// element casting a neighbouring protocol's value straight into a record: `handoverCause`
-	// emitted as NGAP's `unspecified(0)`, and `handoverType` emitted as NGAP's `intra5gs(0)`.
-	// A mandatory member emitted as zero is indistinguishable, to this check, from an optional
-	// one omitted — so the one value that proved the mapping was missing was the one value the
-	// check was told to ignore.
+	// For a mandatory member that exemption would hide the one value that matters. Every
+	// enumeration here is numbered from one, while a neighbouring protocol's enumeration is
+	// often numbered from zero — NGAP numbers handoverType and the cause groups from zero — so a
+	// value cast straight across instead of mapped arrives as zero exactly when its first member
+	// was meant. A mandatory member carrying zero is a record a conformant decoder refuses
+	// outright, not one with a wrong value.
 	//
-	// The second was found by *decoding a delivered record* against the published module, which
-	// refused it outright: `handoverType` is mandatory, so a zero is not a wrong value but an
-	// unreadable record, and every intra-5GS handover record was discarded on receipt.
-	//
-	// A type belongs here when it is mandatory in every record this package emits that
-	// carries it, so zero can only mean the element wrote a value its own definition does not
-	// have. Being wrong in this direction costs a record the receiver would have refused
-	// anyway; being wrong in the other costs every record that omits an optional member, which
-	// is why the default stays the exemption and entries are added deliberately.
-	//
-	// **And the rule above had never been run.** Two entries, added once per defect, were the
-	// whole of it. Sweeping the module for every ENUMERATED numbered from one that sits in a
-	// field a record cannot omit found nine more — six here and three that this map cannot
-	// express, in mandatoryEnumFields below. The sweep is now
-	// TestEveryMandatoryEnumeratedFieldRefusesZero, so the list cannot fall behind the record
-	// definitions the way it already had.
+	// A type belongs here when it is mandatory in every record this package emits that carries
+	// it, so zero can only mean the element wrote a value its own definition does not have.
+	// Being wrong in this direction costs a record the receiver would have refused anyway; being
+	// wrong in the other costs every record that omits an optional member, which is why the
+	// default stays the exemption. TestEveryMandatoryEnumeratedFieldRefusesZero derives the
+	// required entries from the module and holds this map, and mandatoryEnumFields below, to
+	// them.
 	mandatoryEnums = map[reflect.Type]bool{
 		reflect.TypeOf(HandoverType(0)): true,
 
@@ -224,9 +217,9 @@ var (
 		// SMFUnsuccessfulProcedure/failedProcedureType.
 		reflect.TypeOf(SMFFailedProcedureType(0)): true,
 		// PDUSessionType, lowest iPv4(1) — SMFPDUSessionEstablishment and
-		// SMFStartOfInterceptionWithEstablishedPDUSession. This is the one of the six built by
-		// a raw cast from another protocol's enumeration, which is the construct that produced
-		// both handover defects; the correspondence is asserted in smf/lawfulintercept.
+		// SMFStartOfInterceptionWithEstablishedPDUSession. An SMF builds it by casting the NAS
+		// value, which TS 24.501 numbers identically; the SMF asserts that correspondence where
+		// it builds the record.
 		reflect.TypeOf(PDUSessionType(0)): true,
 		// Initiator, lowest uE(1) — SMFUnsuccessfulProcedure/initiator.
 		reflect.TypeOf(Initiator(0)): true,
@@ -241,16 +234,11 @@ var (
 	// anybody remembering it. What it cannot express is a type the module makes mandatory in one
 	// record and OPTIONAL in another.
 	//
-	// That distinction matters because validateConstraints runs *before* ctx.Encode. It walks
-	// the whole record and sees an unset optional member as zero, before the codec would have
+	// That distinction matters because validateConstraints runs *before* the emitter. It walks
+	// the whole record and sees an unset optional member as zero, before the emitter would have
 	// omitted it — so a type in mandatoryEnums refuses zero in every record carrying that type,
 	// including one where zero is how absence is spelled. `AccessType` is optional in four SMF
-	// records and mandatory in one; guarding it by type would refuse those four their absence,
-	// which trades one silent defect for another.
-	//
-	// The existing map had been adequate without anyone noticing its limit because the two
-	// defects that created it — `handoverType` and the `Cause` arms — happen to be the two cases
-	// it can express.
+	// records and mandatory in one; guarding it by type would refuse those four their absence.
 	//
 	// Derived from the module and asserted against it by
 	// TestEveryMandatoryEnumeratedFieldRefusesZero, in both directions: an entry naming a field
@@ -260,11 +248,10 @@ var (
 		// 6.2.2.2.3-1, cardinality 1) and OPTIONAL in the four SMF records that carry it.
 		//
 		// This is the one of the three where zero is a *reachable* value rather than a
-		// hypothetical: amf/lawfulintercept's DeregistrationScope returns 0 for a NAS access
-		// type it does not recognise, and each of its two callers is expected to notice and
-		// substitute the arrival access. A caller written without that check emits a
-		// mandatory zero, and the guard is what makes that a refusal here rather than a
-		// discard at the far end.
+		// hypothetical: an AMF that maps a NAS access type it does not recognise to zero, and
+		// relies on its caller to substitute the access the message arrived on, emits a
+		// mandatory zero from any caller that skips that step. The guard makes that a refusal
+		// here rather than a discard at the far end.
 		"AMFDeregistration.AccessType": true,
 
 		// FiveGSMRequestType, lowest initialRequest(1). Mandatory in the three session
@@ -292,17 +279,16 @@ var (
 	// value that *means nothing* — no conformant receiver can interpret it, and there is no
 	// nearest legal value it could have intended.
 	//
-	// The bounds are read from the constants each type declares in iri.go rather than from
-	// the specification, so this table cannot drift from the enumeration it guards: a value
-	// added there and not here shows up as a refusal of a value the module itself defines,
-	// which is a failure that gets fixed, rather than as silent admission of one it does not.
+	// The bounds are transcribed by hand from `testdata/asn1/TS33128Payloads.asn` and checked
+	// against it: the five cause groups by TestCauseBoundsMatchTheModule, every other entry by
+	// TestEnumBoundsMatchTheModule. Each bound is the module's, so a value the module defines is
+	// never refused for being one iri.go does not name.
 	//
-	// Reachable from peer input, which is why it matters. The AMF builds a handover record by
-	// casting the NGAP cause value and handover type straight out of the message the gNB sent
-	// (see handoverCause), so a RAN that is non-conformant — or is not the RAN it claims to
-	// be — decides what this element encodes. Unchecked, the record goes out structurally
-	// well-formed, a conformant mediation function discards what it cannot validate, and the
-	// element believes it delivered.
+	// Reachable from peer input, which is why it matters. An AMF builds a handover record from
+	// the cause and handover type in the NGAP message the gNB sent, so a RAN that is
+	// non-conformant — or is not the RAN it claims to be — decides what this element encodes.
+	// Unchecked, the record goes out structurally well-formed, a conformant mediation function
+	// discards what it cannot validate, and the element believes it delivered.
 	enumConstraints = map[reflect.Type]intRange{
 		reflect.TypeOf(AMFRegistrationType(0)):    {1, 7},
 		reflect.TypeOf(AMFRegistrationResult(0)):  {1, 3},
@@ -314,25 +300,20 @@ var (
 		reflect.TypeOf(SMFFailedProcedureType(0)): {1, 3},
 		reflect.TypeOf(Initiator(0)):              {1, 3},
 		reflect.TypeOf(HandoverType(0)):           {1, 4},
-		// RATType, nR(1) .. nREREDCAP(33). iri.go names only the arms a 5G core reports, but
-		// the module defines all 33, so the bound is the module's: a value it defines is not
-		// refused for being one this project does not name.
+		// RATType, nR(1) .. nREREDCAP(33). iri.go names only the arms a 5G core reports.
 		reflect.TypeOf(RATType(0)): {1, 33},
 
-		// The five HandoverCause arms, bounded from the module rather than from memory.
+		// The five HandoverCause arms.
 		//
 		// Each mirrors an NGAP Cause group, and the two number the same concepts differently —
-		// so the values here are TS 33.128's, transcribed from
-		// `testdata/asn1/TS33128Payloads.asn` and asserted against it by
-		// TestCauseBoundsMatchTheModule. An element that reads a cause from NGAP is
+		// so the values here are TS 33.128's. An element that reads a cause from NGAP is
 		// responsible for mapping it into this vocabulary before building the record; see
 		// causevalues.go, which names the values it maps to.
 		//
 		// `CauseRadioNetwork` admits one value the module does not define. Its enumeration
 		// runs 1..52 with 28 absent, and a range check cannot express the hole; a set per
-		// group would, and earns its complexity for exactly one group. The looser bound costs
-		// nothing in practice, because no mapping entry yields 28 — asserted where the mapping
-		// lives, so the claim is checked rather than assumed.
+		// group would, and earns its complexity for exactly one group. An element's NGAP-to-
+		// TS 33.128 mapping must therefore never yield 28; the AMF asserts that where it maps.
 		reflect.TypeOf(CauseRadioNetwork(0)): {1, 52},
 		reflect.TypeOf(CauseTransport(0)):    {1, 2},
 		reflect.TypeOf(CauseNas(0)):          {1, 4},
@@ -352,7 +333,30 @@ func validateConstraints(event any) error {
 		return missing("the XIRIEvent")
 	}
 
-	return walkConstrained(reflect.ValueOf(event), reflect.TypeOf(event).String(), false, true)
+	return walkConstrained(reflect.ValueOf(event), typeName(reflect.TypeOf(event)), false, true)
+}
+
+// typeName is how a refusal names a record: its bare name, as the emitter's own refusals do,
+// with a leading `*` for a pointer so a refused pointer says what it was.
+func typeName(t reflect.Type) string {
+	if t.Kind() == reflect.Pointer && t.Elem().Name() != "" {
+		return "*" + t.Elem().Name()
+	}
+	if t.Name() != "" {
+		return t.Name()
+	}
+
+	return t.String()
+}
+
+// sizeText renders a SIZE constraint as the module writes it: SIZE(14) for a single permitted
+// length, SIZE(6..15) for a range.
+func sizeText(lo, hi int) string {
+	if lo == hi {
+		return fmt.Sprintf("SIZE(%d)", lo)
+	}
+
+	return fmt.Sprintf("SIZE(%d..%d)", lo, hi)
 }
 
 // walkConstrained descends v, applying whatever constraint its type carries and then
@@ -369,9 +373,8 @@ func validateConstraints(event any) error {
 // asn1 tag, or it is an element of a list, or it is the record itself. **It is what decides
 // whether an empty value is absence or a defect.** The emitter omits an optional member that
 // is nil, empty or zero, so for those an empty value really is "not present"; it writes a
-// mandatory member unconditionally, so an empty one goes out as a zero-length value its type
-// forbids. An earlier version treated empty as absence everywhere and said the codec would
-// refuse a mandatory one — it did not, and a zero GUTI went out as an empty MCC and MNC.
+// mandatory member unconditionally, so an empty one would go out as a zero-length value its
+// type forbids, and is refused here instead.
 func walkConstrained(v reflect.Value, path string, zeroForbidden, mandatory bool) error {
 	if !v.IsValid() {
 		return nil
@@ -466,12 +469,12 @@ func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) e
 			if !mandatory && v.IsNil() {
 				return nil
 			}
-			return fmt.Errorf("iri: %s carries no octets, and %s is defined as SIZE(%d..%d)",
-				path, t.Name(), c.min, c.max)
+			return fmt.Errorf("iri: %s carries no octets, and %s is defined as %s",
+				path, t.Name(), sizeText(c.min, c.max))
 		}
 		if n < c.min || n > c.max {
-			return fmt.Errorf("iri: %s is %d octets, and %s is defined as SIZE(%d..%d)",
-				path, n, t.Name(), c.min, c.max)
+			return fmt.Errorf("iri: %s is %d octets, and %s is defined as %s",
+				path, n, t.Name(), sizeText(c.min, c.max))
 		}
 	}
 
@@ -490,19 +493,20 @@ func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) e
 		// one, so an unset field of an optional member reads as zero and the codec omits it;
 		// refusing that would refuse every record that legitimately leaves the member out.
 		//
-		// **Except where the member is mandatory wherever it appears**, in which case zero
-		// cannot be an omission and the exemption was hiding the one value that mattered. The
-		// paragraph beside mandatoryEnums says what that cost: two defects, one of which made
-		// every intra-5GS handover record undecodable, and neither of which this check could
-		// see. The comment that used to stand here claimed the exemption cost "exactly one
-		// value, and not one that carries the risk" — the risk was exactly that value, because
-		// a peer's enumeration numbered from zero puts its *first* member there.
+		// **Except where the member is mandatory**, in which case zero cannot be an omission:
+		// it is a peer's enumeration numbered from zero, cast across with its *first* member,
+		// and the paragraph beside mandatoryEnums says why that is exactly the value to refuse.
 		//
 		// Two maps rather than one because the exception has two shapes: a type mandatory
 		// wherever it appears, and a field mandatory in this record and optional in the next.
-		// See mandatoryEnumFields for why the second cannot be folded into the first. (The
-		// mandatory flag walkConstrained now carries would express both, but these maps are
-		// what TestEveryMandatoryEnumeratedFieldRefusesZero holds against the module.)
+		// See mandatoryEnumFields for why the second cannot be folded into the first.
+		//
+		// The walk's mandatory flag says the same thing for every member, and is deliberately
+		// not consulted here. The flag is read from the struct tags; the two maps are held
+		// against the module itself by TestEveryMandatoryEnumeratedFieldRefusesZero. Deciding
+		// from the maps keeps the guard on an enumerated member correct even if a struct tag
+		// were wrongly marked optional, which is the one mistake that would otherwise reopen
+		// it silently.
 		if n == 0 && !mandatoryEnums[t] && !zeroForbidden {
 			return nil
 		}
@@ -515,19 +519,19 @@ func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) e
 	if c, ok := numericConstraints[t]; ok {
 		s := v.String()
 		if s == "" && mandatory {
-			return fmt.Errorf("iri: %s is empty, and %s is defined as NumericString (SIZE(%d..%d))",
-				path, t.Name(), c.min, c.max)
+			return fmt.Errorf("iri: %s is empty, and %s is defined as NumericString (%s)",
+				path, t.Name(), sizeText(c.min, c.max))
 		}
 		// Empty and optional is absence: the emitter omits it.
 		if s != "" {
 			if n := len([]rune(s)); n < c.min || n > c.max {
-				return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (SIZE(%d..%d))",
-					path, n, t.Name(), c.min, c.max)
+				return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (%s)",
+					path, n, t.Name(), sizeText(c.min, c.max))
 			}
 			for _, r := range s {
-				if (r < '0' || r > '9') && r != ' ' {
-					return fmt.Errorf("iri: %s contains %q, and %s is defined as NumericString, "+
-						"whose alphabet is the digits and space", path, r, t.Name())
+				if r < '0' || r > '9' {
+					return fmt.Errorf("iri: %s contains %q, and %s is decimal digits throughout",
+						path, r, t.Name())
 				}
 			}
 		}
@@ -536,28 +540,39 @@ func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) e
 	if c, ok := identityConstraints[t]; ok {
 		s := v.String()
 		if n := len(s); n < c.min || n > c.max {
-			return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (SIZE(%d..%d))",
-				path, n, t.Name(), c.min, c.max)
+			return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (%s)",
+				path, n, t.Name(), sizeText(c.min, c.max))
 		}
 		for _, r := range s {
 			if r < '0' || r > '9' {
-				return fmt.Errorf("iri: %s contains %q, and %s is a string of digits", path, r, t.Name())
+				return fmt.Errorf("iri: %s contains %q, and %s is an identity of digits only", path, r, t.Name())
 			}
 		}
 	}
 
-	if c, ok := utf8Constraints[t]; ok {
+	if utf8Strings[t] {
 		s := v.String()
-		if s == "" {
-			if mandatory {
-				return fmt.Errorf("iri: %s is empty, and %s is defined as UTF8String (SIZE(%d..%d))",
-					path, t.Name(), c.min, c.max)
+		if s == "" && mandatory {
+			if c, sized := utf8Constraints[t]; sized {
+				return fmt.Errorf("iri: %s is empty, and %s is defined as UTF8String (%s)",
+					path, t.Name(), sizeText(c.min, c.max))
 			}
-			return nil
+			return fmt.Errorf("iri: %s is empty, and %s is mandatory here: an empty UTF8String "+
+				"names nothing", path, t.Name())
 		}
-		if n := len([]rune(s)); n < c.min || n > c.max {
-			return fmt.Errorf("iri: %s is %d characters, and %s is defined as UTF8String (SIZE(%d..%d))",
-				path, n, t.Name(), c.min, c.max)
+		if !utf8.ValidString(s) {
+			return fmt.Errorf("iri: %s is not valid UTF-8, and %s is defined as UTF8String",
+				path, t.Name())
+		}
+	}
+
+	if c, ok := utf8Constraints[t]; ok {
+		// Empty: refused above when mandatory; absence when optional, which the emitter omits.
+		if s := v.String(); s != "" {
+			if n := len([]rune(s)); n < c.min || n > c.max {
+				return fmt.Errorf("iri: %s is %d characters, and %s is defined as UTF8String (%s)",
+					path, n, t.Name(), sizeText(c.min, c.max))
+			}
 		}
 	}
 

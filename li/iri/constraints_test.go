@@ -10,18 +10,15 @@ import (
 
 // TestARecordViolatingItsOwnDefinitionIsRefused is the encoder validating what it emits.
 //
-// The record definitions carry their restrictions in comments — `OCTET STRING (SIZE(16..65540))`,
-// `INTEGER (0..255)` — and nothing checked them: `EncodeXIRI` validated two endpoint-list cases
-// and no constraint at all. So a record whose values violate its own definition encoded cleanly
-// and went out.
+// The record definitions carry their restrictions in their type comments — `OCTET STRING
+// (SIZE(16..65540))`, `INTEGER (0..255)` — and EncodeXIRI enforces them. A record violating its
+// own definition would otherwise be invisible on both sides: this element would believe it
+// delivered, a conformant mediation function would discard what it cannot validate, and because
+// the delivery succeeded no fault would be raised anywhere.
 //
-// **That failure is invisible on both sides.** This element believes it delivered; a conformant
-// mediation function discards what it cannot validate; and because the delivery succeeded, no
-// fault is raised anywhere. It is the unattributable-record failure arriving through the payload
-// instead of the header — and the evidence that nothing would catch it was in this package's own
-// test suite, which encoded a seven-byte `UEPolicy` against `SIZE(16..65540)`.
-//
-// One case per kind of restriction: a size, a range, and a length-bounded string.
+// The cases cover each kind of restriction — a size, a range, an enumeration, a length-bounded
+// string and a NumericString alphabet — reached through the fields that carry them.
+// TestEveryConstraintBoundIsEnforced checks every table entry at its bounds.
 func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 	conformantPolicy := make(UEPolicy, 16)
 
@@ -44,7 +41,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 				PDUSessionType: PDUSessionTypeIPv4,
 				UEEndpoint:     []any{IPv4Address{10, 250, 0}},
 			},
-			want: "IPv4Address is defined as SIZE(4..4)",
+			want: "IPv4Address is defined as SIZE(4)",
 		},
 		{
 			name: "an integer above its range",
@@ -65,9 +62,8 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 			want: "LCSCorrelationID is defined as UTF8String (SIZE(1..255))",
 		},
 		{
-			// An ENUMERATED, which is the kind of restriction the requirement lists first and
-			// nothing checked. It is also the one reachable from peer input: the AMF builds
-			// this record by casting the handover type straight out of the gNB's NGAP message.
+			// An ENUMERATED, which is the restriction reachable from peer input: an AMF builds
+			// this record from the handover type in the gNB's NGAP message.
 			name: "a value outside an enumeration",
 			event: AMFRANHandoverRequest{
 				UserIdentifiers: sampleIdentifiers(),
@@ -78,9 +74,8 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 			want: "HandoverType is an ENUMERATED with values 1..4",
 		},
 		{
-			// The HandoverCause arms are bounded at both ends now that the module supplies the
-			// upper one, so a negative cause is refused against the range rather than against
-			// a lower bound standing on its own.
+			// The HandoverCause arms are bounded at both ends, so a negative cause is refused
+			// against the range.
 			name: "a cause below the first value of every group",
 			event: AMFRANHandoverRequest{
 				UserIdentifiers: sampleIdentifiers(),
@@ -92,9 +87,9 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 			want: "CauseRadioNetwork is an ENUMERATED with values 1..52",
 		},
 		{
-			// The upper bound, which is the half that was open until the module was read. This
-			// is the direction a value from another protocol arrives from: NGAP's radio-network
-			// group runs to 57 and TS 33.128's to 52, so a value mapped carelessly lands here.
+			// The upper bound, which is the direction a value from another protocol arrives
+			// from: NGAP's radio-network group runs to 57 and TS 33.128's to 52, so a value
+			// mapped carelessly lands here.
 			name: "a cause above its group's last value",
 			event: AMFRANHandoverRequest{
 				UserIdentifiers: sampleIdentifiers(),
@@ -119,17 +114,12 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 			want: "CauseNas is an ENUMERATED with values 1..4",
 		},
 
-		// The leaves whose restriction lived only in a comment until they were given names.
-		// Each of these encoded cleanly before, against a definition written two lines above
-		// the field.
+		// The named leaves, each reached through a field that carries it.
 		{
-			// The defect a delivered record exposed: NGAP numbers handoverType from zero and
-			// TS 33.128 from one, so an intra-5GS handover was emitted as 0 — a value the arm's
-			// enumeration does not define, in a member the record makes mandatory. The published
-			// decoder refuses the whole record, so every such record was discarded on receipt
-			// while this element believed it had delivered.
-			//
-			// Zero used to be exempt here as "absent". That exemption is why nothing caught it.
+			// NGAP numbers handoverType from zero and TS 33.128 from one, so an intra-5GS
+			// handover cast across unmapped arrives as 0 — a value the enumeration does not
+			// define, in a member the record makes mandatory. A conformant decoder refuses the
+			// whole record, so zero is refused here rather than treated as absence.
 			name: "a mandatory enumerated member carrying its source protocol's first value",
 			event: AMFRANHandoverRequest{
 				UserIdentifiers: sampleIdentifiers(),
@@ -162,7 +152,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 				PDUSessionType: PDUSessionTypeIPv4,
 				SNSSAI:         SNSSAI{SliceServiceType: 1, SliceDifferentiator: SliceDifferentiator{0x01, 0x02}},
 			},
-			want: "SliceDifferentiator is defined as SIZE(3..3)",
+			want: "SliceDifferentiator is defined as SIZE(3)",
 		},
 		{
 			// The same leaf reached through the *other* field that carries it. This is what
@@ -179,7 +169,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 					MappedHPLMNSD:    SliceDifferentiator{0x01, 0x02, 0x03, 0x04},
 				},
 			},
-			want: "SliceDifferentiator is defined as SIZE(3..3)",
+			want: "SliceDifferentiator is defined as SIZE(3)",
 		},
 		{
 			name: "a slice service type above its range",
@@ -205,14 +195,14 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 		},
 		{
 			// The FTEID address, which is the same named type as the UEEndpointAddress arm and
-			// so was already checked in one place and not the other.
+			// so inherits the same check.
 			name: "an FTEID address whose length is not its family's",
 			event: SMFPDUSessionEstablishment{
 				SUPI:         IMSI("262019876543210"),
 				PDUSessionID: 5,
 				GTPTunnelID:  FTEID{TEID: 1, IPv6Address: IPv6Address{0x20, 0x01}},
 			},
-			want: "IPv6Address is defined as SIZE(16..16)",
+			want: "IPv6Address is defined as SIZE(16)",
 		},
 		{
 			name: "a service type that is not one octet",
@@ -221,7 +211,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 				ServiceMessageIdentity: ServiceAcceptIdentity{0x01},
 				ServiceType:            ServiceType{0x01, 0x02},
 			},
-			want: "ServiceType is defined as SIZE(1..1)",
+			want: "ServiceType is defined as SIZE(1)",
 		},
 		{
 			// A GUTI leaf. Every record carrying a GUTI carries all six, and all six come from
@@ -248,7 +238,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 					MCC: "2620", MNC: "01", AMFRegionID: 1, AMFSetID: 1, AMFPointer: 1, FiveGTMSI: 1,
 				},
 			},
-			want: "MCC is defined as NumericString (SIZE(3..3))",
+			want: "MCC is defined as NumericString (SIZE(3))",
 		},
 		{
 			// The alphabet, not the length. A NumericString carrying letters is the failure a
@@ -262,7 +252,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 					MCC: "262", MNC: "0x", AMFRegionID: 1, AMFSetID: 1, AMFPointer: 1, FiveGTMSI: 1,
 				},
 			},
-			want: "MNC is defined as NumericString, whose alphabet is the digits and space",
+			want: "MNC is decimal digits throughout",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,9 +282,9 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 	// legitimately omits an optional one. The direction matters: this check exists to stop a
 	// value a *peer* chose from going out, and a peer's value is never the absence.
 	//
-	// Whether an absent member is an error at all belongs to the codec, and this asserts the
+	// Whether an absent member is an error at all belongs to the emitter, and this asserts the
 	// division rather than assuming it: HandoverCause is mandatory in this record, so the
-	// refusal arrives — in the codec's own words about a missing mandatory field, not in the
+	// refusal arrives — in the emitter's words about a missing mandatory field, not in the
 	// constraint check's about a value outside an enumeration.
 	_, err := EncodeXIRI(AMFRANHandoverRequest{
 		UserIdentifiers: sampleIdentifiers(),
@@ -314,11 +304,7 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 // an optional field. An absent OPTIONAL leaf is a nil slice, an empty string or a zero
 // structure, which the emitter omits — so it is "not present" rather than "present and too
 // short", and treating them the same would make the validation itself the reason no record is
-// delivered.
-//
-// An earlier version of this test used AMFPositioningInfoTransfer's lcsCorrelationId, which the
-// module makes mandatory: it was asserting that an invalid record encodes. The leaves below are
-// OPTIONAL in the module.
+// delivered. Every leaf below is OPTIONAL in the module.
 func TestAnAbsentOptionalLeafIsNotTooShort(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -349,14 +335,13 @@ func TestAnAbsentOptionalLeafIsNotTooShort(t *testing.T) {
 	}
 }
 
-// The SUCI and TAI leaves are registered before any record carries them, so nothing
-// in the table above reaches them yet. This checks the registration itself is live —
-// including through a pointer, which is a shape the constraint tables had never seen
-// before optional members could be declared as pointers.
+// TestTheSUCIAndTAILeafConstraintsAreEnforced reaches the SUCI and TAI leaves directly,
+// including through a pointer, which is how an optional SUCI member that may be zero is
+// declared.
 //
-// A malformed SUCI is a wrong target identity in a well-formed record, so these are
-// the constraints where a dead registration would cost the most.
-func TestTheNewIdentityLeafConstraintsAreLive(t *testing.T) {
+// A malformed SUCI is a wrong target identity in a well-formed record, so these are the
+// constraints where a check that is registered but never reached would cost the most.
+func TestTheSUCIAndTAILeafConstraintsAreEnforced(t *testing.T) {
 	four := RoutingIndicatorLength(4)
 	five := RoutingIndicatorLength(5)
 

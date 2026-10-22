@@ -13,8 +13,8 @@ import (
 var testGUTI = FiveGGUTI{MCC: "262", MNC: "01", AMFRegionID: 1, AMFSetID: 1, FiveGTMSI: 1}
 
 // TestAMandatoryMemberCannotBeSentEmpty: the emitter writes a mandatory member whatever it
-// holds, so an empty one went out as a zero-length value its own type forbids. constraints.go
-// used to say "the codec refuses that"; it did not, and these records all encoded.
+// holds, so an empty one would go out as a zero-length value its own type forbids. The
+// constraint walk refuses it first.
 func TestAMandatoryMemberCannotBeSentEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -62,9 +62,9 @@ func TestAMandatoryMemberCannotBeSentEmpty(t *testing.T) {
 }
 
 // TestIdentityLeavesAreCheckedAgainstTheirOwnTypes: a record's SUPI, PEI and GPSI come from the
-// network function's own context, not from a validated task, so a value violating its type
-// went out — a fifteen-digit IMEI where TS 33.128 defines fourteen, which is what every record
-// for an IMEI-identified UE used to carry.
+// network function's own context, not from a validated task, so nothing else stops a value
+// that violates its type — a fifteen-digit IMEI, check digit included, where TS 33.128
+// defines fourteen.
 func TestIdentityLeavesAreCheckedAgainstTheirOwnTypes(t *testing.T) {
 	release := func(supi, pei, gpsi any) SMFPDUSessionRelease {
 		return SMFPDUSessionRelease{SUPI: supi, PEI: pei, GPSI: gpsi, PDUSessionID: 5}
@@ -79,11 +79,11 @@ func TestIdentityLeavesAreCheckedAgainstTheirOwnTypes(t *testing.T) {
 		{"a five-digit IMSI", release(IMSI("26201"), nil, nil), "SIZE(6..15)"},
 		{"a sixteen-digit IMSI", release(IMSI("2620198765432101"), nil, nil), "SIZE(6..15)"},
 		{"an IMSI with its TS 29.571 prefix", release(IMSI("imsi-262019876543210"), nil, nil), "SIZE(6..15)"},
-		{"an IMSI with a letter", release(IMSI("26201987654321a"), nil, nil), "is a string of digits"},
-		{"an IMEI with its check digit", release(IMSI("262019876543210"), IMEI("356938035643809"), nil), "IMEI is defined as NumericString (SIZE(14..14))"},
-		{"a fifteen-digit IMEISV", release(IMSI("262019876543210"), IMEISV("356938035643809"), nil), "SIZE(16..16)"},
+		{"an IMSI with a letter", release(IMSI("26201987654321a"), nil, nil), "is an identity of digits only"},
+		{"an IMEI with its check digit", release(IMSI("262019876543210"), IMEI("356938035643809"), nil), "IMEI is defined as NumericString (SIZE(14))"},
+		{"a fifteen-digit IMEISV", release(IMSI("262019876543210"), IMEISV("356938035643809"), nil), "SIZE(16)"},
 		{"a sixteen-digit MSISDN", release(IMSI("262019876543210"), nil, MSISDN("4915123456789012")), "SIZE(1..15)"},
-		{"an MSISDN in E.164 + form", release(IMSI("262019876543210"), nil, MSISDN("+4915123456789")), "is a string of digits"},
+		{"an MSISDN in E.164 + form", release(IMSI("262019876543210"), nil, MSISDN("+4915123456789")), "is an identity of digits only"},
 		{"a bad identity inside userIdentifiers", AMFUEServiceAccept{
 			UserIdentifiers:        Identifiers(IMSI("262019876543210"), IMEI("356938035643809"), nil),
 			ServiceMessageIdentity: ServiceAcceptIdentity{0x4E},
@@ -109,14 +109,132 @@ func TestIdentityLeavesAreCheckedAgainstTheirOwnTypes(t *testing.T) {
 	}
 }
 
-// TestEncodeXIRIRefusesNoEvent: a nil event panicked in the constraint walk.
+// TestEncodeXIRIRefusesNoEvent: a nil event is an error, not a panic in the constraint walk.
 func TestEncodeXIRIRefusesNoEvent(t *testing.T) {
 	if _, err := EncodeXIRI(nil); err == nil {
 		t.Error("a nil event was encoded")
 	}
 }
 
-// TestRATTypeIsBoundedByTheModule: RATType had no range check, so any integer went out.
+// TestAPointerToARecordIsRefused: the XIRIEvent CHOICE takes record values. A pointer would pass
+// validateEvent's checks, which are keyed on the value types, unexamined — so it is refused by
+// name rather than dereferenced.
+func TestAPointerToARecordIsRefused(t *testing.T) {
+	_, err := EncodeXIRI(&AMFRegistration{
+		RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+		SUPI: IMSI("262019876543210"), GUTI: testGUTI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not an alternative of the XIRIEvent CHOICE") {
+		t.Errorf("a pointer to a record was not refused as such: %v", err)
+	}
+}
+
+// TestARefusalNamesTheRecordOnce: a refusal names the record by its bare type name, the way the
+// emitter's own refusals do, rather than repeating the package qualifier after the "iri:" prefix.
+func TestARefusalNamesTheRecordOnce(t *testing.T) {
+	_, err := EncodeXIRI(AMFRegistration{
+		RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+		SUPI: IMSI("262019876543210"),
+		GUTI: FiveGGUTI{MCC: "2620", MNC: "01", AMFRegionID: 1, AMFSetID: 1, FiveGTMSI: 1},
+	})
+	if err == nil {
+		t.Fatal("a four-digit MCC was encoded")
+	}
+	if !strings.HasPrefix(err.Error(), "iri: AMFRegistration.GUTI.MCC ") {
+		t.Errorf("the refusal does not name the field as AMFRegistration.GUTI.MCC: %v", err)
+	}
+}
+
+// TestUTF8StringsAreValidAndMandatoryOnesNonEmpty: a UTF8String member must carry valid UTF-8,
+// which a strict decoder checks, and a mandatory one must not be empty — the module bounds the
+// size of none of DNN, NAI or homeNetworkIdentifier, so an empty one is schema-valid, but a
+// session with no data network name or a SUPI with no characters names nothing.
+func TestUTF8StringsAreValidAndMandatoryOnesNonEmpty(t *testing.T) {
+	establishment := func(dnn DNN) SMFPDUSessionEstablishment {
+		return SMFPDUSessionEstablishment{
+			SUPI: IMSI("262019876543210"), PDUSessionID: 5, PDUSessionType: PDUSessionTypeIPv4,
+			DNN: dnn, RequestType: SMRequestInitial,
+		}
+	}
+	registration := func(supi any) AMFRegistration {
+		return AMFRegistration{
+			RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+			SUPI: supi, GUTI: testGUTI,
+		}
+	}
+	suci := SUCI{
+		MCC: "262", MNC: "01", HomeNetworkPublicKeyID: []byte{0x00}, SchemeOutput: []byte{0x01},
+		HomeNetworkIdentifier: "\xff",
+	}
+
+	for _, tc := range []struct {
+		name  string
+		event any
+		want  string
+	}{
+		{"a DNN that is not UTF-8", establishment("\xff\xfe"), "DNN is not valid UTF-8"},
+		{"an empty mandatory DNN", establishment(""), "DNN is empty, and DNN is mandatory"},
+		{"an empty mandatory NAI SUPI", registration(NAI("")), "SUPI is empty, and NAI is mandatory"},
+		{"an NAI that is not UTF-8", registration(NAI("user\xff@example.org")), "SUPI is not valid UTF-8, and NAI"},
+		{"a home network identifier that is not UTF-8", AMFRegistration{
+			RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+			SUPI: IMSI("262019876543210"), GUTI: testGUTI, SUCI: suci,
+		}, "HomeNetworkIdentifier is not valid UTF-8"},
+		{"a network identifier that is not UTF-8", AMFRegistration{
+			RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+			SUPI: IMSI("262019876543210"), GUTI: testGUTI,
+			FiveGSTAIList: TAIList{{PLMNID: PLMNID{MCC: "262", MNC: "01"}, TAC: TAC{0x00, 0x01}, NID: "0123456789\xff"}},
+		}, "NID is not valid UTF-8"},
+		{"an LCS correlation id that is not UTF-8", AMFPositioningInfoTransfer{
+			SUPI: IMSI("262019876543210"), LCSCorrelationID: "\xff",
+		}, "LCSCorrelationID is not valid UTF-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := EncodeXIRI(tc.event)
+			if err == nil {
+				t.Fatal("encoded a UTF8String a conformant decoder would refuse, or one naming nothing")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal does not say what is wrong.\n got: %v\nwant substring: %s", err, tc.want)
+			}
+		})
+	}
+
+	// The conformant forms pass, an empty optional DNN is absence, and a UTF8String may carry any
+	// valid UTF-8, not only ASCII.
+	for _, ok := range []any{
+		establishment("internet"),
+		establishment("dnn-\u00e9"),
+		registration(NAI("user@example.org")),
+		SMFUnsuccessfulProcedure{
+			FailedProcedureType: SMFFailedPDUSessionEstablishment, FailureCause: 26,
+			Initiator: InitiatorNetwork,
+		},
+	} {
+		if _, err := EncodeXIRI(ok); err != nil {
+			t.Errorf("a conformant record was refused: %v", err)
+		}
+	}
+}
+
+// TestAPLMNIsDigitsOnly: NumericString admits a space, but an MCC or MNC is decimal digits
+// throughout, and a space in one is a misconfigured PLMN rather than a value.
+func TestAPLMNIsDigitsOnly(t *testing.T) {
+	for _, guti := range []FiveGGUTI{
+		{MCC: "262", MNC: "0 1", AMFRegionID: 1, AMFSetID: 1, FiveGTMSI: 1},
+		{MCC: "2 2", MNC: "01", AMFRegionID: 1, AMFSetID: 1, FiveGTMSI: 1},
+	} {
+		_, err := EncodeXIRI(AMFRegistration{
+			RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+			SUPI: IMSI("262019876543210"), GUTI: guti,
+		})
+		if err == nil || !strings.Contains(err.Error(), "decimal digits throughout") {
+			t.Errorf("a PLMN with a space (%q/%q) was not refused: %v", guti.MCC, guti.MNC, err)
+		}
+	}
+}
+
+// TestRATTypeIsBoundedByTheModule: RATType is range-checked like every other enumeration.
 func TestRATTypeIsBoundedByTheModule(t *testing.T) {
 	rec := func(r RATType) AMFRegistration {
 		return AMFRegistration{
@@ -139,9 +257,8 @@ func TestRATTypeIsBoundedByTheModule(t *testing.T) {
 	}
 }
 
-// TestEveryEndpointListRefusesThePresentEmptyForm: the guard covered two of the records carrying
-// a ueEndpoint list. SMFUnsuccessfulProcedure's encoded a present empty list, which asserts the
-// failed session had no address.
+// TestEveryEndpointListRefusesThePresentEmptyForm: SMFUnsuccessfulProcedure carries a ueEndpoint
+// list too, and a present empty one asserts the failed session had no address.
 func TestEveryEndpointListRefusesThePresentEmptyForm(t *testing.T) {
 	_, err := EncodeXIRI(SMFUnsuccessfulProcedure{
 		FailedProcedureType: SMFFailedPDUSessionEstablishment, FailureCause: 1,
@@ -184,7 +301,7 @@ func TestTheModificationEndpointIsOneAddress(t *testing.T) {
 }
 
 // TestAZeroVolumeAndTMSIAreSent: a release that moved no bytes, and a 5G-TMSI of zero, are
-// values, not absences. As plain integers they were omitted whenever they were zero.
+// values, not absences, so both are pointers and a present zero is sent.
 func TestAZeroVolumeAndTMSIAreSent(t *testing.T) {
 	zero := int64(0)
 
