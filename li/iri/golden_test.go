@@ -175,7 +175,7 @@ func goldenSamples() map[string]any {
 			GTPTunnelInfo:       tunnelInfo,
 			SUPIUnauthenticated: &supiAuthenticated,
 			RATType:             RATNR,
-			UEEndpoint:          UEEndpoint(net.IPv4(10, 45, 0, 7)),
+			UEEndpoint:          UEEndpointAddress(net.IPv4(10, 45, 0, 7)),
 			ServingNetwork:      servingNet,
 		},
 		"SMFPDUSessionRelease": SMFPDUSessionRelease{
@@ -183,8 +183,8 @@ func goldenSamples() map[string]any {
 			PEI:            IMEI("35342500000001"),
 			GPSI:           MSISDN("4915123456789"),
 			PDUSessionID:   5,
-			UplinkVolume:   123456,
-			DownlinkVolume: 654321,
+			UplinkVolume:   new(int64(123456)),
+			DownlinkVolume: new(int64(654321)),
 		},
 		"SMFStartOfInterceptionWithEstablishedPDUSession": SMFStartOfInterceptionWithEstablishedPDUSession{
 			SUPI:                IMSI("262019876543210"),
@@ -224,7 +224,7 @@ func goldenSamples() map[string]any {
 			UserIdentifiers:        ids,
 			ServiceMessageIdentity: ServiceAcceptIdentity{0x4E},
 			ServiceType:            []byte{0x01},
-			FiveGTMSI:              3735928559,
+			FiveGTMSI:              new(FiveGTMSI(3735928559)),
 		},
 		"AMFUEPolicyTransfer": AMFUEPolicyTransfer{
 			SUPI: IMSI("262019876543210"),
@@ -548,15 +548,6 @@ func unpopulatedBelow(v reflect.Value, path string) []string {
 		return out
 	}
 	return nil
-}
-
-func isOptional(f reflect.StructField) bool {
-	for _, opt := range strings.Split(f.Tag.Get("asn1"), ",") {
-		if opt == "optional" {
-			return true
-		}
-	}
-	return false
 }
 
 // nestedOptionals is every OPTIONAL member of a structure nested below a record — the

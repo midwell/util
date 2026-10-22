@@ -31,7 +31,12 @@ import (
 var xIRIPayloadOID = []byte{0x04, 0x13, 0x12, 0x0F, 0x01}
 
 // Target-identifier leaf types. They are distinct Go types (not bare strings)
-// so the CHOICE emitters can tell the alternatives apart by type.
+// so the CHOICE emitters can tell the alternatives apart by type, and so
+// constraints.go can check each against its own definition.
+//
+// IMEI is the fourteen-digit form, TAC and serial number, without the check digit
+// TS 29.571's "imei-" PEI carries as a fifteenth: a network function holding that
+// form drops the last digit before building one.
 type (
 	IMSI   string // NumericString(6..15)
 	NAI    string // UTF8String
@@ -126,6 +131,13 @@ type (
 )
 
 // SNSSAI ::= SEQUENCE — the slice identifier (SST + optional SD).
+//
+// A mapped HPLMN SST of zero is omitted, and so is an S-NSSAI whose SST is zero with no SD
+// (the optional member is then the zero structure). Left as values rather than pointers
+// because the network functions do not hold an SST of zero for a session: table 5.15.2.2-1 of
+// TS 23.501 standardises no value 0, and the SMF reads the SST from a configured slice. The same
+// argument covers AMFID (an all-zero AMF identifier is not one any AMF is configured with) and
+// a PDU session ID of zero (TS 24.007 table 11.2.3.1c.1: "No PDU session identity assigned").
 type SNSSAI struct {
 	SliceServiceType    SliceServiceType    `asn1:"tag:1"`
 	SliceDifferentiator SliceDifferentiator `asn1:"tag:2,optional"`
@@ -348,9 +360,9 @@ type (
 )
 
 // The FiveGGUTI leaves. Every one is a named type in the module with a restriction of its own,
-// and every one arrives from this element's own configuration and context rather than from a
-// task — so nothing validates them before they reach a record, which is why they are named here
-// rather than left to the identity leaves' argument in constraints.go.
+// and every one arrives from this element's own configuration and context — so nothing validates
+// them before they reach a record, which is why they are named here and checked in
+// constraints.go.
 type (
 	MCC         string // NumericString (SIZE(3))
 	MNC         string // NumericString (SIZE(2..3))
@@ -372,9 +384,9 @@ type FiveGGUTI struct {
 
 // The SUCI leaves. TS 33.128 SUCI ::= SEQUENCE carries the subscription concealed
 // identifier the UE presented, and every member is a named type in the module with a
-// restriction of its own. Like the FiveGGUTI leaves, these arrive from a NAS message
-// rather than from a task, so nothing in li/x1 has validated them by the time they
-// reach a record — which is the argument for naming them here.
+// restriction of its own. Like the FiveGGUTI leaves, these arrive from a NAS message,
+// so nothing has validated them by the time they reach a record — which is the
+// argument for naming them here.
 type (
 	RoutingIndicator       int    // INTEGER (0..9999)
 	ProtectionSchemeID     int    // INTEGER (0..15)
@@ -564,9 +576,10 @@ type SMFPDUSessionModification struct {
 	AccessType          AccessType                     `asn1:"tag:9,optional"`
 	RATType             RATType                        `asn1:"tag:10,optional"`
 	PDUSessionID        PDUSessionID                   `asn1:"tag:11,optional"` // note: value 0 indistinguishable from absent
-	UEEndpoint          []any                          `asn1:"tag:13,choice:ueEndpointAddress,optional"`
-	ServingNetwork      SMFServingNetwork              `asn1:"tag:14,optional"`
-	GTPTunnelInfo       GTPTunnelInfo                  `asn1:"tag:16,optional"`
+	// The CHOICE itself, not a SEQUENCE OF as in the other records: build it with UEEndpointAddress.
+	UEEndpoint     any               `asn1:"tag:13,explicit,choice:ueEndpointAddress,optional"`
+	ServingNetwork SMFServingNetwork `asn1:"tag:14,optional"`
+	GTPTunnelInfo  GTPTunnelInfo     `asn1:"tag:16,optional"`
 }
 
 // SMFPDUSessionRelease is a slice of the same-named record. Mandatory: sUPI,
@@ -577,8 +590,8 @@ type SMFPDUSessionRelease struct {
 	PEI            any          `asn1:"tag:2,explicit,choice:pei,optional"`
 	GPSI           any          `asn1:"tag:3,explicit,choice:gpsi,optional"`
 	PDUSessionID   PDUSessionID `asn1:"tag:4"`
-	UplinkVolume   int64        `asn1:"tag:7,optional"`
-	DownlinkVolume int64        `asn1:"tag:8,optional"`
+	UplinkVolume   *int64       `asn1:"tag:7,optional"` // a pointer, so a session that moved no bytes reports 0
+	DownlinkVolume *int64       `asn1:"tag:8,optional"`
 }
 
 // AMFLocationUpdate is a slice of the same-named record. Mandatory: sUPI,
@@ -652,8 +665,10 @@ type AMFIdentifierDeassociation struct {
 // Distinct Go types, like the IMSI/NAI target-identifier leaves, so the CHOICE
 // emitter can tell the alternatives apart by type.
 //
-// A ueEndpoint field is a SEQUENCE OF this CHOICE, so it is declared as []any and
-// tagged with the choice, which applies to each element.
+// Most ueEndpoint fields are a SEQUENCE OF this CHOICE, so they are declared as []any
+// and tagged with the choice, which applies to each element. SMFPDUSessionModification's
+// is the exception: `uEEndpoint [13] UEEndpointAddress OPTIONAL` is the CHOICE itself, so
+// it is a single any.
 type (
 	IPv4Address []byte // SIZE(4)
 	IPv6Address []byte // SIZE(16)
@@ -672,14 +687,24 @@ type ServiceType []byte // SIZE(1)
 // positive claim that the session has no endpoint address, which is never true
 // of an established session.
 func UEEndpoint(ip net.IP) []any {
+	if a := UEEndpointAddress(ip); a != nil {
+		return []any{a}
+	}
+	return nil
+}
+
+// UEEndpointAddress is the single UEEndpointAddress alternative for ip, or nil for an
+// absent or unusable address — the form SMFPDUSessionModification's uEEndpoint takes, and
+// each element of the others'.
+func UEEndpointAddress(ip net.IP) any {
 	if ip == nil {
 		return nil
 	}
 	if v4 := ip.To4(); v4 != nil {
-		return []any{IPv4Address(append([]byte(nil), v4...))}
+		return IPv4Address(append([]byte(nil), v4...))
 	}
 	if v16 := ip.To16(); v16 != nil {
-		return []any{IPv6Address(append([]byte(nil), v16...))}
+		return IPv6Address(append([]byte(nil), v16...))
 	}
 	return nil
 }
@@ -744,7 +769,7 @@ type AMFUEServiceAccept struct {
 	UserIdentifiers        UserIdentifiers `asn1:"tag:1"`
 	ServiceMessageIdentity any             `asn1:"tag:2,explicit,choice:serviceMessageIdentity"`
 	ServiceType            ServiceType     `asn1:"tag:3,optional"`
-	FiveGTMSI              FiveGTMSI       `asn1:"tag:4,optional"`
+	FiveGTMSI              *FiveGTMSI      `asn1:"tag:4,optional"` // a pointer: 0 is a valid 5G-TMSI
 }
 
 // AMFUEPolicyTransfer is a slice of the same-named record (XIRIEvent [146]),
@@ -840,8 +865,8 @@ func EncodeXIRI(event any) ([]byte, error) {
 // address, which is never true — and an agency cannot tell that claim apart from
 // one we actually meant. Refusing here rather than in each caller keeps the rule
 // on the single path both the SMF's record builders take.
-// Both records that carry ueEndpoint are checked, because the difference between
-// them is only which shape counts as wrong. In the start-of-interception record
+// Every record that carries a ueEndpoint list is checked, because the difference
+// between them is only which shape counts as wrong. In the start-of-interception record
 // the field is mandatory, so absent and empty are both wrong. In the
 // establishment record it is OPTIONAL, so absent is correct and only
 // present-and-empty is wrong — a nil slice is omitted, a non-nil empty one is
@@ -861,6 +886,17 @@ func validateEvent(event any) error {
 					"the field is optional, so leave it nil to omit it — an empty list " +
 					"asserts the session has no endpoint address")
 		}
+	case SMFUnsuccessfulProcedure:
+		// The same falsehood in the third record that carries a list: what failed was a
+		// session, and an empty endpoint list says it had no address.
+		if rec.UEEndpoint != nil && len(rec.UEEndpoint) == 0 {
+			return fmt.Errorf(
+				"iri: SMFUnsuccessfulProcedure has a present but empty uEEndpoint; " +
+					"the field is optional, so leave it nil to omit it — an empty list " +
+					"asserts the session has no endpoint address")
+		}
 	}
+	// SMFPDUSessionModification's uEEndpoint is a single CHOICE, not a list, so it has no
+	// empty form to refuse: nil omits it.
 	return nil
 }

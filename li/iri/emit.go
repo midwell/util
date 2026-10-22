@@ -578,8 +578,8 @@ func (r SMFPDUSessionModification) emit(b *builder) {
 	if r.PDUSessionID != 0 {
 		b.integer(11, int64(r.PDUSessionID))
 	}
-	if r.UEEndpoint != nil {
-		b.sequenceOf(13, "SMFPDUSessionModification.UEEndpoint", r.UEEndpoint, ueEndpointAddress)
+	if present(r.UEEndpoint) {
+		b.explicit(13, "SMFPDUSessionModification.UEEndpoint", r.UEEndpoint, ueEndpointAddress)
 	}
 	if !isZero(r.ServingNetwork) {
 		b.constructed(14, r.ServingNetwork.emit)
@@ -598,11 +598,11 @@ func (r SMFPDUSessionRelease) emit(b *builder) {
 		b.explicit(3, "SMFPDUSessionRelease.GPSI", r.GPSI, gpsi)
 	}
 	b.integer(4, int64(r.PDUSessionID))
-	if r.UplinkVolume != 0 {
-		b.integer(7, r.UplinkVolume)
+	if r.UplinkVolume != nil {
+		b.integer(7, *r.UplinkVolume)
 	}
-	if r.DownlinkVolume != 0 {
-		b.integer(8, r.DownlinkVolume)
+	if r.DownlinkVolume != nil {
+		b.integer(8, *r.DownlinkVolume)
 	}
 }
 
@@ -762,8 +762,8 @@ func (r AMFUEServiceAccept) emit(b *builder) {
 	if r.ServiceType != nil {
 		b.octets(3, r.ServiceType)
 	}
-	if r.FiveGTMSI != 0 {
-		b.integer(4, int64(r.FiveGTMSI))
+	if r.FiveGTMSI != nil {
+		b.integer(4, int64(*r.FiveGTMSI))
 	}
 }
 

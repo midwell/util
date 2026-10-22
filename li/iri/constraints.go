@@ -6,6 +6,7 @@ package iri
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // The record definitions in this package carry their ASN.1 restrictions in comments —
@@ -63,11 +64,6 @@ type utf8Size struct {
 // octetConstraints, intConstraints and utf8Constraints are the restrictions the type
 // definitions in iri.go record in their comments, in the one place that checks them.
 //
-// There is no NumericString table, and that is the limit above rather than an omission: the
-// identity leaves those constraints belong to (IMSI, IMEI, MSISDN) are bare `string` fields,
-// and their values come from the task — where `li/x1` validates them on the decode path
-// before they reach a record.
-//
 // Every entry names the clause it comes from by naming the type: the comment beside each type
 // declaration in iri.go is the source, and the two are meant to be read together.
 var (
@@ -102,17 +98,16 @@ var (
 		reflect.TypeOf(TEID(0)):             {0, 4294967295},
 
 		// The FiveGGUTI members. Each is a named type in the module with a range of its own,
-		// and each comes from this element's configuration and context — so no task validation
-		// stands between a misconfigured PLMN or a truncated AMF identifier and a record.
+		// and each comes from this element's configuration and context — so nothing stands
+		// between a misconfigured PLMN or a truncated AMF identifier and a record.
 		reflect.TypeOf(AMFRegionID(0)): {0, 255},
 		reflect.TypeOf(AMFSetID(0)):    {0, 1023},
 		reflect.TypeOf(AMFPointer(0)):  {0, 63},
 		reflect.TypeOf(FiveGTMSI(0)):   {0, 4294967295},
 
 		// The SUCI members with a range. These arrive from a NAS message the UE sent, so
-		// unlike the identity leaves nothing in li/x1 has looked at them before they reach
-		// a record — a malformed SUCI is a wrong target identity, which is the failure this
-		// table exists to make loud.
+		// nothing has looked at them before they reach a record — a malformed SUCI is a
+		// wrong target identity, which is the failure this table exists to make loud.
 		reflect.TypeOf(RoutingIndicator(0)):       {0, 9999},
 		reflect.TypeOf(ProtectionSchemeID(0)):     {0, 15},
 		reflect.TypeOf(SUPIType(0)):               {0, 7},
@@ -133,13 +128,39 @@ var (
 	// are digits throughout.
 	//
 	// The alphabet is the half worth having. A length check on an MCC would pass "abc", and a
-	// PLMN read from configuration is exactly where a non-digit arrives — whereas the identity
-	// leaves this table does not cover (IMSI, IMEI, MSISDN) get their values from a task, which
-	// `li/x1` validates on the decode path before they reach a record. That distinction is why
-	// these two are here and those are not.
+	// PLMN read from configuration is exactly where a non-digit arrives.
 	numericConstraints = map[reflect.Type]utf8Size{
 		reflect.TypeOf(MCC("")): {3, 3},
 		reflect.TypeOf(MNC("")): {2, 3},
+	}
+
+	// identityConstraints are the target-identity leaves: the SUPI, PEI and GPSI alternatives
+	// every record carries. Digits only, at the length the module gives each.
+	//
+	// **These are checked here because nothing upstream checks them.** An earlier version of this
+	// file left them out on the grounds that their values come from the task, which li/x1
+	// validates. They do not: a record's SUPI, PEI and GPSI are read from the network
+	// function's own UE or session context, which holds them in TS 29.571 form ("imei-" followed
+	// by fifteen digits, check digit included). A value that violates its own type is a record
+	// naming the wrong subject, or none, and a conformant mediation function discards it.
+	//
+	// Unlike the other tables, empty is never absence here. These types only ever appear as an
+	// alternative of a CHOICE, where absence is a nil member, so an empty alternative is a
+	// present identity with no digits.
+	identityConstraints = map[reflect.Type]utf8Size{
+		reflect.TypeOf(IMSI("")):   {6, 15},
+		reflect.TypeOf(IMEI("")):   {14, 14},
+		reflect.TypeOf(IMEISV("")): {16, 16},
+		reflect.TypeOf(MSISDN("")): {1, 15},
+	}
+
+	// listMinimums are the SEQUENCE OF members with a SIZE lower bound, keyed by record and
+	// field. A present list shorter than this is schema-invalid however well-formed its
+	// elements are.
+	listMinimums = map[string]int{
+		// fiveGSSubscriberID [1] SEQUENCE SIZE(1..MAX) OF FiveGSSubscriberID. Identifiers()
+		// never builds an empty list, but a hand-built FiveGSSubscriberIDs can.
+		"FiveGSSubscriberIDs.IDs": 1,
 	}
 
 	// mandatoryEnums are the enumerated types for which zero is *wrong* rather than absent.
@@ -293,6 +314,10 @@ var (
 		reflect.TypeOf(SMFFailedProcedureType(0)): {1, 3},
 		reflect.TypeOf(Initiator(0)):              {1, 3},
 		reflect.TypeOf(HandoverType(0)):           {1, 4},
+		// RATType, nR(1) .. nREREDCAP(33). iri.go names only the arms a 5G core reports, but
+		// the module defines all 33, so the bound is the module's: a value it defines is not
+		// refused for being one this project does not name.
+		reflect.TypeOf(RATType(0)): {1, 33},
 
 		// The five HandoverCause arms, bounded from the module rather than from memory.
 		//
@@ -323,7 +348,11 @@ var (
 // what must not be possible is adding a record that skips the check. It runs once per record
 // on the X2 path, which is per signalling event and not per packet.
 func validateConstraints(event any) error {
-	return walkConstrained(reflect.ValueOf(event), reflect.TypeOf(event).String(), false)
+	if event == nil {
+		return missing("the XIRIEvent")
+	}
+
+	return walkConstrained(reflect.ValueOf(event), reflect.TypeOf(event).String(), false, true)
 }
 
 // walkConstrained descends v, applying whatever constraint its type carries and then
@@ -335,12 +364,20 @@ func validateConstraints(event any) error {
 // depends on which record carries them. It is a parameter rather than a lookup inside
 // constraintOf because a value does not know which field it came from — which is the same
 // reason the type-keyed tables cannot express these three.
-func walkConstrained(v reflect.Value, path string, zeroForbidden bool) error {
+//
+// mandatory is whether this value must be present: its field carries no `optional` in its
+// asn1 tag, or it is an element of a list, or it is the record itself. **It is what decides
+// whether an empty value is absence or a defect.** The emitter omits an optional member that
+// is nil, empty or zero, so for those an empty value really is "not present"; it writes a
+// mandatory member unconditionally, so an empty one goes out as a zero-length value its type
+// forbids. An earlier version treated empty as absence everywhere and said the codec would
+// refuse a mandatory one — it did not, and a zero GUTI went out as an empty MCC and MNC.
+func walkConstrained(v reflect.Value, path string, zeroForbidden, mandatory bool) error {
 	if !v.IsValid() {
 		return nil
 	}
 
-	if err := constraintOf(v, path, zeroForbidden); err != nil {
+	if err := constraintOf(v, path, zeroForbidden, mandatory); err != nil {
 		return err
 	}
 
@@ -349,20 +386,37 @@ func walkConstrained(v reflect.Value, path string, zeroForbidden bool) error {
 		if v.IsNil() {
 			return nil
 		}
+		// An optional CHOICE holding its alternative's zero is omitted by the emitter (see
+		// present in emit.go), so it is absent and has nothing to check.
+		if v.Kind() == reflect.Interface && !mandatory && v.Elem().IsZero() {
+			return nil
+		}
 
-		// The flag carries through: a pointer expresses presence, so what the field said
+		// The flags carry through: a pointer expresses presence, so what the field said
 		// about its value still applies to the value behind it.
-		return walkConstrained(v.Elem(), path, zeroForbidden)
+		return walkConstrained(v.Elem(), path, zeroForbidden, mandatory)
 
 	case reflect.Struct:
+		// An optional structure at its zero value is omitted (isZero in emit.go), so its
+		// members are not present and their own mandatoriness does not apply.
+		if !mandatory && v.IsZero() {
+			return nil
+		}
 		t := v.Type()
 		for i := range v.NumField() {
-			if !t.Field(i).IsExported() {
+			sf := t.Field(i)
+			if !sf.IsExported() {
 				continue
 			}
-			name := t.Field(i).Name
-			if err := walkConstrained(v.Field(i), path+"."+name,
-				mandatoryEnumFields[t.Name()+"."+name]); err != nil {
+			key := t.Name() + "." + sf.Name
+			field := v.Field(i)
+			if least, ok := listMinimums[key]; ok && field.Kind() == reflect.Slice &&
+				!field.IsNil() && field.Len() < least {
+				return fmt.Errorf("iri: %s.%s has %d entries, and is defined as SEQUENCE SIZE(%d..MAX)",
+					path, sf.Name, field.Len(), least)
+			}
+			if err := walkConstrained(field, path+"."+sf.Name,
+				mandatoryEnumFields[key], !isOptional(sf)); err != nil {
 				return err
 			}
 		}
@@ -373,9 +427,10 @@ func walkConstrained(v reflect.Value, path string, zeroForbidden bool) error {
 		if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8 {
 			return nil
 		}
+		// An element of a list is present by being in it.
 		for i := range v.Len() {
 			if err := walkConstrained(v.Index(i), fmt.Sprintf("%s[%d]", path, i),
-				zeroForbidden); err != nil {
+				zeroForbidden, true); err != nil {
 				return err
 			}
 		}
@@ -384,18 +439,35 @@ func walkConstrained(v reflect.Value, path string, zeroForbidden bool) error {
 	return nil
 }
 
+// isOptional reports whether a record field is OPTIONAL, read from its asn1 struct tag —
+// the same tag the drift tests hold against the module.
+func isOptional(sf reflect.StructField) bool {
+	for _, opt := range strings.Split(sf.Tag.Get("asn1"), ",") {
+		if opt == "optional" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // constraintOf applies the restriction v's own type carries, if it has one. zeroForbidden is
-// the enclosing field's verdict on zero; see walkConstrained.
-func constraintOf(v reflect.Value, path string, zeroForbidden bool) error {
+// the enclosing field's verdict on zero, and mandatory whether the value must be present; see
+// walkConstrained.
+func constraintOf(v reflect.Value, path string, zeroForbidden, mandatory bool) error {
 	t := v.Type()
 
 	if c, ok := octetConstraints[t]; ok {
 		n := v.Len()
-		// An absent OPTIONAL octet string is a nil slice, which the codec omits — so a
-		// length of zero is "not present" rather than "present and too short". A field that
-		// is mandatory and absent is the codec's to refuse, not this.
 		if n == 0 {
-			return nil
+			// An absent OPTIONAL octet string is a nil slice, which the emitter omits. A
+			// non-nil empty one it writes, as a present value too short for its type; and a
+			// mandatory one it writes whatever it holds.
+			if !mandatory && v.IsNil() {
+				return nil
+			}
+			return fmt.Errorf("iri: %s carries no octets, and %s is defined as SIZE(%d..%d)",
+				path, t.Name(), c.min, c.max)
 		}
 		if n < c.min || n > c.max {
 			return fmt.Errorf("iri: %s is %d octets, and %s is defined as SIZE(%d..%d)",
@@ -416,8 +488,7 @@ func constraintOf(v reflect.Value, path string, zeroForbidden bool) error {
 		// Zero is "not present", not "present and meaningless" — the same rule the octet
 		// strings above take, for the same reason. Every enumeration here is numbered from
 		// one, so an unset field of an optional member reads as zero and the codec omits it;
-		// refusing that would refuse every record that legitimately leaves the member out. A
-		// member that is mandatory and absent is the codec's to refuse, and it does.
+		// refusing that would refuse every record that legitimately leaves the member out.
 		//
 		// **Except where the member is mandatory wherever it appears**, in which case zero
 		// cannot be an omission and the exemption was hiding the one value that mattered. The
@@ -429,7 +500,9 @@ func constraintOf(v reflect.Value, path string, zeroForbidden bool) error {
 		//
 		// Two maps rather than one because the exception has two shapes: a type mandatory
 		// wherever it appears, and a field mandatory in this record and optional in the next.
-		// See mandatoryEnumFields for why the second cannot be folded into the first.
+		// See mandatoryEnumFields for why the second cannot be folded into the first. (The
+		// mandatory flag walkConstrained now carries would express both, but these maps are
+		// what TestEveryMandatoryEnumeratedFieldRefusesZero holds against the module.)
 		if n == 0 && !mandatoryEnums[t] && !zeroForbidden {
 			return nil
 		}
@@ -441,8 +514,11 @@ func constraintOf(v reflect.Value, path string, zeroForbidden bool) error {
 
 	if c, ok := numericConstraints[t]; ok {
 		s := v.String()
-		// Empty is absence, as everywhere else in this function: a mandatory member that is
-		// absent is the codec's to refuse.
+		if s == "" && mandatory {
+			return fmt.Errorf("iri: %s is empty, and %s is defined as NumericString (SIZE(%d..%d))",
+				path, t.Name(), c.min, c.max)
+		}
+		// Empty and optional is absence: the emitter omits it.
 		if s != "" {
 			if n := len([]rune(s)); n < c.min || n > c.max {
 				return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (SIZE(%d..%d))",
@@ -457,9 +533,26 @@ func constraintOf(v reflect.Value, path string, zeroForbidden bool) error {
 		}
 	}
 
+	if c, ok := identityConstraints[t]; ok {
+		s := v.String()
+		if n := len(s); n < c.min || n > c.max {
+			return fmt.Errorf("iri: %s is %d characters, and %s is defined as NumericString (SIZE(%d..%d))",
+				path, n, t.Name(), c.min, c.max)
+		}
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return fmt.Errorf("iri: %s contains %q, and %s is a string of digits", path, r, t.Name())
+			}
+		}
+	}
+
 	if c, ok := utf8Constraints[t]; ok {
 		s := v.String()
 		if s == "" {
+			if mandatory {
+				return fmt.Errorf("iri: %s is empty, and %s is defined as UTF8String (SIZE(%d..%d))",
+					path, t.Name(), c.min, c.max)
+			}
 			return nil
 		}
 		if n := len([]rune(s)); n < c.min || n > c.max {

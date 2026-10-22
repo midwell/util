@@ -225,8 +225,8 @@ func TestNewRecordsDiscriminate(t *testing.T) {
 			FailedProcedureType: SMFFailedPDUSessionEstablishment, FailureCause: 1, Initiator: InitiatorNetwork,
 		}, "301481050413120f01a20baa09810101820101830102"},
 		{"positioningInfoTransfer", AMFPositioningInfoTransfer{
-			SUPI: IMSI("1"), LCSCorrelationID: "c",
-		}, "301481050413120f01a20bbf6f08a103810131880163"},
+			SUPI: IMSI("262011"), LCSCorrelationID: "c",
+		}, "301981050413120f01a210bf6f0da1088106323632303131880163"},
 		{"handoverCommand", AMFRANHandoverCommand{
 			UserIdentifiers: sampleIdentifiers(), AMFUENGAPID: 1, RANUENGAPID: 2,
 			HandoverType: HandoverIntra5GS, TargetToSourceContainer: RANTargetToSourceContainer{0x01},
@@ -240,8 +240,8 @@ func TestNewRecordsDiscriminate(t *testing.T) {
 		}, "306381050413120f01a25abf7257a13ca13aa138a111810f323632303139383736353433323130a312821033353334323530303030303030313531a40f810d34393135313233343536373839820101830102840101a503810101a6038101058901018b0102"},
 		{"uePolicyTransfer", AMFUEPolicyTransfer{
 			// Sixteen octets: SIZE(16..65540), which the encoder checks.
-			SUPI: IMSI("1"), UEPolicy: make(UEPolicy, 16),
-		}, "302481050413120f01a21bbf811217a103810131861000000000000000000000000000000000"},
+			SUPI: IMSI("262011"), UEPolicy: make(UEPolicy, 16),
+		}, "302981050413120f01a220bf81121ca1088106323632303131861000000000000000000000000000000000"},
 		{"ueServiceAccept", AMFUEServiceAccept{
 			UserIdentifiers: sampleIdentifiers(), ServiceMessageIdentity: ServiceAcceptIdentity{0x4E},
 		}, "305081050413120f01a247bf811343a13ca13aa138a111810f323632303139383736353433323130a312821033353334323530303030303030313531a40f810d34393135313233343536373839a20382014e"},

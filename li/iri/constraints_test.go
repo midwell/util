@@ -311,15 +311,41 @@ func TestARecordViolatingItsOwnDefinitionIsRefused(t *testing.T) {
 }
 
 // TestAnAbsentOptionalLeafIsNotTooShort keeps the check from refusing every record that omits
-// an optional field. An absent OPTIONAL octet string is a nil slice, which the codec omits —
-// so zero length is "not present" rather than "present and too short", and treating them the
-// same would make the validation itself the reason no record is delivered.
+// an optional field. An absent OPTIONAL leaf is a nil slice, an empty string or a zero
+// structure, which the emitter omits — so it is "not present" rather than "present and too
+// short", and treating them the same would make the validation itself the reason no record is
+// delivered.
+//
+// An earlier version of this test used AMFPositioningInfoTransfer's lcsCorrelationId, which the
+// module makes mandatory: it was asserting that an invalid record encodes. The leaves below are
+// OPTIONAL in the module.
 func TestAnAbsentOptionalLeafIsNotTooShort(t *testing.T) {
-	if _, err := EncodeXIRI(AMFPositioningInfoTransfer{
-		SUPI: IMSI("262019876543210"),
-		// LCSCorrelationID omitted, which is what an element with none does.
-	}); err != nil {
-		t.Errorf("a record omitting an optional constrained leaf was refused: %v", err)
+	for _, tc := range []struct {
+		name  string
+		event any
+	}{
+		{"an S-NSSAI with no slice differentiator", SMFPDUSessionModification{
+			SNSSAI:      SNSSAI{SliceServiceType: 1},
+			RequestType: SMRequestModification,
+		}},
+		{"a tracking area with no network identifier", AMFRegistration{
+			RegistrationType: RegTypeInitial, RegistrationResult: RegResult3GPPAccess,
+			SUPI:          IMSI("262019876543210"),
+			GUTI:          FiveGGUTI{MCC: "262", MNC: "01", AMFRegionID: 1, AMFSetID: 1, FiveGTMSI: 1},
+			FiveGSTAIList: TAIList{{PLMNID: PLMNID{MCC: "262", MNC: "01"}, TAC: TAC{0x00, 0x01}}},
+		}},
+		{"an optional GUTI left out", AMFDeregistration{
+			DeregistrationDirection: DirNetworkInitiated, AccessType: AccessThreeGPP,
+		}},
+		{"an optional PEI holding an empty IMEI, which the emitter omits", SMFPDUSessionRelease{
+			SUPI: IMSI("262019876543210"), PEI: IMEI(""), PDUSessionID: 5,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := EncodeXIRI(tc.event); err != nil {
+				t.Errorf("a record omitting an optional constrained leaf was refused: %v", err)
+			}
+		})
 	}
 }
 
