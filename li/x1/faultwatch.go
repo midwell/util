@@ -5,6 +5,7 @@ package x1
 
 import (
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/omec-project/util/li/types"
@@ -109,6 +110,32 @@ type DestinationWatcher struct {
 	// rather than at the next tick. Buffered and never blocking: it is called from
 	// the delivery path, which must not wait on reporting.
 	nudge chan struct{}
+	// now is the clock the hold below is measured on. Monotonic; replaced only by tests.
+	now func() time.Time
+
+	// mu guards the record below. Watch samples on one goroutine, but sample is also
+	// reached directly.
+	mu sync.Mutex
+	// raised is every destination whose fault this watcher has reported and not yet seen
+	// retracted, with the instant it was first seen healthy again — zero while it is not.
+	//
+	// **It is what lets a fault end when its destination stops being sampled.** The
+	// supplier lists the destinations the live tasking refers to, so deactivating a
+	// destination's last task, or a purge, takes it out of every later sample — and a
+	// fault that is only ever retracted when a sample shows it healthy then stood at the
+	// ADMF until the identifier happened to be reused. Clause 5.3: "The NE shall also
+	// indicate that a fault has been cleared."
+	//
+	// And it is the hold: a destination that recovers is retracted only once it has stayed
+	// healthy for an interval. Reachability is the last exchange's outcome, with no memory,
+	// and each failed delivery nudges a sample — so without the hold a destination failing
+	// every other send reported a fault and its retraction per failure, as fast as the
+	// ADMF answered. A fault is still reported at once; only its ending waits.
+	raised map[string]time.Time
+	// elementRaised and elementHealthy are the same record for the element-scope fault
+	// that stands for every destination with no provisioned identifier.
+	elementRaised  bool
+	elementHealthy time.Time
 }
 
 // Nudge asks for a sample at the next opportunity.
@@ -150,6 +177,8 @@ func NewDestinationWatcher(health func() []DestinationHealth, reporter *Reporter
 		interval:  interval,
 		condition: NEIssueMDFUnreachable,
 		nudge:     make(chan struct{}, 1),
+		now:       monotonicNow,
+		raised:    make(map[string]time.Time),
 	}
 }
 
@@ -185,6 +214,11 @@ func (w *DestinationWatcher) Watch(stop <-chan struct{}) {
 // reported once per throttle window rather than once per sample, and one that
 // recovers without ever having been reported produces nothing.
 func (w *DestinationWatcher) sample() {
+	now := w.now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	// **The destinations with no provisioned identifier are one element state, not
 	// several**, and that is a property of the scope rather than a convenience.
 	//
@@ -201,6 +235,7 @@ func (w *DestinationWatcher) sample() {
 	var (
 		unnamed     bool
 		unnamedDown bool
+		sampled     = make(map[string]bool)
 	)
 
 	for _, h := range w.health() {
@@ -219,25 +254,94 @@ func (w *DestinationWatcher) sample() {
 
 			continue
 		}
+		sampled[h.DID] = true
+
 		if h.Unreachable {
 			w.reporter.NotifyDestinationFault(h.DID, w.condition,
 				"delivery destination is unreachable")
+			w.raised[h.DID] = time.Time{}
 
 			continue
 		}
-		w.reporter.NotifyDestinationClear(h.DID, w.condition)
+
+		healthySince, ours := w.raised[h.DID]
+		if !ours {
+			// Not a fault this watcher raised: a retraction is still asked for, and the
+			// reporter answers it only if something reported one.
+			w.reporter.NotifyDestinationClear(h.DID, w.condition)
+
+			continue
+		}
+		if healthySince.IsZero() {
+			w.raised[h.DID] = now
+
+			continue
+		}
+		if now.Sub(healthySince) >= w.interval {
+			w.retractDestination(h.DID)
+		}
 	}
 
-	// Only where this element has such a destination at all: an element with none has
-	// nothing to say at this scope, and saying "all clear" would retract a fault raised
-	// by whatever else uses the same condition.
-	if !unnamed {
-		return
+	// A destination that has left the health set is no longer tasked, so there is no
+	// recovery to wait for: its fault is retracted now.
+	for did := range w.raised {
+		if !sampled[did] {
+			w.retractDestination(did)
+		}
 	}
+
+	w.sampleElement(now, unnamed, unnamedDown)
+}
+
+// retractDestination asks for a raised destination fault to be retracted, and forgets it
+// once the reporter no longer holds it. A retraction that did not arrive keeps the entry,
+// so the next sample asks again.
+func (w *DestinationWatcher) retractDestination(did string) {
+	w.reporter.NotifyDestinationClear(did, w.condition)
+
+	if !w.reporter.holds(reportKey{scope: scopeDestination, id: did, condition: w.condition}) {
+		delete(w.raised, did)
+	}
+}
+
+// sampleElement is sample's element-scope half, for the destinations with no provisioned
+// identifier.
+func (w *DestinationWatcher) sampleElement(now time.Time, unnamed, unnamedDown bool) {
 	if unnamedDown {
 		w.reporter.NotifyElementFault(w.condition, "a delivery destination is unreachable")
+		w.elementRaised, w.elementHealthy = true, time.Time{}
 
 		return
 	}
+
+	if !w.elementRaised {
+		// Only where this element has such a destination at all: an element with none has
+		// nothing to say at this scope, and saying "all clear" would retract a fault raised
+		// by whatever else uses the same condition.
+		if unnamed {
+			w.reporter.NotifyElementClear(w.condition)
+		}
+
+		return
+	}
+
+	// This watcher's own fault. While un-identified destinations remain, it is retracted
+	// once they have stayed healthy for an interval; when none remains, at once, because
+	// there is nothing left to recover.
+	if unnamed {
+		if w.elementHealthy.IsZero() {
+			w.elementHealthy = now
+
+			return
+		}
+		if now.Sub(w.elementHealthy) < w.interval {
+			return
+		}
+	}
+
 	w.reporter.NotifyElementClear(w.condition)
+
+	if !w.reporter.holds(reportKey{scope: scopeElement, condition: w.condition}) {
+		w.elementRaised, w.elementHealthy = false, time.Time{}
+	}
 }

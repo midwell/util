@@ -427,9 +427,31 @@ func (r *Reporter) commit(k reportKey) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	now := r.now()
+
 	delete(r.sending, k)
-	r.lastSent[k] = r.now()
-	r.reported[k] = true
+	r.lastSent[k] = now
+
+	// Recorded as standing only where something can retract it. A task-scoped report has
+	// no clearing counterpart, so an entry for it could never be removed, and a triggering
+	// function reports per XID: the record grew with every interception that ever had a
+	// fault, for the life of the process.
+	if k.scope != scopeTask {
+		r.reported[k] = true
+	}
+
+	r.forgetExpiredLocked(now)
+}
+
+// forgetExpiredLocked drops throttle entries whose window has passed. Past its window an
+// entry suppresses nothing, so dropping it changes no decision; keeping it would make the
+// throttle a record of every key ever reported. r.mu must be held.
+func (r *Reporter) forgetExpiredLocked(now time.Time) {
+	for k, last := range r.lastSent {
+		if now.Sub(last) >= reportThrottle {
+			delete(r.lastSent, k)
+		}
+	}
 }
 
 // release gives back a reservation whose send did not reach the ADMF. Nothing is
@@ -498,6 +520,20 @@ func (r *Reporter) clearing(k reportKey) bool {
 	r.sending[k] = true
 
 	return true
+}
+
+// holds reports whether a fault at this key is reported and not yet retracted, counting
+// one whose report or retraction is still in flight. It is what lets a watcher that
+// asked for a retraction know whether it arrived, and so whether to keep asking.
+func (r *Reporter) holds(k reportKey) bool {
+	if r == nil {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.reported[k] || r.sending[k]
 }
 
 // commitClear forgets a fault whose retraction reached the ADMF.

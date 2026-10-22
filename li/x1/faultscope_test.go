@@ -274,6 +274,7 @@ func TestAFaultIsReportedAtDestinationScopeAndThenCleared(t *testing.T) {
 		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: unreachable > 0}}
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
+	clock := holdClockOn(w)
 
 	// Healthy: nothing to say, and in particular no recovery from a fault nobody was
 	// told about.
@@ -300,7 +301,7 @@ func TestAFaultIsReportedAtDestinationScopeAndThenCleared(t *testing.T) {
 	}
 
 	dests.set(endpointA, false)
-	w.sample()
+	clock.recover(t, w, admf)
 
 	reports = admf.reports()
 	if len(reports) != 2 {
@@ -329,12 +330,14 @@ func TestRecoveryIsNotThrottledAgainstTheFailure(t *testing.T) {
 		return []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: unreachable > 0}}
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
+	clock := holdClockOn(w)
 
-	// Fails and recovers well inside one throttle window.
+	// Fails and recovers well inside one throttle window: the recovery hold is the
+	// watcher's interval, here far shorter than the reporter's throttle.
 	dests.set(endpointA, true)
 	w.sample()
 	dests.set(endpointA, false)
-	w.sample()
+	clock.recover(t, w, admf)
 
 	if got := admf.counting(TaskReportAllClear)[TaskReportAllClear]; got != 1 {
 		t.Errorf("the clearing was reported %d times, want 1 — the throttle suppressed a state change", got)
@@ -565,6 +568,7 @@ func TestAnEndpointWithNoIdentifierIsStillReported(t *testing.T) {
 			func(string) bool { return unreachable > 0 })
 	}
 	w := NewDestinationWatcher(health, r, time.Millisecond)
+	clock := holdClockOn(w)
 
 	dests.set(endpointA, true)
 	w.sample()
@@ -589,7 +593,7 @@ func TestAnEndpointWithNoIdentifierIsStillReported(t *testing.T) {
 
 	// The ending too, at the same scope.
 	dests.set(endpointA, false)
-	w.sample()
+	clock.recover(t, w, admf)
 
 	reports = admf.reports()
 	if len(reports) != 2 {
@@ -744,6 +748,7 @@ func TestTheUnnamedFaultClearsWhenNoneIsUnreachable(t *testing.T) {
 
 	health := []DestinationHealth{{DID: "", Unreachable: true}, {DID: "", Unreachable: false}}
 	w := NewDestinationWatcher(func() []DestinationHealth { return health }, rep, 0)
+	clock := holdClockOn(w)
 
 	w.sample()
 	if n := admf.counting(NEIssueMDFUnreachable)[NEIssueMDFUnreachable]; n != 1 {
@@ -752,7 +757,7 @@ func TestTheUnnamedFaultClearsWhenNoneIsUnreachable(t *testing.T) {
 
 	// Both recover.
 	health[0].Unreachable = false
-	w.sample()
+	clock.recover(t, w, admf)
 
 	if n := admf.counting("FaultCleared")["FaultCleared"]; n != 1 {
 		t.Errorf("sent %d retractions after every un-identified destination recovered, want 1: an "+
