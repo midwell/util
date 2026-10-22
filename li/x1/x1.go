@@ -84,8 +84,22 @@ var responseTemplate = template.Must(template.New("x1resp").Funcs(template.FuncM
 // than five, and why a test pins it with a clock whose fraction ends in zeros.
 const x1TimestampLayout = "2006-01-02T15:04:05.000000Z07:00"
 
-// x1Timestamp renders t for an X1 message.
-func x1Timestamp(t time.Time) string { return t.Format(x1TimestampLayout) }
+// x1Timestamp renders t for an X1 message, in UTC.
+//
+// UTC is applied here, where the instant is formatted, and not by the clocks that produce
+// it. time.Time.UTC strips the monotonic reading, so a clock returning time.Now().UTC()
+// makes every elapsed-time comparison made with it a wall-clock difference — and the
+// keepalive watchdog and the report throttles are elapsed-time comparisons. See
+// monotonicNow.
+func x1Timestamp(t time.Time) string { return t.UTC().Format(x1TimestampLayout) }
+
+// monotonicNow is the clock this package's servers, reporters and requesters read by
+// default. It is time.Now, unconverted, so it keeps the monotonic reading that makes
+// Sub and comparisons immune to a step in the wall clock. With the reading stripped, a
+// forward step larger than the keepalive window — a VM resumed, an NTP step — purges
+// every warrant at the next tick while the ADMF is alive, and a backward step keeps a
+// dead ADMF's tasking past the window the fail-safe exists to enforce.
+func monotonicNow() time.Time { return time.Now() }
 
 // marshalResponse renders an X1Response to its wire form.
 func marshalResponse(resp *X1Response) ([]byte, error) {
@@ -683,7 +697,7 @@ func NewServer(s *store.Store, neID string, opts ...Option) *Server {
 	srv := &Server{
 		store:        s,
 		neID:         neID,
-		now:          func() time.Time { return time.Now().UTC() },
+		now:          monotonicNow,
 		destinations: make(map[string]heldDestination),
 		configured:   make(map[string]heldDestination),
 	}

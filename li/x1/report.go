@@ -539,7 +539,7 @@ func NewReporter(admfURL, admfID, neID string, tlsConfig *tls.Config) *Reporter 
 			Transport: &http.Transport{TLSClientConfig: tlsConfig},
 			Timeout:   10 * time.Second,
 		},
-		now:      func() time.Time { return time.Now().UTC() },
+		now:      monotonicNow,
 		lastSent: make(map[reportKey]time.Time),
 		sending:  make(map[reportKey]bool),
 		reported: make(map[reportKey]bool),

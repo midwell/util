@@ -56,7 +56,7 @@ func NewRequester(neURL, ourID, neID string, tlsConfig *tls.Config) *Requester {
 			Transport: &http.Transport{TLSClientConfig: tlsConfig},
 			Timeout:   10 * time.Second,
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		now: monotonicNow,
 	}
 }
 
