@@ -223,8 +223,7 @@ var declaredAbsent = map[string]map[string]string{
 // written up in CONFORMANCE.md.
 var knownConditionalDefects = map[string]map[string]string{
 	// Empty, and that is the point of the count below rather than a reason to delete
-	// it. Every entry this list held was closed by
-	// fix-li-iri-unreported-conditional-fields: 29 fixes, plus one
+	// it. Every entry this list held has been closed: 29 fixes, plus one
 	// (AMFPositioningInfoTransfer/sUCI) reclassified N/A because no POI emits that
 	// record. The list stays so the next unreported conditional field has an
 	// established place to be recorded, and so adding one is still a deliberate act.

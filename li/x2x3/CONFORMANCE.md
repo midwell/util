@@ -129,11 +129,10 @@ else. No product PDU carries it.
 
 ## Conditional attributes — table 5.3.1-2
 
-**Six of the 22 defined attribute types are emitted; the other sixteen are not.** That is a
-change: until `add-li-x2x3-conditional-attributes`, every xIRI and every xCC this project had
-ever delivered carried none of them. The TLV mechanism was implemented — `Marshal` writes the
-type/length/value structure of table 5.3.1-1 and `Unmarshal` parses it back — and no producer
-populated `PDU.Attributes`.
+**Six of the 22 defined attribute types are emitted; the other sixteen are not.** Earlier
+versions delivered none of them on any xIRI or xCC: the TLV mechanism was implemented —
+`Marshal` writes the type/length/value structure of table 5.3.1-1 and `Unmarshal` parses it
+back — and no producer populated `PDU.Attributes`.
 
 **Correction to what this document previously claimed.** The Timestamp row used to say that
 "the record carries its own timestamps inside the payload; the header attribute is required in
@@ -157,7 +156,7 @@ with all other target identities present at the NF"). Table 5.3.3-2 requires Tim
 Sequence Number on LI_X3 too, and makes AXRI optional.
 
 So the AMF and SMF IRI-POIs each owe six attributes on every xIRI, and the UPF CC-POI owes
-four on every xCC. All are emitted as of `add-li-x2x3-conditional-attributes`.
+four on every xCC. All are emitted.
 
 **What that change verified, and what it did not.** Four PDUs were sent to the independent
 sipgate reference before any of it was implemented — a 40-byte control beside headers of 49, 80

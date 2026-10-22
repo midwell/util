@@ -116,22 +116,20 @@ func checkVendoredSchemas(t *testing.T) {
 //   - a listed violation that no longer occurs *also* fails the test, so the list cannot
 //     rot into a description of a past that has been fixed.
 //
-// Every entry names the change that owns the repair. Emptying this map is the definition
+// Every entry names the repair it is waiting for. Emptying this map is the definition
 // of X1 being schema-conformant, and its length is the honest measure of how far off that
 // is.
 //
 // It is currently **empty**, which is the whole point of having kept it: every entry it
-// held was removed by the change that fixed the defect, because leaving one behind fails
-// the test. What it held, and what closed each of them in
-// add-li-x1-provisioning-conformance:
+// held was removed by the fix for its defect, because leaving one behind fails the
+// test. What it held:
 //
 //   - a reported taskDetails omitting its mandatory listOfDIDs, on all three answers
-//     that report a task (group 2a.2);
+//     that report a task;
 //   - the destination port rendered as element text where the schema defines a
-//     TCPPort/UDPPort choice — two-way, so a conformant peer's port also parsed as zero
-//     (2a.1);
+//     TCPPort/UDPPort choice — two-way, so a conformant peer's port also parsed as zero;
 //   - a refusal echoing a peer's malformed version and x1TransactionId, which let an
-//     unauthenticated peer make its own rejection unreportable (2a.4).
+//     unauthenticated peer make its own rejection unreportable.
 //
 // An empty map is not a reason to delete this: a violation that is not listed here fails
 // the test, which is what stops the next one arriving unnoticed.
@@ -180,7 +178,7 @@ func report(t *testing.T, caseName string, problems []string) {
 			"rather than leaving the list describing a fixed past", w)
 	}
 	if len(known) > 0 {
-		t.Logf("%d known violation(s), tracked in an OpenSpec change", len(known))
+		t.Logf("%d known violation(s), listed in knownSchemaDefects", len(known))
 	}
 }
 

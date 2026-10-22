@@ -76,11 +76,11 @@ func echoedEnvelope(t *testing.T, send func(*Requester) error) X1ResponseMessage
 	return out.Messages[0]
 }
 
-// TestEveryResponseThisElementReturnsCarriesTheFullEnvelope is task 1.1 of
-// `fix-li-x1-response-binding`, answered by measurement rather than by reading.
+// TestEveryResponseThisElementReturnsCarriesTheFullEnvelope is answered by measurement
+// rather than by reading.
 //
 // **The peer answering this element's X1 requests is this package's own Server.**
-// That is the finding, and it is not what the change assumed. `Requester` has
+// That is the finding, and it is not what one would assume. `Requester` has
 // exactly one caller — `smf/lawfulintercept/trigger.go`, pointing at a UPF's LI_T3
 // endpoint — and a UPF runs this Server. The sipgate reference is an ADMF and MDF
 // simulator: it is an X1 *client* toward these network functions and an X2/X3
@@ -235,8 +235,8 @@ func TestTheRequesterAlwaysGeneratesAConformantTransactionIdentifier(t *testing.
 	}
 }
 
-// TestASingleRequestIsAnsweredWithASingleMessage is task 1.3: whether either peer
-// ever returns more than one message to one request. Measured, because D1 refuses
+// TestASingleRequestIsAnsweredWithASingleMessage: whether either peer
+// ever returns more than one message to one request. Measured, because the binding refuses
 // a multi-message response and that refusal would be wrong if the responder
 // legitimately batched.
 //
@@ -248,7 +248,7 @@ func TestTheRequesterAlwaysGeneratesAConformantTransactionIdentifier(t *testing.
 func TestASingleRequestIsAnsweredWithASingleMessage(t *testing.T) {
 	st := store.New()
 	// The trigger's destination is declared: a task naming one this element cannot
-	// resolve is refused, and what this test is about is D1's single-message rule.
+	// resolve is refused, and what this test is about is the single-message rule.
 	srv := NewServer(st, "upf-1", WithADMF("smf-1"), HonoursCorrelationID(),
 		WithConfiguredDestinations(ConfiguredDestination{
 			DID:          testTrigger().DIDs[0],
@@ -275,11 +275,11 @@ func TestASingleRequestIsAnsweredWithASingleMessage(t *testing.T) {
 		t.Fatalf("ActivateTask: %v", err)
 	}
 	if counted != 1 {
-		t.Errorf("one request was answered with %d messages; D1's single-message rule is reopened", counted)
+		t.Errorf("one request was answered with %d messages; the single-message rule is reopened", counted)
 	}
 }
 
-// TestNoDeployedADMFSendsAShapeSectionFourWouldRefuse is task 2.1, and it is
+// TestNoDeployedADMFSendsAShapeSectionFourWouldRefuse is
 // answered from the test material rather than from a live ADMF, which is stated
 // so the limit of the evidence is visible.
 //

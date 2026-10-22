@@ -443,14 +443,11 @@ func goldenForms() map[string]any {
 //
 // It is keyed by record and covers both of a record's forms.
 //
-// For replace-li-vendored-asn1-codec it is **every record, in both forms**, and that
-// is the whole of the claim: the change replaces the encoder beneath every record and
-// must not move one byte. A moved vector here is a migration defect, never a fixture
-// to regenerate — so for this change the reset instruction above does not apply, and
-// the list is not reset.
-//
-// The previous change, fix-li-mandatory-enum-zero-exemption, also named every record,
-// for a different reason: it refused records and must not alter one that was valid.
+// It is currently **every record, in both forms**. The encoder beneath every record was
+// replaced (a vendored reflective codec gave way to encoding/asn1) and that must not
+// have moved one byte: a moved vector here is a migration defect, never a fixture to
+// regenerate, so the reset instruction above does not apply until a change that is
+// meant to alter a record's encoding names it.
 var expectedUnchanged = map[string]bool{
 	"AMFRegistration":                                 true,
 	"AMFDeregistration":                               true,

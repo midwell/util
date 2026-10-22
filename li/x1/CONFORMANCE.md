@@ -114,8 +114,8 @@ mismatch neither party can attribute.
 
 `TargetIdentifier` is an `xs:choice` in the schema, and `UPFLIT3TargetIdentifier` is a
 sequence of choices. Two decisions about how many members of each are honoured are recorded
-here because they are conformance statements and would otherwise live only in an OpenSpec
-change, which is not distributed with the code.
+here because they are conformance statements, and this file is what is distributed with the
+code.
 
 **A `TargetIdentifier` populating more than one arm is refused with 1010**, as the schema
 violation it is. A message carrying two arms is invalid against the `xs:choice`, so no reading
@@ -375,9 +375,8 @@ throttling the second against the first would report a fault this element never 
 
 ### The withdrawal-durability surface
 
-`fix-li-withdrawal-durability` added X1-visible behaviour and is archived, so it can no longer
-carry a documentation task. It is recorded here because there is nowhere else in a
-distributed document that it appears.
+Withdrawal durability adds X1-visible behaviour. It is recorded here because there is
+nowhere else in a distributed document that it appears.
 
 - **`OnTaskChange`** replaced the `OnActivate`/`OnDeactivate` pair as the lifecycle callback,
   and the reason is an X1 semantics one. A `ModifyTask` keeps the XID, so "the old task" and

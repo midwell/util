@@ -5,9 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # The statements the X1 provisioning decisions rest on
 
-This file exists so that a reviewer can check every decision in
-`openspec/changes/add-li-x1-provisioning-conformance` against a quoted statement without
-re-downloading a specification. Where a decision cites "the spec says", the words it means
+This file exists so that a reviewer can check every X1 provisioning decision against a
+quoted statement without re-downloading a specification. Where a decision cites "the spec says", the words it means
 are below, transcribed from the sources named here.
 
 Three documents govern, and they are not interchangeable:
@@ -180,8 +179,8 @@ delivery endpoints, and `ListOfDIDs` appears as a field name 73 times. Every one
 marks it M. This is the finding that turned a deferral into a conformance gap: the schema
 permits an empty `listOfDIDs`, but 33.128 is normative on top of the schema and does not.
 
-Table 6.2.3-9, *ActivateTask message for triggering the UPF IRI-POI* — the table task 2.7
-checks this element against:
+Table 6.2.3-9, *ActivateTask message for triggering the UPF IRI-POI* — the table this
+element is checked against:
 
 > DeliveryType — Set to "X2Only". M
 

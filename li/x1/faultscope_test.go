@@ -159,8 +159,8 @@ func TestTheThrottleCannotDistinguishTwoDestinations(t *testing.T) {
 	}
 }
 
-// TestReachabilityIsReObservableAndDoesNoIO is task 1.1, and it is the assertion
-// the whole change rests on: a fault that cannot be re-observed cannot be observed
+// TestReachabilityIsReObservableAndDoesNoIO is the assertion fault clearing
+// rests on: a fault that cannot be re-observed cannot be observed
 // to end, so there would be no clearing edge to report.
 //
 // Both suppliers answer the same shape — Pool.UnreachableAmong for the SMF and
@@ -505,7 +505,7 @@ func TestTheWatcherStopsWithTheElementItBelongsTo(t *testing.T) {
 	}
 }
 
-// TestTheStatusAnswerStillNamesNoDestination is task 6.1, and it guards against the
+// TestTheStatusAnswerStillNamesNoDestination guards against the
 // obvious next step rather than against a defect.
 //
 // The element can now name a destination in a report, so "the probe should name it

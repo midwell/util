@@ -251,7 +251,7 @@ func TestATopLevelErrorIsReportedAsUnattributable(t *testing.T) {
 	}
 }
 
-// ── D2: a choice with more than one arm ──────────────────────────────
+// ── A choice with more than one arm ──────────────────────────────
 
 // TestAMultiArmTargetIdentifierIsRefused. The schema defines TargetIdentifier as
 // an xs:choice, so a message populating two arms is invalid against it and no
@@ -307,7 +307,7 @@ func TestPopulatedArmsCountsEveryArm(t *testing.T) {
 	}
 }
 
-// TestTheChoiceRuleDoesNotForbidSeveralIdentifiers keeps D2 from being read as
+// TestTheChoiceRuleDoesNotForbidSeveralIdentifiers keeps the choice rule from being read as
 // reversing the documented precedence. A task's targetIdentifiers *list* carrying
 // a subscriber identifier and a packet criterion as separate entries is
 // legitimate and OR-combined; what is refused is two arms inside one identifier.
@@ -324,7 +324,7 @@ func TestTheChoiceRuleDoesNotForbidSeveralIdentifiers(t *testing.T) {
 	}
 }
 
-// ── D3: every extension identifier is a criterion ────────────────────
+// ── Every extension identifier is a criterion ────────────────────
 
 // TestEveryExtensionIdentifierBecomesACriterion. UPFLIT3TargetIdentifier is a
 // SEQUENCE OF CHOICE, so a list of several is what the structure is for, and the

@@ -92,7 +92,7 @@ func TestAMFUEServiceAcceptEncoding(t *testing.T) {
 	}
 }
 
-// TestOpaquePayloadsAreCopiedVerbatim covers design D6 and task 2.2: the AMF
+// TestOpaquePayloadsAreCopiedVerbatim: the AMF
 // passes these through without parsing, so a byte the AMF saw must be the byte the
 // MDF sees. A codec that helpfully normalised one would change evidence.
 func TestOpaquePayloadsAreCopiedVerbatim(t *testing.T) {

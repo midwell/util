@@ -318,7 +318,8 @@ type (
 )
 
 // RANTargetToSourceContainer / RANSourceToTargetContainer ::= OCTET STRING — the
-// opaque RRC containers. Copied, never parsed (design D6).
+// opaque RRC containers. Copied, never parsed: the AMF passes them through, and a
+// byte it saw must be the byte the MDF sees.
 type (
 	RANTargetToSourceContainer []byte
 	RANSourceToTargetContainer []byte
@@ -748,7 +749,7 @@ type AMFUEServiceAccept struct {
 
 // AMFUEPolicyTransfer is a slice of the same-named record (XIRIEvent [146]),
 // generated when the AMF passes a UE policy container to or from the PCF.
-// Mandatory: sUPI, uEPolicy. The policy is copied opaquely (design D6).
+// Mandatory: sUPI, uEPolicy. The policy is copied opaquely, like the RAN containers.
 type AMFUEPolicyTransfer struct {
 	SUPI     any       `asn1:"tag:1,explicit,choice:supi"`
 	SUCI     SUCI      `asn1:"tag:2,optional"`
@@ -779,7 +780,7 @@ type AMFPositioningInfoTransfer struct {
 // AMFRANHandoverCommand is a slice of the same-named record (XIRIEvent [113]),
 // generated when the AMF sends a HANDOVER COMMAND to the source RAN node. All
 // five members are mandatory, and all five are available where the command is
-// sent (design D2).
+// sent.
 type AMFRANHandoverCommand struct {
 	UserIdentifiers         UserIdentifiers            `asn1:"tag:1"`
 	AMFUENGAPID             AMFUENGAPID                `asn1:"tag:2"`
@@ -790,7 +791,7 @@ type AMFRANHandoverCommand struct {
 
 // AMFRANHandoverRequest is a slice of the same-named record (XIRIEvent [114]).
 // Despite the name it is generated on the HANDOVER REQUEST **ACKNOWLEDGE** from
-// the target RAN node, per TS 33.128 clause 6.2.2.2.9.3 — see design D2. Eight
+// the target RAN node, per TS 33.128 clause 6.2.2.2.9.3. Eight
 // mandatory members; handoverCause and sourceToTargetContainer originate in the
 // earlier HANDOVER REQUIRED and have to be carried forward.
 type AMFRANHandoverRequest struct {
