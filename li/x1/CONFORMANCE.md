@@ -541,10 +541,10 @@ recorded here because that is true and unaddressed, not because a validator with
 would address it.
 
 **The peer that answers is this package's own `Server`.** Worth stating, because it bounds
-both the risk and the evidence. `Requester` has one caller — the SMF's CC triggering function,
-pointed at a UPF's LI_T3 endpoint — and a UPF runs this server. The sipgate reference is an
-ADMF and MDF simulator: an X1 *client* toward these network functions, never the responder to
-a request they send. The residual is that the endpoint URL is deployment configuration, so a
+both the risk and the evidence. In SD-Core the `Requester` is used by the SMF's CC triggering
+function, pointed at a UPF's LI_T3 endpoint, and a UPF runs this server. The reference
+simulator used for interoperability is an ADMF and MDF: an X1 *client* toward these network
+functions, never the responder to a request they send. The residual is that the endpoint URL is deployment configuration, so a
 third-party CC-POI is possible in principle; nothing this project ships or tests has one.
 
 ## What this disposition does not cover

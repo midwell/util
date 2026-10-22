@@ -36,7 +36,9 @@ type Material struct {
 
 // Load reads this network element's LI certificate and key, and the LI CA
 // trust anchor, from the given file paths (X0-pre-provisioned). All three are
-// required — LI has no insecure/verification-skipped mode.
+// required, and the configurations built from them never skip verification. Running X1
+// with no TLS material at all is possible, but then the X1 server refuses every message
+// (see x1.NewListener); there is no mode that authenticates without verifying.
 //
 // A certificate outside its validity period — expired, or not valid yet — is refused
 // here, where the operator is looking, rather than discovered handshake by handshake
