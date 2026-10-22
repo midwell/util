@@ -17,9 +17,9 @@ import (
 	"testing"
 )
 
-// updateGolden regenerates testdata/golden.txt. Run:
+// updateGolden regenerates testdata/golden.txt. Run, from the repository root:
 //
-//	go test ./iri/ -run TestGoldenEncodings -update-golden
+//	go test ./li/iri/ -run TestGoldenEncodings -update-golden
 //
 // The fixtures exist so that a change to the shared encoder has to prove it did
 // not disturb the records it does not intend to touch. The encoder sits under
@@ -143,9 +143,8 @@ func goldenSamples() map[string]any {
 			PEI:  IMEISV("3534250000000151"),
 			GPSI: MSISDN("4915123456789"),
 		},
-		// The three records below gain gTPTunnelInfo, which the TS 33.128 payload
-		// tables mark mandatory and which was omitted. Their encodings therefore
-		// change, and expectedUnchanged no longer names them.
+		// The three records below carry gTPTunnelInfo, which the TS 33.128 payload
+		// tables mark mandatory although the module marks it OPTIONAL.
 		"SMFPDUSessionEstablishment": SMFPDUSessionEstablishment{
 			SUPI:                IMSI("262019876543210"),
 			PEI:                 IMEI("35342500000001"),
@@ -433,21 +432,14 @@ func goldenForms() map[string]any {
 	return forms
 }
 
-// expectedUnchanged names the records whose encoding this change must not alter.
-// Everything in goldenSamples that is not listed here is expected to change, and
-// TestGoldenEncodings reports it as such rather than failing.
+// expectedUnchanged names the records whose encoding must not move. A record listed here
+// whose vector moves fails TestGoldenEncodings; a record not listed is reported as changed
+// rather than failing. It is keyed by record and covers every form of a record.
 //
-// **Reset this list at the start of each change.** It is a statement about one
-// change's intended blast radius, not a standing property, and a stale list is
-// worse than none — it silently blesses whatever the previous change expected.
-//
-// It is keyed by record and covers both of a record's forms.
-//
-// It is currently **every record, in both forms**. The encoder beneath every record was
-// replaced (a vendored reflective codec gave way to encoding/asn1) and that must not
-// have moved one byte: a moved vector here is a migration defect, never a fixture to
-// regenerate, so the reset instruction above does not apply until a change that is
-// meant to alter a record's encoding names it.
+// It is **every record**, and that is its standing state: any moved vector is a defect, never
+// a fixture to regenerate. A change meant to alter a record's encoding removes that record for
+// the change — which is its statement of intended blast radius, measured rather than
+// asserted — regenerates the fixtures, and puts the record back.
 var expectedUnchanged = map[string]bool{
 	"AMFRegistration":                                 true,
 	"AMFDeregistration":                               true,
@@ -476,17 +468,13 @@ var expectedUnchanged = map[string]bool{
 // from the comparison, and on the wire it is indistinguishable from a field the
 // record does not have — so the baseline reports an inertness it never measured.
 //
-// That is not hypothetical. Three samples were incomplete when this test was
-// written, two of them (uEEndpoint on SMFPDUSessionEstablishment and on
-// SMFUnsuccessfulProcedure) for fields the SMF populates in production. The
-// comment above goldenSamples already said "one fully-populated value per
-// alternative", which is exactly why nobody checked: a reader looking for whether
-// the property was recorded found that it was.
+// The comment above goldenSamples says "one fully-populated value per alternative",
+// and a stated property is exactly the one nobody re-checks: a reader looking for
+// whether it was recorded finds that it was. This test checks it.
 //
-// Every modelled field of the record itself, and every OPTIONAL member below it. It
-// used to stop at the record's own fields, and so reported a completeness it had not
-// measured for the fifteen optional members that live in nested structures — three of
-// SUCI's among them. A nested *mandatory* member may still carry zero — a GUTI's
+// Every modelled field of the record itself, and every OPTIONAL member below it,
+// including the optional members that live in nested structures, such as SUCI's. A
+// nested *mandatory* member may still carry zero — a GUTI's
 // aMFPointer of 0 is a value, not an omission, and a mandatory member is emitted
 // whatever it holds — but a nested optional left at zero is absent from the wire, which
 // is exactly the omission this test exists to catch.
@@ -720,7 +708,8 @@ func writeGolden(t *testing.T, encodings map[string]string) {
 	b.WriteString("# DER encodings of every xIRI record type, one per line: <RecordName> <hex>.\n")
 	b.WriteString("# <RecordName>/bare is the same record with its mandatory members only, and\n")
 	b.WriteString("# <RecordName>/sparse holds optional structures present with their mandatory members.\n")
-	b.WriteString("# Regenerate with: go test ./iri/ -run TestGoldenEncodings -update-golden\n")
+	b.WriteString("# Regenerate from the repository root with:\n")
+	b.WriteString("#   go test ./li/iri/ -run TestGoldenEncodings -update-golden\n")
 	b.WriteString("# These pin the output of the shared encoder so an encoder change has to\n")
 	b.WriteString("# show which records it altered. Do not edit by hand.\n")
 	for _, name := range names {
@@ -731,8 +720,8 @@ func writeGolden(t *testing.T, encodings map[string]string) {
 	}
 }
 
-// TestGoldenEncodings pins the DER of every record type, in both its forms. A codec
-// change that alters a record not named in expectedUnchanged fails here.
+// TestGoldenEncodings pins the DER of every record type, in every form. An encoder
+// change that alters a record named in expectedUnchanged fails here.
 func TestGoldenEncodings(t *testing.T) {
 	samples := goldenForms()
 
@@ -760,7 +749,7 @@ func TestGoldenEncodings(t *testing.T) {
 		case expectedUnchanged[strings.TrimSuffix(strings.TrimSuffix(name, bareSuffix), sparseSuffix)]:
 			t.Errorf("%s: encoding changed but must not\n got  %s\n want %s", name, got, expected)
 		default:
-			t.Logf("%s: encoding changed, which this change expects", name)
+			t.Logf("%s: encoding changed, and expectedUnchanged does not list it", name)
 		}
 	}
 	for name := range want {
@@ -952,7 +941,7 @@ func TestGoldenMeasuresBothPathsOfEveryOptional(t *testing.T) {
 		collect(reflect.TypeOf(arm))
 	}
 	if len(all) < 100 {
-		t.Fatalf("found %d OPTIONAL members; there were 106 when this was written, so the "+
+		t.Fatalf("found %d OPTIONAL members; the emitted records hold over a hundred, so the "+
 			"collection is looking at something else", len(all))
 	}
 

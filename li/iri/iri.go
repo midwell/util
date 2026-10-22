@@ -12,9 +12,11 @@
 // asn1_drift_test.go audits them against the published module, and emit_tags_test.go
 // holds the emitters to them.
 //
-// This is the first vertical slice: the XIRIPayload wrapper and the
-// AMFRegistration event (mandatory fields plus the PEI/GPSI target-identifier
-// optionals). Remaining records and optional fields follow the same patterns.
+// It encodes the seventeen XIRIEvent records listed in emit.go's xiriEvent: eleven
+// produced by the AMF, five by the SMF, and AMFPositioningInfoTransfer, which is
+// modelled but produced by no point of interception (see li/README.md). Each record
+// type is a slice of the module's record: the members a point of interception here can
+// supply, with the rest recorded, with a reason, in asn1_drift_test.go.
 package iri
 
 import (
@@ -48,6 +50,7 @@ type (
 // AMFRegistrationType ::= ENUMERATED, see clause 6.2.2.2.2.
 type AMFRegistrationType int
 
+// The AMFRegistrationType values, numbered as the module numbers them.
 const (
 	RegTypeInitial          AMFRegistrationType = 1
 	RegTypeMobility         AMFRegistrationType = 2
@@ -61,6 +64,7 @@ const (
 // AMFRegistrationResult ::= ENUMERATED.
 type AMFRegistrationResult int
 
+// The AMFRegistrationResult values: the access types the UE is registered over.
 const (
 	RegResult3GPPAccess     AMFRegistrationResult = 1
 	RegResultNon3GPPAccess  AMFRegistrationResult = 2
@@ -70,6 +74,7 @@ const (
 // AMFDirection ::= ENUMERATED — who initiated the procedure.
 type AMFDirection int
 
+// The AMFDirection values.
 const (
 	DirNetworkInitiated AMFDirection = 1
 	DirUEInitiated      AMFDirection = 2
@@ -78,6 +83,7 @@ const (
 // AccessType ::= ENUMERATED.
 type AccessType int
 
+// The AccessType values.
 const (
 	AccessThreeGPP    AccessType = 1
 	AccessNonThreeGPP AccessType = 2
@@ -92,6 +98,7 @@ type PDUSessionID int
 // PDUSessionType ::= ENUMERATED.
 type PDUSessionType int
 
+// The PDUSessionType values, numbered as TS 24.501 numbers the PDU session type.
 const (
 	PDUSessionTypeIPv4         PDUSessionType = 1
 	PDUSessionTypeIPv6         PDUSessionType = 2
@@ -106,6 +113,7 @@ type DNN string
 // FiveGSMRequestType ::= ENUMERATED.
 type FiveGSMRequestType int
 
+// The FiveGSMRequestType values.
 const (
 	SMRequestInitial           FiveGSMRequestType = 1
 	SMRequestExisting          FiveGSMRequestType = 2
@@ -168,9 +176,8 @@ type FiveGSGTPTunnels struct {
 // (TS 33.128 table 6.2.3-1B). The payload tables mark this field **M** in
 // SMFPDUSessionEstablishment, SMFPDUSessionModification and
 // SMFStartOfInterceptionWithEstablishedPDUSession, while the published ASN.1
-// module marks it OPTIONAL — so a record omitting it decodes cleanly and is
-// still non-conformant. It was absent here for exactly that reason; see
-// CONFORMANCE.md.
+// module marks it OPTIONAL — so a record omitting it would decode cleanly and still
+// be non-conformant. It is modelled, and the SMF populates it; see CONFORMANCE.md.
 //
 // ePSGTPTunnels [2] is not modelled: it reports PDN connection events at an
 // SGW/PGW, which this project does not implement.
@@ -178,16 +185,16 @@ type GTPTunnelInfo struct {
 	FiveGSGTPTunnels FiveGSGTPTunnels `asn1:"tag:1,optional"`
 }
 
-// Location ::= SEQUENCE — minimal model. All six members are OPTIONAL; we model
-// only locationInfo [1] (and within it only currentLocation), so a Location may
-// be empty. The deeper detail (userLocation → EUTRA/NR/N3GA/..., positioningInfo,
-// the 4G variants, iMSLocation) is deferred to a later increment.
+// Location ::= SEQUENCE — minimal model. All six members are OPTIONAL; only
+// locationInfo [1] is modelled (and within it only currentLocation), so a Location
+// may be empty. The deeper detail (userLocation → EUTRA/NR/N3GA/..., positioningInfo,
+// the 4G variants, iMSLocation) is not modelled; CONFORMANCE.md records it.
 type Location struct {
 	LocationInfo LocationInfo `asn1:"tag:1,optional"`
 }
 
 // LocationInfo ::= SEQUENCE — minimal: currentLocation only; the rest (userLocation,
-// geoInfo, rATType, timeZone, additionalCellIDs) is deferred.
+// geoInfo, rATType, timeZone, additionalCellIDs) is not modelled.
 type LocationInfo struct {
 	CurrentLocation bool `asn1:"tag:2,optional"`
 }
@@ -195,6 +202,7 @@ type LocationInfo struct {
 // AMFFailedProcedureType ::= ENUMERATED.
 type AMFFailedProcedureType int
 
+// The AMFFailedProcedureType values.
 const (
 	FailedRegistration            AMFFailedProcedureType = 1
 	FailedSMS                     AMFFailedProcedureType = 2
@@ -202,7 +210,7 @@ const (
 )
 
 // FiveGMMCause / FiveGSMCause ::= INTEGER (0..255) — the two AMFFailureCause
-// CHOICE arms. Distinct Go types so the codec can tell them apart.
+// CHOICE arms. Distinct Go types so the CHOICE emitter can tell them apart.
 type (
 	FiveGMMCause int
 	FiveGSMCause int
@@ -212,6 +220,7 @@ type (
 // The cause travels separately in FiveGSMCause.
 type SMFFailedProcedureType int
 
+// The SMFFailedProcedureType values.
 const (
 	SMFFailedPDUSessionEstablishment SMFFailedProcedureType = 1
 	SMFFailedPDUSessionModification  SMFFailedProcedureType = 2
@@ -222,6 +231,7 @@ const (
 // failure, per the field's description in TS 33.128 table 6.2.3-5.
 type Initiator int
 
+// The Initiator values.
 const (
 	InitiatorUE      Initiator = 1
 	InitiatorNetwork Initiator = 2
@@ -238,10 +248,9 @@ const (
 //	FiveGSSubscriberID  ::= CHOICE { sUPI [1] SUPI, sUCI [2] SUCI, pEI [3] PEI, gPSI [4] GPSI }
 //
 // The inner arms are themselves CHOICEs, and a context tag on a CHOICE is
-// automatically explicit — so each arm is a one-field Go struct. The struct
-// encodes as a constructed SEQUENCE whose tag the outer CHOICE registration then
-// rewrites to its context tag, which is exactly the [n] EXPLICIT wrapper the
-// module asks for. Registering the leaves flat would emit [1] IMSI where the
+// automatically explicit — so each arm is a one-field Go struct, and the emitter
+// (fiveGSSubscriberID in emit.go) writes it as [n] { [m] leaf }, the EXPLICIT
+// wrapper the module asks for. Writing the leaves flat would emit [1] IMSI where the
 // module wants [1] { [1] IMSI }.
 //
 // ePSSubscriberIDs is not modelled: it carries IMSI/IMEI/MSISDN in their EPS
@@ -262,8 +271,8 @@ type (
 )
 
 // FiveGSSubscriberIDs wraps the SEQUENCE SIZE(1..MAX) OF the CHOICE above. The
-// list is declared []any with the choice on the field, which is what makes the
-// codec resolve the CHOICE per element rather than against the slice.
+// list is declared []any, one CHOICE alternative per element; a present list must
+// hold at least one, which constraints.go checks.
 type FiveGSSubscriberIDs struct {
 	IDs []any `asn1:"tag:1,choice:fiveGSSubscriberID"`
 }
@@ -309,6 +318,8 @@ type (
 // HandoverType ::= ENUMERATED, mirroring TS 38.413's HandoverType.
 type HandoverType int
 
+// The HandoverType values, numbered from one as the module numbers them; NGAP numbers
+// the same members from zero, so a value read from NGAP is mapped, never cast.
 const (
 	HandoverIntra5GS     HandoverType = 1
 	HandoverFiveGSToEPS  HandoverType = 2
@@ -318,9 +329,9 @@ const (
 
 // The five HandoverCause arms. Each is an ENUMERATED whose values follow the
 // corresponding NGAP Cause group in TS 38.413 clause 9.3.1.2, numbered from 1 in
-// the order the module lists them. Distinct Go types so the CHOICE codec can tell
+// the order the module lists them. Distinct Go types so the CHOICE emitter can tell
 // the groups apart; the NGAP-to-LI value mapping is done where the record is
-// built, not here.
+// built, not here. causevalues.go names the values.
 type (
 	CauseRadioNetwork int
 	CauseTransport    int
@@ -466,6 +477,7 @@ type AMFID struct {
 // deliberately not in constraints.go's mandatoryEnums.
 type RATType int
 
+// The RATType values a 5G core reports.
 const (
 	RATNR          RATType = 1
 	RATEUTRA       RATType = 2
@@ -477,10 +489,9 @@ const (
 	RATEUTRAU      RATType = 11
 	RATTrustedN3GA RATType = 12
 	RATTrustedWLAN RATType = 13
-	// The NR satellite arms. This deployment serves non-terrestrial access — AmfUe
-	// has an IsNtn() built on exactly these four — so leaving them unmapped would
-	// report no RAT type at all for an NTN session, which is the silent kind of gap
-	// this package's CONFORMANCE.md exists to track.
+	// The NR satellite arms. An AMF serving non-terrestrial access reports a session
+	// over one of these four, and leaving them unnamed would report no RAT type at all
+	// for it.
 	RATNRLEO      RATType = 16
 	RATNRMEO      RATType = 17
 	RATNRGEO      RATType = 18
@@ -498,8 +509,8 @@ const (
 type SUPIUnauthenticatedIndication bool
 
 // AMFRegistration is a slice of TS 33.128 AMFRegistration: the four mandatory
-// members (registrationType, registrationResult, sUPI, gUTI) plus the PEI/GPSI
-// target-identifier optionals. The CHOICE-typed members (sUPI/pEI/gPSI) are
+// members (registrationType, registrationResult, sUPI, gUTI) and the optionals sUCI,
+// pEI, gPSI, fiveGSTAIList and rATType. The CHOICE-typed members (sUPI/pEI/gPSI) are
 // EXPLICIT-tagged because a context tag on a CHOICE is automatically explicit.
 type AMFRegistration struct {
 	RegistrationType   AMFRegistrationType   `asn1:"tag:1"`
@@ -586,12 +597,16 @@ type SMFPDUSessionModification struct {
 // pDUSessionID. Deferred optionals: timeOfFirst/LastPacket [5][6] (GeneralizedTime),
 // location [9], and the cause tail.
 type SMFPDUSessionRelease struct {
-	SUPI           any          `asn1:"tag:1,explicit,choice:supi"`
-	PEI            any          `asn1:"tag:2,explicit,choice:pei,optional"`
-	GPSI           any          `asn1:"tag:3,explicit,choice:gpsi,optional"`
-	PDUSessionID   PDUSessionID `asn1:"tag:4"`
-	UplinkVolume   *int64       `asn1:"tag:7,optional"` // a pointer, so a session that moved no bytes reports 0
-	DownlinkVolume *int64       `asn1:"tag:8,optional"`
+	SUPI         any          `asn1:"tag:1,explicit,choice:supi"`
+	PEI          any          `asn1:"tag:2,explicit,choice:pei,optional"`
+	GPSI         any          `asn1:"tag:3,explicit,choice:gpsi,optional"`
+	PDUSessionID PDUSessionID `asn1:"tag:4"`
+	// The volumes are pointers, so a session that moved no bytes reports 0. The module
+	// declares them as unconstrained INTEGERs, so a negative value is schema-valid and
+	// is encoded as given; a producer converting from an unsigned byte counter must not
+	// let it wrap.
+	UplinkVolume   *int64 `asn1:"tag:7,optional"`
+	DownlinkVolume *int64 `asn1:"tag:8,optional"`
 }
 
 // AMFLocationUpdate is a slice of the same-named record. Mandatory: sUPI,
@@ -629,11 +644,9 @@ type AMFIdentifierAssociation struct {
 	PEI  any       `asn1:"tag:3,explicit,choice:pei,optional"`
 	GPSI any       `asn1:"tag:4,explicit,choice:gpsi,optional"`
 	GUTI FiveGGUTI `asn1:"tag:5"`
-	// location [6] is MANDATORY in this record, unlike the other records that
-	// carry a Location, where deferring the deep subtree was harmless. Omitting it
-	// made every association record fail schema validation. The minimal Location
-	// the other records use satisfies the requirement; filling in the detail
-	// remains the deferred increment.
+	// location [6] is MANDATORY in this record, unlike the other records that carry a
+	// Location: a record without it fails schema validation. The minimal Location the
+	// other records use satisfies the requirement.
 	Location      Location `asn1:"tag:6"`
 	FiveGSTAIList TAIList  `asn1:"tag:7,optional"`
 }
@@ -641,11 +654,9 @@ type AMFIdentifierAssociation struct {
 // AMFIdentifierDeassociation is a slice of the same-named TS 33.128 record,
 // generated when the AMF releases a target's SUPI↔5G-GUTI binding. Mandatory:
 // sUPI [1] and gUTI [5]. location [6] is optional here — unlike in
-// AMFIdentifierAssociation — so the deep subtree stays deferred.
+// AMFIdentifierAssociation — and is not modelled.
 //
-// The GUTI was previously emitted as [2] and optional, which is where sUCI lives:
-// a conformant receiver read the 5G-GUTI as a SUCI and separately reported the
-// mandatory gUTI missing.
+// The GUTI is [5]; [2] is sUCI, and a receiver reads a 5G-GUTI written there as a SUCI.
 type AMFIdentifierDeassociation struct {
 	SUPI any       `asn1:"tag:1,explicit,choice:supi"`
 	SUCI SUCI      `asn1:"tag:2,optional"`
@@ -712,8 +723,8 @@ func UEEndpointAddress(ip net.IP) any {
 // SMFStartOfInterceptionWithEstablishedPDUSession is a slice of the same-named
 // TS 33.128 record (XIRIEvent [9]), generated when interception is activated for
 // a UE that already has an active PDU session. Mandatory: pDUSessionID,
-// gTPTunnelID, pDUSessionType, uEEndpoint, dNN, requestType. Deep optionals
-// (location, the EPS-combo tail, serving network, etc.) are deferred, as for
+// gTPTunnelID, pDUSessionType, uEEndpoint, dNN, requestType. servingNetwork and
+// gTPTunnelInfo are modelled; location and the EPS tail are not, as for
 // SMFPDUSessionEstablishment.
 //
 // uEEndpoint is mandatory here and must not be emitted as an empty SEQUENCE: an
@@ -792,7 +803,7 @@ type AMFPositioningInfoTransfer struct {
 	// Modelled so the record is complete against the module, and populated by nobody:
 	// no POI emits this record. All four of clause 6.2.2.2.8's trigger events are
 	// exchanges with an LMF and this AMF has none, so the condition cannot arise. In
-	// scope the day an LMF is deployed — see README.md.
+	// scope the day an LMF is deployed — see li/README.md.
 	SUCI             SUCI             `asn1:"tag:2,optional"`
 	PEI              any              `asn1:"tag:3,explicit,choice:pei,optional"`
 	GPSI             any              `asn1:"tag:4,explicit,choice:gpsi,optional"`
@@ -845,11 +856,10 @@ func EncodeXIRI(event any) ([]byte, error) {
 		return nil, err
 	}
 	// **Every constrained leaf, on the one path every record crosses.** validateEvent above
-	// checks two endpoint-list cases; this checks the restrictions the type definitions
-	// themselves carry, which nothing checked at all. A record violating its own definition
-	// encoded cleanly and went out: this element believes it delivered, a conformant mediation
-	// function discards what it cannot validate, and because delivery succeeded no fault is
-	// raised on either side. See constraints.go.
+	// checks the endpoint lists; this checks the restrictions the type definitions themselves
+	// carry. A record violating its own definition would otherwise go out: this element would
+	// believe it delivered, a conformant mediation function would discard what it cannot
+	// validate, and no fault would be raised on either side. See constraints.go.
 	if err := validateConstraints(event); err != nil {
 		return nil, err
 	}
@@ -859,18 +869,18 @@ func EncodeXIRI(event any) ([]byte, error) {
 
 // validateEvent refuses records whose encoding would be schema-valid but false.
 //
-// The codec cannot catch these: an empty SEQUENCE OF encodes cleanly, and
-// ueEndpoint carries no SIZE constraint, so nothing downstream rejects it. What
-// it asserts, though, is that an established PDU session has no endpoint
-// address, which is never true — and an agency cannot tell that claim apart from
-// one we actually meant. Refusing here rather than in each caller keeps the rule
-// on the single path both the SMF's record builders take.
-// Every record that carries a ueEndpoint list is checked, because the difference
-// between them is only which shape counts as wrong. In the start-of-interception record
-// the field is mandatory, so absent and empty are both wrong. In the
-// establishment record it is OPTIONAL, so absent is correct and only
-// present-and-empty is wrong — a nil slice is omitted, a non-nil empty one is
-// emitted as a present empty SEQUENCE.
+// The emitter cannot catch these: an empty SEQUENCE OF encodes cleanly, and ueEndpoint
+// carries no SIZE constraint, so nothing downstream rejects it. What it asserts, though,
+// is that a PDU session has no endpoint address, which is never true — and an agency
+// cannot tell that claim apart from one the element meant. Refusing here rather than in
+// each caller keeps the rule on the single path every record crosses.
+//
+// Every record that carries a ueEndpoint list is checked — the three below — because the
+// difference between them is only which shape counts as wrong. In the start-of-interception
+// record the field is mandatory, so absent and empty are both wrong. In the establishment
+// and unsuccessful-procedure records it is OPTIONAL, so absent is correct and only
+// present-and-empty is wrong — a nil slice is omitted, a non-nil empty one would be emitted
+// as a present empty SEQUENCE.
 func validateEvent(event any) error {
 	switch rec := event.(type) {
 	case SMFStartOfInterceptionWithEstablishedPDUSession:
@@ -887,8 +897,7 @@ func validateEvent(event any) error {
 					"asserts the session has no endpoint address")
 		}
 	case SMFUnsuccessfulProcedure:
-		// The same falsehood in the third record that carries a list: what failed was a
-		// session, and an empty endpoint list says it had no address.
+		// What failed was a session, and an empty endpoint list says it had no address.
 		if rec.UEEndpoint != nil && len(rec.UEEndpoint) == 0 {
 			return fmt.Errorf(
 				"iri: SMFUnsuccessfulProcedure has a present but empty uEEndpoint; " +

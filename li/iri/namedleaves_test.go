@@ -33,10 +33,8 @@ var unrestrictedBareFields = map[string]string{
 //
 // The constraint tables are keyed on type, so a leaf declared as a bare `[]byte`, `int`, `int64`
 // or `string` cannot be reached by them however well its restriction is documented in the
-// comment beside it. That was the state of nine leaves — including every member of `FiveGGUTI`,
-// which every record carrying a GUTI has — and the reason it lasted is that nothing failed:
-// the restriction was written down, so a reader checking whether it was recorded found that it
-// was.
+// comment beside it — and nothing would fail: the restriction would be written down, so a
+// reader checking whether it was recorded would find that it was.
 //
 // This test refuses the shape rather than the omission. A field added as a bare builtin fails
 // here, and the author either names its type or records in the map above what the module says
@@ -81,8 +79,8 @@ func TestEveryRestrictedLeafIsNamed(t *testing.T) {
 	})
 
 	// A stale entry is the other direction of the same problem: it reads as a considered
-	// exemption for a field that has since been named or removed, and the next author to add a
-	// bare field of that name inherits an exemption nobody granted it.
+	// exemption for a field that is named or gone, and the next author to add a bare field of
+	// that name inherits an exemption nobody granted it.
 	for key := range unrestrictedBareFields {
 		if !seen[key] {
 			t.Errorf("%s is listed as an unrestricted bare field and is not one any more; remove "+
@@ -101,8 +99,8 @@ func typeExprString(e ast.Expr) string {
 		// A pointer field is how an OPTIONAL member says "present, and equal to my
 		// type's zero value" (see SUPIUnauthenticatedIndication). The pointer expresses
 		// presence, not a type, so *int is as bare as int and its restriction is
-		// enforced by exactly as little. Without this arm the scan would have a hole
-		// the moment the first pointer field was added — which is when it was.
+		// enforced by exactly as little. Without this arm every pointer field would be a
+		// hole in the scan.
 		return typeExprString(t.X)
 	case *ast.Ident:
 		return t.Name
@@ -142,7 +140,7 @@ func TestTheLeafScanIsNotVacuous(t *testing.T) {
 
 	// iri.go defines the seventeen records plus their component SEQUENCEs.
 	if structs < 25 || fields < 100 {
-		t.Errorf("the scan found %d structs and %d fields in iri.go; it used to find far more, "+
-			"so it is now checking something other than the record definitions", structs, fields)
+		t.Errorf("the scan found %d structs and %d fields in iri.go; the record definitions "+
+			"hold far more, so it is checking something other than them", structs, fields)
 	}
 }

@@ -15,15 +15,13 @@ import (
 //
 // The record structs in iri.go keep their `asn1:"..."` tags. Nothing here reads them;
 // they are the declarative record of the module, audited against the published ASN.1
-// by asn1_drift_test.go, and TestEmittedTagsMatchDeclarations holds every emit method
+// by asn1_drift_test.go, and TestASN1EmittedTagsMatchDeclarations holds every emit method
 // below to them. A tag changed in one place and not the other fails there.
 //
 // **Presence is stated at each call site.** A mandatory member is always written. An
 // OPTIONAL one is written under the condition beside it, which for most fields is that
-// it differs from its type's zero: that is the rule the reflective codec this replaced
-// applied, and keeping it is what makes the replacement inert. The pointer-typed
-// members are the exception the rule needed — present exactly when non-nil, so a
-// present false or zero is expressible.
+// it differs from its type's zero. The pointer-typed members are the exception — present
+// exactly when non-nil, so a present false or zero is expressible.
 
 // builder accumulates the encoding of a constructed value's contents. The first error
 // sticks, and every later write is a no-op, so an emit method reads as the field list
@@ -67,10 +65,9 @@ func (b *builder) octets(tag int, v []byte) {
 	b.add(asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, Bytes: v}))
 }
 
-// text writes a string-typed member as its bytes, unvalidated. That is deliberate: the
-// module's string types are constrained in constraints.go, which runs before this, and
-// marshalling through encoding/asn1's string path would refuse invalid UTF-8 the
-// previous codec carried, which is a change in what is delivered.
+// text writes a string-typed member as its bytes. Validation is not this function's: the
+// module's string types — their sizes, their alphabets and, for a UTF8String, that the
+// content is valid UTF-8 — are checked in constraints.go, which runs before any emitter.
 func (b *builder) text(tag int, v string) {
 	b.octets(tag, []byte(v))
 }
@@ -303,9 +300,9 @@ func xiriEvent(b *builder, field string, v any) {
 	case nil:
 		b.fail(missing(field))
 	default:
-		// A pointer to a record lands here too. The previous codec dereferenced one; this
-		// refuses it, because validateEvent's checks are keyed on the value types and a
-		// pointer would have passed them unexamined.
+		// A pointer to a record lands here too, and is refused rather than dereferenced:
+		// validateEvent's checks are keyed on the value types, so a pointer would pass them
+		// unexamined.
 		b.fail(notAnAlternative("XIRIEvent", field, v))
 	}
 }

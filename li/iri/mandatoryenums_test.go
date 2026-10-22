@@ -31,7 +31,7 @@ import (
 // set to the registered xIRIEvent alternatives. The module defines 171 ENUMERATEDs numbered
 // from one, nearly all of them for services this element is not a POI for; sweeping those would
 // produce a list of exclusions nobody could act on, which is the failure mode the leaf scan's
-// `unrestrictedBareFields` was written to avoid.
+// `unrestrictedBareFields` avoids.
 
 // unguardedMandatoryEnums are the record fields this sweep flags and this package deliberately
 // does not guard, each with the reason — the shape `unrestrictedBareFields` uses, and for the
@@ -380,7 +380,7 @@ func TestNoTypeKeyedGuardRefusesAnOptionalCarrier(t *testing.T) {
 			if mandatoryEnums[sf.Type] {
 				t.Errorf("%s/%s is OPTIONAL in the module and %s is guarded by type, so this "+
 					"record can no longer omit the member: the constraint walk sees an unset "+
-					"optional field as zero, before the codec would have omitted it. Move %s "+
+					"optional field as zero, before the emitter would have omitted it. Move %s "+
 					"out of mandatoryEnums and into mandatoryEnumFields at its mandatory sites",
 					record, f.name, sf.Type.Name(), sf.Type.Name())
 			}
@@ -464,11 +464,11 @@ func TestTheEnumSweepIsNotVacuous(t *testing.T) {
 	}
 
 	sites := mandatoryEnumSweep(t)
-	// Fifteen, at the time of writing: the two `handoverType` fields already guarded, and the
-	// thirteen this change is about — nine types across thirteen record fields.
+	// Fifteen across the emitted records: the two `handoverType` fields and thirteen more —
+	// nine types across thirteen record fields.
 	if len(sites) < 15 {
-		t.Errorf("the sweep found %d mandatory enumerated fields across the emitted records; it "+
-			"found fifteen when written, so it is now looking at something else", len(sites))
+		t.Errorf("the sweep found %d mandatory enumerated fields across the emitted records, "+
+			"which hold fifteen, so it is looking at something else", len(sites))
 	}
 
 	var found []string
@@ -537,9 +537,9 @@ func TestAZeroInEachMandatoryEnumeratedFieldIsRefused(t *testing.T) {
 //
 // The wrong fix for the three mixed carriers is to add them to mandatoryEnums. It looks
 // identical from the map — one more line, same shape as the six — and it silently refuses every
-// record that omits an optional `accessType`, `requestType` or `registrationType`. That is not a
-// smaller version of the defect this change closes; it is a larger one, because it costs records
-// on the ordinary path rather than on a path nobody has walked.
+// record that omits an optional `accessType`, `requestType` or `registrationType` — a larger
+// loss than the one the guard prevents, because it costs records on the ordinary path rather
+// than on a path nobody has walked.
 //
 // Derived rather than listed: every optional field of every emitted record whose type is an
 // ENUMERATED numbered from one, unset, must still encode *and* must be absent from the DER —
@@ -606,7 +606,7 @@ func TestAnUnsetOptionalEnumeratedFieldStillEncodes(t *testing.T) {
 	// The three mixed carriers account for six of these; a run that found none would pass
 	// without exercising the distinction the mechanism exists for.
 	if cases < 6 {
-		t.Errorf("found %d optional enumerated fields to unset across the emitted records; there "+
-			"were eleven when this was written, so the scan is now looking at something else", cases)
+		t.Errorf("found %d optional enumerated fields to unset across the emitted records, which "+
+			"hold eleven, so the scan is looking at something else", cases)
 	}
 }

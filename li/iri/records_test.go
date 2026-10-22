@@ -100,11 +100,7 @@ func TestOpaquePayloadsAreCopiedVerbatim(t *testing.T) {
 	// string-oriented codec might truncate.
 	//
 	// Sixteen octets, because `UEPolicy ::= OCTET STRING (SIZE(16..65540))` and the encoder
-	// now checks that. The previous value was seven, which is the evidence this test suite
-	// carried that nothing checked: a record violating its own definition encoded cleanly, and
-	// a conformant mediation function would have discarded it while this element believed it
-	// had delivered. Fixed by making the value conformant rather than by relaxing the
-	// constraint — the shortest permitted length is also the sharpest boundary to encode.
+	// checks that: the shortest permitted length is also the sharpest boundary to encode.
 	policy := UEPolicy{
 		0x00, 0xFF, 0x00, 0x00, 0x7F, 0x80, 0x00, 0x00,
 		0x01, 0x02, 0x03, 0x04, 0xFE, 0xFF, 0x00, 0x7F,

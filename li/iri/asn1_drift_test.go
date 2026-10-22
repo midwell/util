@@ -25,11 +25,12 @@ import (
 //   - It CAN tell you that the module defines a field and we never populate it.
 //     That is the silent half — a mediation function receives a record that
 //     decodes cleanly and carries less than it should.
-//   - It CANNOT tell you whether that field is mandatory. The module marks very
-//     nearly everything OPTIONAL; the M/C/O markers live in the payload tables of
-//     TS 33.128 clause 6.2, which are prose and are not machine-readable. So a
-//     record can omit a field the tables mark M and decode perfectly against this
-//     module — which has happened, and is recorded in CONFORMANCE.md.
+//   - It CANNOT tell you whether that field is mandatory. The M/C/O markers live in
+//     the payload tables of TS 33.128 clause 6.2, which are prose and are not
+//     machine-readable, and they do not always agree with the module's OPTIONAL
+//     markers: gTPTunnelInfo is OPTIONAL in the module and M in three payload
+//     tables. So a record can omit a field the tables mark M and decode perfectly
+//     against this module; CONFORMANCE.md records where the two disagree.
 //
 // The judgement therefore stays with the reader: this test enumerates, the
 // payload tables decide, and two maps record what was decided —
@@ -222,11 +223,9 @@ var declaredAbsent = map[string]map[string]string{
 // than another line in a list of things that are fine. The findings themselves are
 // written up in CONFORMANCE.md.
 var knownConditionalDefects = map[string]map[string]string{
-	// Empty, and that is the point of the count below rather than a reason to delete
-	// it. Every entry this list held has been closed: 29 fixes, plus one
-	// (AMFPositioningInfoTransfer/sUCI) reclassified N/A because no POI emits that
-	// record. The list stays so the next unreported conditional field has an
-	// established place to be recorded, and so adding one is still a deliberate act.
+	// Empty: no field whose condition this project meets goes unreported. The list
+	// stays so the next such field has an established place to be recorded, and so
+	// adding one is a deliberate act that TestKnownDefectsDoNotGrow makes visible.
 
 }
 
@@ -340,11 +339,8 @@ func TestASN1RecordDrift(t *testing.T) {
 		// not" — modelling it makes that declaration false. knownConditionalDefects says
 		// the project meets the condition "and does not populate" it, which is a statement
 		// about the emitter, not about this package: a field can be modelled and still not
-		// reported, and that is the whole of CONFORMANCE.md finding 3.
-		//
-		// Treating the two alike is what let uEEndpoint on SMFUnsuccessfulProcedure sit in
-		// finding 3 as an open gap for weeks after the SMF had started reporting it — the
-		// modelled-but-unpopulated class had nowhere to live, so it lived in prose and rotted.
+		// reported, so the staleness rule that applies to the first does not apply to the
+		// second.
 		defects := map[string]bool{}
 		for fld, why := range knownConditionalDefects[name] {
 			declared[fld] = why
@@ -426,9 +422,8 @@ func TestASN1DriftAuditDetectsAnOmission(t *testing.T) {
 	}
 
 	// The sentinel: a field that is unmodelled, standing in as proof that the audit
-	// can see an omission at all. It used to be sUPIUnauthenticated, which is modelled
-	// now, so it is repointed here — a sentinel with nothing left to detect is worse
-	// than none.
+	// can see an omission at all. If it becomes modelled, repoint it — a sentinel with
+	// nothing left to detect is worse than none.
 	//
 	// ePSPDNConnectionModification is a deliberately stable choice. It reports an
 	// EPS/5GS interworking case this project does not implement, so unlike a deferral
@@ -446,14 +441,9 @@ func TestASN1DriftAuditDetectsAnOmission(t *testing.T) {
 			"failing on it — this test and that one disagree")
 	}
 
-	// sUPIUnauthenticated is modelled now and still not populated, which is the
-	// distinction the two lists exist to keep. It stays in knownConditionalDefects
-	// until the SMF sets it: the defect is that the record does not carry the value,
-	// and modelling the field did not change that.
-	//
-	// Reaching this state is what the codec's pointer support was for — false is the
-	// field's ordinary value, and an OPTIONAL field equal to its type's zero could not
-	// previously be emitted at all.
+	// sUPIUnauthenticated is modelled and the SMF populates it, so it belongs in neither
+	// list. It is a pointer member because false is the field's ordinary value, and an
+	// OPTIONAL member equal to its type's zero would otherwise be omitted.
 	tag, ok = byName["sUPIUnauthenticated"]
 	if !ok {
 		t.Fatal("the module no longer defines SMFPDUSessionModification/sUPIUnauthenticated")

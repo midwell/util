@@ -187,14 +187,14 @@ func TestEndpointIsNotTheTunnelEndpoint(t *testing.T) {
 // TestEstablishmentRefusesPresentButEmptyEndpoint closes the other half of the
 // no-empty-list rule. uEEndpoint is OPTIONAL on this record, so a nil slice is
 // correct and simply omits the field — but a non-nil empty slice is not omitted
-// (the codec's isEmpty compares against the zero value, and an empty slice is
-// not nil), so it would be emitted as a present empty SEQUENCE: schema-valid,
-// unrejectable downstream, and asserting the session has no endpoint address.
+// (the emitter writes the list whenever it is non-nil), so it would be emitted as a
+// present empty SEQUENCE: schema-valid, unrejectable downstream, and asserting the
+// session has no endpoint address.
 //
-// No caller produces that shape today; UEEndpoint returns nil or one entry. The
-// guard is here because the rule was deliberately placed on the encode path both
-// record builders share, and enforcing it for only one of the two records leaves
-// it one careless edit from being false again.
+// No caller produces that shape; UEEndpoint returns nil or one entry. The guard is
+// here because the rule sits on the encode path every record crosses, and enforcing
+// it for only some of the records carrying a list leaves it one careless edit from
+// being false.
 func TestEstablishmentRefusesPresentButEmptyEndpoint(t *testing.T) {
 	base := SMFPDUSessionEstablishment{
 		SUPI:           IMSI("262019876543210"),

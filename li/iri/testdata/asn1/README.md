@@ -17,15 +17,16 @@ rather than going unnoticed.
 | Specification | 3GPP TS 33.128 **V18.16.0** |
 | Module header | `{… threeGPP(4) ts33128(19) r18(18) version15(15)}` |
 | Attachment archive | `33128-ig0.zip` |
-| SHA-256 | `e41ab9258f8ea3296a28dcfefd0c93254093475ca87f2caf291c814e4039a965` |
+| SHA-256 of `TS33128Payloads.asn` | `e41ab9258f8ea3296a28dcfefd0c93254093475ca87f2caf291c814e4039a965` |
 
 Fetch the archive from
 `https://www.3gpp.org/ftp/Specs/archive/33_series/33.128/33128-ig0.zip` and take
 `TS33128Payloads.asn` from it. Note that `www.3gpp.org` serves 403 to automated clients;
 `curl` with a browser `User-Agent` works.
 
-The digest above is what makes a re-fetch checkable. If it changes, the module changed, and
-`asn1_drift_test.go` is the thing that will tell you what that meant.
+The digest above is of the module file itself, as extracted from the archive, and is what
+makes a re-fetch checkable. If it changes, the module changed, and `asn1_drift_test.go` is
+the thing that will tell you what that meant.
 
 ## Licensing
 
@@ -36,8 +37,9 @@ for the notice and the republication exception the vendoring rests on.
 
 ## What this module is not
 
-It is not the authority on which fields are **mandatory**. The module marks nearly every
-field `OPTIONAL`; the M/C/O markers live in the payload tables of TS 33.128 clause 6.2,
-which are prose. A record can omit a field the tables mark M and still decode cleanly
-against this module — which is exactly what `CONFORMANCE.md` records having happened. Use
-this module to enumerate fields, and the payload tables to judge them.
+It is not the authority on which fields are **mandatory**. The M/C/O markers live in the
+payload tables of TS 33.128 clause 6.2, which are prose, and they do not always agree with
+the module's `OPTIONAL` markers: `gTPTunnelInfo` is `OPTIONAL` in the module and **M** in
+three payload tables. A record can omit a field the tables mark M and still decode cleanly
+against this module; `CONFORMANCE.md` records where the two disagree. Use this module to
+enumerate fields, and the payload tables to judge them.

@@ -30,11 +30,11 @@ func sampleRegistration() AMFRegistration {
 	}
 }
 
-// assertEncodes pins a record's complete encoding. The expected bytes are fixtures:
-// captured from the vendored codec this encoder replaced, and compared byte for byte
-// ever since. A decode round trip cannot stand in for this — it still passes when
-// encode and decode change together, which is exactly the failure that corrupts a
-// receiver while looking healthy from in here.
+// assertEncodes pins a record's complete encoding. The expected bytes are fixtures
+// produced by a second, independent BER encoder, compared byte for byte. A decode round
+// trip cannot stand in for this — it still passes when encode and decode change
+// together, which is exactly the failure that corrupts a receiver while looking healthy
+// from in here.
 func assertEncodes(t *testing.T, event any, want string) []byte {
 	t.Helper()
 	der, err := EncodeXIRI(event)
@@ -178,14 +178,14 @@ func recordContents(t *testing.T, emit func(*builder)) []byte {
 }
 
 // TestIdentifierRecordMandatoryTags pins the field tags of the two identifier
-// records against TS 33.128. Both were wrong, and a round-trip through our own
-// codec could not see it: the encoder and decoder agreed with each other.
+// records against TS 33.128, where a wrong tag costs the most and a round trip
+// through one encoder and decoder cannot see it, because the two agree with each other:
 //
-//   - AMFIdentifierAssociation omitted mandatory location [6], so every record
-//     failed schema validation at a conformant receiver.
-//   - AMFIdentifierDeassociation emitted gUTI under [2], which is sUCI in that
-//     record, while mandatory gUTI [5] was absent — the 5G-GUTI was not merely
-//     missing but misread as a different identifier.
+//   - AMFIdentifierAssociation carries mandatory location [6]; without it every
+//     record fails schema validation at a conformant receiver.
+//   - AMFIdentifierDeassociation carries gUTI under [5]. Under [2], which is sUCI in
+//     that record, the 5G-GUTI would not merely be missing but misread as a
+//     different identifier.
 //
 // Asserting on the encoded tags is what catches this class; a decode assertion
 // cannot.

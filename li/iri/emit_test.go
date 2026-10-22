@@ -90,8 +90,8 @@ func TestTLVLayerReturnsErrors(t *testing.T) {
 }
 
 // TestChoiceAlternatives asserts every registered CHOICE alternative. The expected
-// bytes are what the vendored ASN.1 codec this replaced produced for the same value, captured
-// while both encoders were in the tree.
+// bytes were produced by a second, independent BER encoder for the same values, so they
+// hold this emitter to an encoding it did not write itself.
 func TestChoiceAlternatives(t *testing.T) {
 	v6 := IPv6Address(net.ParseIP("2001:db8::1").To16())
 	for _, tc := range []struct {
@@ -219,9 +219,9 @@ func TestPointerMembersAreThreeState(t *testing.T) {
 	}
 }
 
-// TestSequenceOfChoice pins the two SEQUENCE OF CHOICE fields. The expected bytes are
-// what the vendored codec produced for the same values, captured while both encoders
-// were in the tree; these were the shapes that needed its local patches 7 and 8.
+// TestSequenceOfChoice pins the two SEQUENCE OF CHOICE fields. The expected bytes were
+// produced by a second, independent BER encoder for the same values; a SEQUENCE OF a
+// CHOICE is the shape an encoder most easily gets wrong.
 func TestSequenceOfChoice(t *testing.T) {
 	v6 := IPv6Address(net.ParseIP("2001:db8::1").To16())
 	for _, tc := range []struct {

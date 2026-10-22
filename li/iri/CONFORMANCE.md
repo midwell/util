@@ -6,35 +6,28 @@ SPDX-License-Identifier: Apache-2.0
 # TS 33.128 record conformance
 
 **Made against 3GPP TS 33.128 V18.16.0**, and against the `TS33128Payloads.asn` module
-published with it. Both are cited below; where they disagree, that disagreement is itself
-recorded, because one of the findings here lives exactly in the gap between them.
-
-**This disposition was last reviewed 2026-08-27.** The specification revision above says
-what was read; this says when. Any count quoted from here — in `../CONFORMANCE.md`, or on a
-public compliance page — is a count as of that date, and carrying the date in the document
-the count came from is what lets a reader check it from this end rather than only from the
-end that quotes it.
+published with it (`testdata/asn1/`). Both are cited below; where they disagree, the
+disagreement is recorded, because one of the dispositions here lives exactly in the gap
+between them.
 
 ## Why decoding is not enough
 
-Every record this project emits is decoded against the published ASN.1 module by the
-end-to-end suite, and `golden_test.go` pins the codec's output byte for byte. Neither proves
-conformance:
+`golden_test.go` pins the encoder's output byte for byte, and every record decodes against the
+published module. Neither proves conformance:
 
-- **The golden file pins our own encoder's output.** It catches a codec regression. It
-  cannot notice a field that was never populated in the first place.
+- **The golden file pins this encoder's own output.** It catches an encoder regression. It
+  cannot notice a field that is never populated.
 - **A successful decode proves the record is well formed.** It does not prove the record
-  carries the fields TS 33.128 says it carries — because the ASN.1 module marks nearly
-  everything `OPTIONAL`, while the payload tables in clause 6.2 carry the real M/C/O
-  markers. A record can omit a field the tables mark **M** and still decode cleanly against
-  the module.
+  carries the fields TS 33.128 says it carries: the M/C/O markers live in the payload tables of
+  clause 6.2, and they do not always agree with the module's `OPTIONAL` markers.
+  `gTPTunnelInfo` is `OPTIONAL` in the module and **M** in three payload tables, so a record
+  omitting it would decode cleanly and still be non-conformant.
 
-The finding below is precisely that case, which is why this document compares against the
-**payload tables**, not only the ASN.1.
+So this document compares against the **payload tables**, not only the ASN.1.
 
 ## Scope
 
-Bounded to the records this project actually emits, since a record we do not emit cannot
+Bounded to the records a point of interception here emits, since a record nobody emits cannot
 carry a wrong field to a mediation function.
 
 | | Count |
@@ -43,21 +36,18 @@ carry a wrong field to a mediation function.
 | Emitted by the AMF | 11 |
 | Emitted by the SMF | 5 |
 | Emitted by the UPF | 0 — the UPF is a CC-POI and produces no xIRI |
-| Defined but deliberately not emitted | 1 — `AMFPositioningInfoTransfer` |
+| Defined but not emitted | 1 — `AMFPositioningInfoTransfer` |
 
-`AMFPositioningInfoTransfer` is out of scope by an earlier decision, not an oversight: every
-trigger event in clause 6.2.2.2.8 requires an LMF, and this AMF has no LMF integration — it
-decodes the NRPPa PDU and drops it. The definition stays because it is correct and tested,
-and becomes usable the day an LMF is wired up. `li/README.md` carries the reasoning.
+`AMFPositioningInfoTransfer` is defined so the set is complete against the module, and emitted
+by no point of interception: every trigger event in clause 6.2.2.2.8 is an exchange with an
+LMF, and the AMF here has no LMF integration. It becomes usable the day an LMF is wired up;
+`li/README.md` carries the reasoning.
 
-The list was derived from the code — the record alternatives registered in `li/iri`, checked
-against which of them the AMF and SMF actually construct — not from the specification, so it
-describes what is emitted rather than what ought to be.
+## Mandatory fields
 
-## Mandatory fields — complete
-
-Every field the clause 6.2 payload tables mark **M**, for all 16 emitted records, against
-the Go definition in `iri.go`. This pass is complete.
+Every field the clause 6.2 payload tables mark **M**, for the 16 emitted records, against the
+Go definition in `iri.go`. `AMFPositioningInfoTransfer` also carries its mandatory `sUPI` and
+`lcsCorrelationId`.
 
 | Record | Payload table | Mandatory fields | Verdict |
 |---|---|---|---|
@@ -72,59 +62,55 @@ the Go definition in `iri.go`. This pass is complete.
 | AMFRANHandoverRequest | 6.2.2.2.9.3-1 | userIdentifiers, aMFUENGAPID, rANUENGAPID, handoverType, handoverCause, pDUSessionResourceInformation, targetToSourceContainer, rANSourceToTargetContainer | All present |
 | AMFUEPolicyTransfer | 6.2.2.2.12-1 | sUPI, uePolicy | All present |
 | AMFUEServiceAccept | 6.2.2.2.13-1 | userIdentifiers, serviceMessageIdentity | All present |
-| SMFPDUSessionEstablishment | 6.2.3-1 | pDUSessionID, gTPTunnelID, pDUSessionType, dNN, requestType, gTPTunnelInfo | All present (gTPTunnelInfo added, finding 1) |
-| SMFPDUSessionModification | 6.2.3-2 | gTPTunnelInfo | All present (gTPTunnelInfo added, finding 1) |
+| SMFPDUSessionEstablishment | 6.2.3-1 | pDUSessionID, gTPTunnelID, pDUSessionType, dNN, requestType, gTPTunnelInfo | All present |
+| SMFPDUSessionModification | 6.2.3-2 | gTPTunnelInfo | All present |
 | SMFPDUSessionRelease | 6.2.3-3 | sUPI, pDUSessionID | All present |
-| SMFStartOfInterceptionWithEstablishedPDUSession | 6.2.3-4 | pDUSessionID, gTPTunnelID, pDUSessionType, dNN, requestType, gTPTunnelInfo | All present (gTPTunnelInfo added, finding 1) |
+| SMFStartOfInterceptionWithEstablishedPDUSession | 6.2.3-4 | pDUSessionID, gTPTunnelID, pDUSessionType, dNN, requestType, gTPTunnelInfo | All present |
 | SMFUnsuccessfulProcedure | 6.2.3-5 | failedProcedureType, failureCause, initiator | All present |
 
-**Every record now satisfies its mandatory set.** Three of the five SMF records did not when
-this audit began; see finding 1.
+Every emitted record satisfies its mandatory set.
 
-## Every unmodelled field, and its marker — complete
+## Every unmodelled field, and its marker
 
-`asn1_drift_test.go` enumerates the fields the published module defines for each record and
-fails on any this package neither models nor declares absent. That enumeration is **149
-fields**, and each one's M/C/O marker has been read from its payload table and recorded in
-the test's `declaredAbsent` map:
+`asn1_drift_test.go` enumerates the fields the published module defines for each emitted
+record, and fails on any this package neither models nor records in `declaredAbsent`. Each of
+the **116** recorded fields carries the M/C/O marker read from its payload table:
 
 | Marker | Count | Meaning here |
 |---|---|---|
-| **M** | 3 | All three are `gTPTunnelInfo`. See finding 1. |
-| C | 145 | Conditional. Three are explicitly deprecated by the specification. |
+| **M** | 0 | A field its payload table marks M is rejected from the disposition list outright: it is either populated or a known defect, never a disposition. |
+| C | 115 | Conditional. Two are explicitly deprecated by the specification. |
 | O | 1 | `AMFUEServiceAccept/deprecatedUERequestType`, itself deprecated. |
 
-This cross-reference was derived mechanically from the module and the payload tables, and it
-**independently reproduced the hand comparison above**: the only mandatory-and-unmodelled
-fields in the whole set are the three `gTPTunnelInfo` instances.
-
-Three fields needed a human to resolve, because the specification spells them differently in
-its tables than in its ASN.1 module — `sMSoverNASIndicator` in the tables versus
-`sMSOverNasIndicator` and `sMSOverNASIndicator` in the module. All three are C.
+Three of the conditional fields are spelled differently in the tables than in the module —
+`sMSoverNASIndicator` in the tables against `sMSOverNasIndicator` and `sMSOverNASIndicator` in
+the module — and were resolved by reading both.
 
 ### Every condition, judged
 
-Knowing a field is marked C is not the same as knowing whether this POI meets its condition,
-so each of the 146 was judged and the verdict recorded beside it:
+A field marked C is a question, not an answer, so each recorded field carries a verdict on
+whether this project meets its condition:
 
 | Verdict | Count | Meaning |
 |---|---|---|
 | NOT HELD | 69 | the network function does not hold the datum |
-| **MET** | **0** | **was 26 — the network function holds it and does not report it. Closed 2026-08-26, findings 2 and 3** |
-| N/A | 27 | the condition cannot arise; the feature is not implemented here |
+| **MET** | **0** | the network function holds it and does not report it |
+| N/A | 26 | the condition cannot arise; the feature is not implemented here |
 | DEFERRED | 9 | held, but the subtree is deliberately not modelled |
 | UNTRACED | 9 | a similarly named context field exists and the mapping was not followed through |
-| BLOCKED | 0 | was 4 — the codec could not express the value. Closed 2026-08-26, finding 2 |
+| BLOCKED | 0 | the encoder cannot express the value |
 | DEPRECATED | 3 | the specification no longer uses the field |
 
-The `MET` and `BLOCKED` rows are kept at zero rather than removed. A verdict that has been
-emptied is evidence about how this implementation is audited; a row that disappears reads as
-a category that never existed. `N/A` gained one: `AMFPositioningInfoTransfer/sUCI`, which was
-counted as `MET` while no point of interception emits that record at all.
+`MET` and `BLOCKED` are kept at zero rather than removed: an empty verdict is a statement about
+this implementation, while a missing row would read as a category that does not exist. A field
+in either belongs in `asn1_drift_test.go`'s `knownConditionalDefects`, a separate list whose
+size `TestKnownDefectsDoNotGrow` pins — at 0 — so adding one is a deliberate act rather than one
+more line among fields that are fine.
 
-`location` remains open under finding 4 and is `DEFERRED`, not `MET` — the earlier version of
-this table attributed the `MET` count to "findings 3 and 4", which was wrong: every one of the
-26 belonged to finding 3.
+The two lists are checked differently. `declaredAbsent` is a claim about modelling, so an entry
+for a field that becomes modelled fails the test. `knownConditionalDefects` is a claim about
+what the network functions populate, and a field can be modelled and still not populated, so
+modelling one does not clear it.
 
 The nine `UNTRACED` verdicts are an admission, not a conclusion, and are labelled so they
 cannot be mistaken for clearance: `pCCRules`, `pCCRuleIDs`, `oldPDUSessionID`,
@@ -132,214 +118,111 @@ cannot be mistaken for clearance: `pCCRules`, `pCCRuleIDs`, `oldPDUSessionID`,
 field in a network function's context that was not followed through to the point of
 interception.
 
-**The `MET` and `BLOCKED` entries were held in a separate list from the rest, and that list
-is now empty.** `asn1_drift_test.go` keeps `declaredAbsent` for fields this project need not
-populate and `knownConditionalDefects` for those it should and does not, and pins that count
-— so adding another is a deliberate act rather than one more line among fields that are fine.
-The pin is 0, and the list is kept rather than deleted so the next such field has an
-established place to be recorded. A field its payload table marks **M** is rejected from the
-disposition list outright: a mandatory field is either populated or a known defect, never a
-disposition.
-
-**The list's rule changed with these fixes, because it had been enforcing something other
-than what it said.** Its own comment describes fields the project "does not populate", but
-the staleness check keyed on whether the field was *modelled* — so adding a struct field
-would have emptied the list while no emitter set any of them. The check now applies that rule
-only to `declaredAbsent`, which really is a claim about modelling. That conflation is why
-finding 3's table listed `uEEndpoint` on `SMFUnsuccessfulProcedure` as an open gap for weeks
-after the SMF had begun reporting it: the modelled-but-unpopulated case had nowhere to live,
-so it lived in prose and went stale.
-
 The 26 `N/A` verdicts rest on features this deployment does not implement: EPS/5GS
 interworking over N26 and the SGW/PGW role, non-3GPP access through an N3IWF, TNGF or TWIF,
-satellite backhaul, multi-USIM, and non-public networks. Each was checked against the code
-rather than assumed.
+satellite backhaul, multi-USIM, and non-public networks.
 
-## Findings
+## How the populated fields are populated
 
-### 1. `gTPTunnelInfo` was mandatory in three SMF records and modelled in none — FIXED
+These are the fields where how a value is obtained decides whether the record is right. Each is
+populated by the AMF or SMF that builds the record; what follows is what those builders must
+do, and what this package enforces.
 
-Tables 6.2.3-1, 6.2.3-2 and 6.2.3-4 all mark it `M` with cardinality 1; it carries the user
-plane GTP tunnel information for the session, defined in table 6.2.3-1B. For
-`SMFPDUSessionModification` it is the record's *only* mandatory field, so that record
-satisfied none of its mandatory set.
+**`gTPTunnelInfo`.** Tables 6.2.3-1, 6.2.3-2 and 6.2.3-4 mark it `M` with cardinality 1; for
+`SMFPDUSessionModification` it is the record's only mandatory field. It is modelled as
+`GTPTunnelInfo`/`FiveGSGTPTunnels` and populated from the UL NG-U F-TEID the SMF also reports in
+`gTPTunnelID`, which is what table 6.2.3-1C asks for. `additionalULNGUUPTunnelInformation` and
+`dLRANTunnelInformation` are not modelled — the SMF holds neither for the single default path it
+manages — and neither is `ePSGTPTunnels`, which reports PDN connection events at an SGW/PGW.
 
-**Nothing could have caught this, by construction.** The ASN.1 module declares it
-`gTPTunnelInfo [16] GTPTunnelInfo OPTIONAL`, so every record decoded cleanly against the
-published module without it and always would have. No round-trip test, no golden fixture and
-no live decode against the module can see it. It is visible only by reading the payload
-tables — which is the entire argument for auditing the M/C/O markers rather than trusting a
-successful decode.
+**`sUPIUnauthenticated`.** Table 6.2.3-1 says it "shall be present if a SUPI is present in the
+message": `true` when the SUPI has not been authenticated and `false` when it has. `false` is the
+ordinary value, so the member is a pointer — present exactly when non-nil — and
+`TestPointerMembersAreThreeState` holds every pointer member to that. Absent means the record
+carries no SUPI. It is not mandatory: a record carrying no SUPI must not assert an
+authentication status for an identity that is not there.
 
-Now modelled as `GTPTunnelInfo`/`FiveGSGTPTunnels` and populated by the SMF from the same UL
-NG-U F-TEID it already reports in `gTPTunnelID`, which is what table 6.2.3-1C asks for. The
-encodings of all three records changed accordingly. `additionalULNGUUPTunnelInformation`,
-`dLRANTunnelInformation` and `ePSGTPTunnels` remain unmodelled: the SMF holds none of them
-for the single default path it manages, and the last reports PDN connection events at an
-SGW/PGW, which this project does not implement.
+**The identities.** `sUCI`, `pEI`, `gPSI`, `fiveGSTAIList` and `rATType` on the AMF records,
+and `rATType`, `servingNetwork`, `aMFID` and `uEEndpoint` on the SMF records, are reported
+wherever the module defines them and the network function holds the value:
 
-### 2. `sUPIUnauthenticated` was never populated — FIXED 2026-08-26
+- **`sUCI` is built from the NAS mobile identity's octets**, not from a string rendering of it,
+  which loses the routing indicator's leading zeros. A SUCI whose members do not come out clean
+  is omitted: a missing identity is a gap an audit can find, a wrong one is a record an agency
+  acts on.
+- **`schemeOutput` is characters.** Table 8.3.5-1 defines it as "the characters resulting as the
+  output of the permanent identifier with the protection scheme applied". Under the null scheme
+  those are the MSIN's digits, which NAS carries nibble-swapped, so they are converted rather
+  than copied — copied, MSIN `0100007488` would go out as `1000004788`, a well-formed record
+  naming a subscriber who does not exist. Under any other scheme the output is ciphertext and
+  the octets stand. Only decoding a delivered record and reading the subscriber it names can
+  catch the copied form: it is structurally valid, present and non-empty.
+- **`fiveGSTAIList` is the registration area** — "tracking areas associated with the
+  registration area within which the UE is current registered" — not the single serving TAI.
+- **`aMFID` is the AMF identifier** of TS 23.003 clause 2.10.1: the AMF region, set and pointer
+  of the AMF's GUAMI, not an NF instance identifier.
+- **The IMEI is the fourteen-digit form**: TAC and serial number, without the check digit a
+  TS 29.571 `imei-` PEI carries. This package refuses a fifteen-digit `IMEI`.
 
-Absent from all four records that define it and that this project emits
-(`SMFPDUSessionEstablishment`, `SMFPDUSessionModification`,
-`SMFStartOfInterceptionWithEstablishedPDUSession`, `SMFUnsuccessfulProcedure`) under a
-condition this project routinely meets: table 6.2.3-1 says it "shall be present if a SUPI is
-present in the message", `true` when the SUPI has not been authenticated and `false` when it
-has.
+**Enumerations and zero.** Every TS 33.128 `ENUMERATED` this package carries is numbered from
+one, and a neighbouring protocol's enumeration often from zero — NGAP numbers `handoverType` and
+the cause groups from zero. A value cast across unmapped arrives as zero exactly when its first
+member was meant, and a mandatory member carrying zero is a record a conformant decoder refuses.
+So zero is refused in every mandatory enumerated member, and accepted as absence in an optional
+one. `constraints.go` keys the rule by type where a type is mandatory wherever it appears, and by
+record and field where it is mandatory in one record and optional in another:
 
-**It was blocked on two things, and the disposition recorded only one.** The codec could not
-express it: the field is `SUPIUnauthenticatedIndication ::= BOOLEAN`, the meaningful value in
-the ordinary case is `false` — the SUPI *was* authenticated — and the ASN.1 codec then in use
-omitted any `optional` field whose value equalled its type's zero. The second was found only when the fix
-was attempted: `SMContext.SetCreateData` retains fifteen fields of the N11 request and dropped
-`UnauthenticatedSupi`, which the AMF had been sending all along. Fixing the codec alone would
-have left the field unpopulatable while every test passed.
-
-The codec gained pointer fields. A nil pointer is absent; a non-nil one is present and
-encodes its pointee even when that pointee is the type's zero. The mechanism is opt-in at the
-field, which is what made it provable: no field in `li/iri` was a pointer, so the golden
-vectors for all seventeen record types were byte-identical across the codec change. Changing
-`isEmpty` itself was rejected for exactly that reason — it is on the path of every field of
-every record, and two `PDUSessionID` fields annotated *"value 0 indistinguishable from
-absent"* would have started emitting.
-
-Marking the field mandatory was also rejected: it would emit an authentication status in
-records carrying no SUPI, asserting something about an identity that is not there. Absent now
-means the record carries no SUPI, and `false` means the SUPI was authenticated.
-
-That codec has since been replaced by explicit emitters (`emit.go`), which state each member's
-presence where they write it. The pointer members kept their meaning — present exactly when
-non-nil — and `TestPointerMembersAreThreeState` holds every site that carries one to it.
-
-### 3. Identity a POI holds and does not report — FIXED 2026-08-26, corrected 2026-08-27
-
-Fields held by the emitting network function and reported by nobody. These are the "quieter
-half" this audit went looking for: no decoder can see them, because a record that omits a
-conditional field is perfectly well formed.
-
-**The table below is the version this finding was written with, kept because it was wrong in
-six places and the disagreement is the useful part.** It was prose; the enforced list is
-`asn1_drift_test.go`'s `knownConditionalDefects`, which is re-derived against the module and
-counted by a test. Where the two disagreed, the list was right.
-
-| Field | Records, as first written | What the audited list held |
+| Type | Mandatory in | Guarded by |
 |---|---|---|
-| `sUCI` | 6 AMF records | **9** — every AMF record the module defines it on |
-| `pEI`, `gPSI` | `AMFIdentifierDeassociation` | the same |
-| `fiveGSTAIList` | `AMFRegistration`, `AMFIdentifierAssociation` | **3** — also `AMFStartOfInterceptionWithRegisteredUE` |
-| `rATType` | 3 SMF records | **5** — four SMF records **and `AMFRegistration`** |
-| `servingNetwork` | 3 SMF records | 3, but not `SMFUnsuccessfulProcedure`, which has no such field |
-| `aMFID` | 3 SMF records | 3, but not `SMFPDUSessionModification`, which has no such field |
-| `uEEndpoint` | `SMFUnsuccessfulProcedure` | **`SMFPDUSessionModification`** — see below |
+| `HandoverType` | AMFRANHandoverCommand, AMFRANHandoverRequest | type |
+| `CauseRadioNetwork`, `CauseTransport`, `CauseNas`, `CauseProtocol`, `CauseMisc` | AMFRANHandoverRequest (`handoverCause`) | type |
+| `AMFDirection` | AMFDeregistration | type |
+| `AMFRegistrationResult` | AMFRegistration, AMFStartOfInterceptionWithRegisteredUE | type |
+| `AMFFailedProcedureType` | AMFUnsuccessfulProcedure | type |
+| `SMFFailedProcedureType` | SMFUnsuccessfulProcedure | type |
+| `PDUSessionType` | SMFPDUSessionEstablishment, SMFStartOfInterceptionWithEstablishedPDUSession | type |
+| `Initiator` | SMFUnsuccessfulProcedure | type |
+| `AccessType` | AMFDeregistration (OPTIONAL in four SMF records) | record and field |
+| `FiveGSMRequestType` | SMFPDUSessionEstablishment, SMFPDUSessionModification, SMFStartOfInterceptionWithEstablishedPDUSession (OPTIONAL in SMFUnsuccessfulProcedure) | record and field |
+| `AMFRegistrationType` | AMFRegistration (OPTIONAL in AMFStartOfInterceptionWithRegisteredUE) | record and field |
 
-Eight field names, twenty-six record-field sites. A remedy scoped to the eight would have left
-eighteen of them open with every test green.
+`TestEveryMandatoryEnumeratedFieldRefusesZero` derives the required entries from the module and
+holds both maps to them, in both directions; `TestAnUnsetOptionalEnumeratedFieldStillEncodes`
+holds the optional carriers to their absence.
 
-**`uEEndpoint` on `SMFUnsuccessfulProcedure` was already reported when this finding was
-written.** The SMF has populated it from `SMContext.PDUAddress` since the commit that
-introduced the record. The real gap was `SMFPDUSessionModification`, which had no such field —
-the one site the prose did not name. The row was stale because the drift test could not see
-modelled-but-unpopulated fields, so that class lived only in this document.
+Not guarded, because the module's range includes zero: `PDUSessionID`, `RoutingIndicator`,
+`ProtectionSchemeID` (zero is the null scheme), `AMFPointer`, `AMFRegionID`, `AMFSetID`,
+`FiveGMMCause` and `FiveGSMCause`.
 
-**Two of the recorded sources were wrong, and neither would have worked.** `aMFID` was
-recorded as coming from `SMContext.ServingNfId`, which is an NF instance UUID; TS 33.128
-defines the field via TS 23.003 clause 2.10.1 as the AMF region, set and pointer — the AMF
-half of a GUAMI. The AMF sends its GUAMI on N11 and `SetCreateData` dropped it, the same
-defect as finding 2's second half. And `fiveGSTAIList` was recorded as "the UE's TAI list";
-the tables ask for the *registration area* — "tracking areas associated with the registration
-area within which the UE is current registered" — not the serving TAI the AMF also holds.
+**`PDUSessionType`** is the one guarded type an SMF builds by casting another protocol's value:
+TS 24.501 numbers the PDU session type identically, and the SMF asserts that correspondence
+member by member where it builds the record.
 
-**`sUCI` is built from the NAS octets, not from `AmfUe.Suci`.** That string is what
-`nasConvert.SuciToString` produced, and parsing it back into the record's six members is lossy
-two ways: the routing indicator's `f` padding is stripped so leading zeros are gone, and the
-home network public key identifier is rendered with `%d` against an OCTET STRING. The AMF now
-retains the raw mobile identity and the point of interception reads the members from it. A
-SUCI that does not yield clean members produces no `sUCI` at all: a missing target identity is
-a gap an audit can find, a wrong one is a record an agency acts on.
+**`handoverCause`.** The five `HandoverCause` arms number their causes from 1, and NGAP's
+corresponding groups from 0, so an AMF maps each cause by name, never by value; `causevalues.go`
+names the TS 33.128 values. NGAP defines causes in `CauseRadioNetwork` and `CauseNas` that
+TS 33.128 V18.16.0 has no equivalent for. Those are delivered as the group's own `unspecified` and
+reported over X1 as `recordValueSubstituted` at element scope, because the field is mandatory and
+an unreported handover is a larger gap than an imprecise one. The report is the only thing
+distinguishing that `unspecified` from one the network gave itself; the record cannot.
 
-**`schemeOutput` is not the octets, and the first implementation shipped it as though it
-were.** Table 8.3.5-1 defines the field as *"the characters resulting as the output of the
-permanent identifier with the protection scheme applied"*, and under the null scheme those
-characters are the MSIN's digits. NAS carries them nibble-swapped, so carrying the octets
-through transposes every pair: MSIN `0100007488` went out as `1000004788`, a well-formed
-record naming a subscriber who does not exist. Under any other protection scheme the output is
-ciphertext with no characters to speak of, and the octets stand.
+**Strictness.** The module is declared `EXTENSIBILITY IMPLIED`. The checks in `constraints.go`
+admit only the values the module itself defines; whether a receiver would tolerate a value
+outside them is the receiver's matter, and an element that emits only defined values does not
+depend on it.
 
-**Nothing in this project's own test suite could see that**, and that is the finding rather
-than the bug. The encoder accepted it, the record was structurally valid, the field was
-present and non-empty, and every unit test asserting "the SUCI is reported" passed. It was
-caught by decoding a delivered record against the module 3GPP publishes and reading the
-subscriber it named — which is the argument for the cluster run being part of the remedy and
-not a formality after it.
+## Open
 
-**`AMFPositioningInfoTransfer/sUCI` was never a defect against this element.** No point of
-interception emits that record — all four of clause 6.2.2.2.8's trigger events are exchanges
-with an LMF, and this AMF has none. It is `N/A`, and the field is modelled so the record stays
-complete against the module.
-
-### 4. `location` is inconsistent across the AMF's records — OPEN
+### `location` is inconsistent across the AMF's records
 
 The AMF populates a minimal `Location` (`locationInfo.currentLocation` only) in three records
-and omits the field entirely from `AMFRegistration` and `AMFDeregistration`, where the tables
-mark it conditional on availability. The underlying gap is the deliberately deferred
-`userLocation` subtree — the AMF has no reportable location detail to put there — so this is
-recorded as an inconsistency to resolve alongside that deferral rather than as a separate
-defect. Whichever way it is resolved, the five records should agree.
+and omits the field from `AMFRegistration` and `AMFDeregistration`, where the tables mark it
+conditional on availability. The underlying gap is the unmodelled `userLocation` subtree — the
+AMF has no reportable location detail to put there — so this is an inconsistency to resolve
+alongside that subtree rather than a separate defect. Whichever way it is resolved, the five
+records should agree.
 
-### 5. `handoverCause` carried NGAP's numbering, not TS 33.128's — FIXED 2026-08-20
-
-**Every handover record this project delivered before 2026-08-20 carried the wrong cause
-value, and no party could have noticed.**
-
-The five `HandoverCause` arms are `ENUMERATED`s that TS 33.128 numbers from 1. NGAP numbers
-the same five groups from 0. `iri.go` said so, and said the mapping between them "is done
-where the record is built" — but the place it is built, the AMF's `handoverCause`, cast the
-NGAP value straight into the record type. Nothing in this project performed the mapping. So
-each cause was delivered one below its defined value, and NGAP's `unspecified(0)` was
-delivered as a zero the arm's own enumeration does not define.
-
-**Why it survived.** The wrong value is a plausible member of the right enumeration: it
-decodes, it validates against the published module, and it names a real cause. A mediation
-function receiving `handoverDesirableForRadioReasons` cannot tell that the network said
-`tXnRelocOverallExpiry`. Neither could this element. The constraint check added in
-`li v0.9.2` could not see it either — it treats zero as absence, correctly, because an unset
-optional `ENUMERATED` member reads as zero in Go, so the one value that was out of range
-passed unremarked.
-
-**What changed.** The correspondence is now established member by member, by name, in
-`amf/ngap/licause.go`, and asserted in both directions against two machine-readable
-definitions — this module for TS 33.128, the pinned `ngap` module for NGAP — so a value that
-stops corresponding when either side is upgraded fails a test rather than reaching an agency.
-The values themselves are named constants here (`causevalues.go`), asserted against the
-module, and `enumConstraints` now carries each arm's real upper bound instead of an open one.
-
-**What an agency will see.** Product delivered from 2026-08-20 differs from product delivered
-before it for the same event: a handover that read `unspecified` may now read a specific
-reason, and one that read a specific reason may now read the reason one along. **Records
-already delivered cannot be corrected from here** — this project retains no product, by
-design, so there is nothing to reissue. The date above is the boundary.
-
-**One cause in nine is still not carried.** NGAP defines nine values across
-`CauseRadioNetwork` and `CauseNas` that TS 33.128 V18.16.0 has no equivalent for — six of
-them causes NGAP added after this release. Those are delivered as the group's own
-`unspecified` and reported over X1 as `recordValueSubstituted` at element scope, because the
-field is mandatory and an unreported handover is a larger gap than an imprecise one. The
-report is the only thing distinguishing that `unspecified` from one the network gave itself;
-the record cannot.
-
-**A discrepancy between the module and the tables, recorded rather than resolved.**
-`CauseRadioNetwork` in `TS33128Payloads.asn` runs 1..52 with **no value 28**, so it defines
-51 causes where NGAP defines 58. Three of its names are also misspelled relative to NGAP's
-(`iMSVoiceeEPSFallbackOrRATFallbackTriggered`, `uPIntegrityProtectioNotPossible`, and
-`nPMAccessDenied` for NPN access). Each sits at the position its NGAP counterpart predicts,
-so all three are read as the same cause and the aliases are listed explicitly in the mapping
-test. `enumConstraints` admits 28 because a range cannot express a hole; nothing this project
-builds can produce it, which is asserted.
-
-### 6. `UEPolicy`'s size constraint forbids the containers 5G actually carries — OPEN, declared against TS 33.128
-
-**TS 33.128 mandates a record this project cannot conformantly encode for most real
-traffic, and the two halves of the specification contradict each other.**
+### `UEPolicy`'s size constraint forbids the containers 5G actually carries — declared against TS 33.128
 
 `AMFUEPolicyTransfer` (clause 6.2.2.2.12) makes `uEPolicy` mandatory, and the trigger for the
 record is the AMF transferring a UE policy container. The type is defined as:
@@ -350,162 +233,56 @@ UEPolicy ::= OCTET STRING (SIZE(16..65540))
 
 A UE policy container is a UE POLICY DELIVERY SERVICE message (TS 24.501 / TS 24.587). The
 shortest ones are three octets — extended protocol discriminator, PTI, message identity — and
-`MANAGE UE POLICY COMPLETE` is exactly that. Measured against `li v0.9.6`: 3, 5 and 15 octets are
-refused; 16 is accepted.
+`MANAGE UE POLICY COMPLETE` is exactly that. This package refuses 3, 5 and 15 octets and accepts
+16. So the element must produce the record, and must not encode it; both cannot hold.
 
-So the element must produce the record, and must not encode it. Both cannot hold.
+**What this package does: follows the schema, and says so.** The constraint is enforced, the
+record is not delivered, and the network function reports the condition as a task-scoped
+`recordNotEncoded` naming the warrant and the record type.
 
-**What this project does: follows the schema, and says so.** The constraint is enforced, the
-record is not delivered, and the condition is reported — since `li v0.9.7` — as a task-scoped
-`recordNotEncoded` naming the warrant and the record type, alongside the element-scoped delivery
-loss it already raised.
-
-**Why not relax the lower bound.** That was considered and rejected. A mediation function
-validating against the published module discards a 3-octet `UEPolicy` exactly as this encoder
-does, so relaxing it would not deliver the record — it would only move the discard to the far
-end, where this element cannot see it. That is the unattributable-record failure arriving
-through the payload instead of the header, and closing it is what the constraint checking in
-`li v0.9.2` exists for. An element that believes it delivered is worse than one that knows it
-did not.
+**Why not relax the lower bound.** A mediation function validating against the published module
+discards a 3-octet `UEPolicy` exactly as this encoder does, so relaxing it would not deliver the
+record — it would only move the discard to the far end, where this element cannot see it. An
+element that knows it did not deliver is better than one that believes it did.
 
 **Why not pad.** Padding invents wire content. The receiver cannot distinguish the invented
-octets from the subject's own policy container, which is a populated field asserting something
-false.
+octets from the subject's own policy container.
 
-**What an agency loses, stated plainly.** For a tasked subject, the short half of a policy
-exchange is not delivered — typically the UE's `MANAGE UE POLICY COMPLETE`. The downlink
-command, which carries the policy itself, is normally long enough to encode. The agency
-therefore receives the substantive half and a fault naming the warrant and the missing record
-type, rather than silence.
+**What an agency loses.** For a tasked subject, the short half of a policy exchange is not
+delivered — typically the UE's `MANAGE UE POLICY COMPLETE`. The downlink command, which carries
+the policy itself, is normally long enough to encode. The agency receives the substantive half
+and a fault naming the warrant and the missing record type, rather than silence.
 
 **What would resolve it.** A correction to TS 33.128's `UEPolicy` bounds, or a clause stating
-that the field carries something other than the NAS container verbatim. Until then this is
-recorded as a defect against the specification rather than against this codec, and the choice
-of which half to follow is stated here rather than left to be inferred from behaviour.
+that the field carries something other than the NAS container verbatim.
 
-### 7. The zero exemption in the constraint check had never been swept — FIXED 2026-08-27, released in `li v0.9.9`
-
-**Two of the defects above were delivered through the same hole, and the hole was left open
-after each one.**
-
-`constraints.go` exempts zero from the enumeration range check, and correctly for optional
-members: an unset one reads as zero in Go and the codec omits it, so refusing zero would refuse
-every record that legitimately leaves one out. Finding 5 records what that cost —
-`handoverCause` as NGAP's `unspecified(0)` — and `handoverType` cost the same again: it is
-mandatory, so a zero is not a wrong value but an unreadable record, and every intra-5GS handover
-record was discarded on receipt. Both were found by decoding a delivered record against the
-published module.
-
-The escape hatch, `mandatoryEnums`, held exactly the two entries those two defects had forced.
-The rule beside it said what belonged there — "a type belongs here when it is mandatory in every
-record that carries it" — and nobody had run it. **Two entries added on two occasions are two
-defects delivered, not a list being kept.**
-
-**The sweep.** Every `ENUMERATED` in `TS33128Payloads.asn` numbered from one, in a field an
-emitted record carries without `OPTIONAL`: fifteen sites across eleven types, of which two were
-guarded. The nine that were not:
-
-| Type | Mandatory in | Guarded by |
-|---|---|---|
-| `AMFDirection` | AMFDeregistration | type |
-| `AMFRegistrationResult` | AMFRegistration, AMFStartOfInterceptionWithRegisteredUE | type |
-| `AMFFailedProcedureType` | AMFUnsuccessfulProcedure | type |
-| `SMFFailedProcedureType` | SMFUnsuccessfulProcedure | type |
-| `PDUSessionType` | SMFPDUSessionEstablishment, SMFStartOfInterceptionWithEstablishedPDUSession | type |
-| `Initiator` | SMFUnsuccessfulProcedure | type |
-| `AccessType` | AMFDeregistration | record and field |
-| `FiveGSMRequestType` | SMFPDUSessionEstablishment, SMFPDUSessionModification, SMFStartOfInterceptionWithEstablishedPDUSession | record and field |
-| `AMFRegistrationType` | AMFRegistration | record and field |
-
-**Two mechanisms, because the exception has two shapes.** The last three are mandatory in one
-record and `OPTIONAL` in another — `AccessType` in four SMF records, `FiveGSMRequestType` in
-`SMFUnsuccessfulProcedure`, `AMFRegistrationType` in
-`AMFStartOfInterceptionWithRegisteredUE`. `validateConstraints` runs before the codec, so it sees
-an unset optional member as zero before the codec would have omitted it: guarding those by type
-would refuse four SMF records their absent `accessType`, trading one silent defect for another.
-So the rule is keyed by record and field for those, and stays keyed by type for the six, where a
-named type is inherited by any record added later that reuses it.
-
-**Not guarded, and why.** The same sweep flags `PDUSessionID`, `RoutingIndicator`,
-`ProtectionSchemeID`, `AMFPointer`, `AMFRegionID`, `AMFSetID`, `FiveGMMCause` and `FiveGSMCause`.
-Every one is an `INTEGER` whose range *includes* zero — `ProtectionSchemeID(0)` is the null
-scheme and this deployment emits it on every SUCI — so guarding them would refuse conformant
-records. The distinction is the module's, not a judgement call.
-
-`FiveGSMCause` is the interesting one and is recorded rather than fixed. TS 33.128 defines it as
-`INTEGER (0..255)`, and `SMFUnsuccessfulProcedure` carries it as mandatory; TS 24.501's 5GSM
-cause values start at 8, so zero is not a cause the specification defines. But the module's range
-is what a receiver validates against, so refusing zero here would refuse a record a conformant
-mediation function accepts — moving a loss this element can see to one it cannot. A tighter range
-would be a discrepancy recorded against TS 33.128, not a fix to this codec, and no path in this
-element produces zero: the SMF's three entry points take the cause from `smferrors.ErrorCause` or
-from a `nasMessage` constant. The same reasoning covers `FiveGMMCause` in the AMF.
-
-**What was reachable.** No delivered record is known to have been wrong. Of the nine, five
-builders return constants or have a `default` arm returning a defined value; the reachable ones
-take the value as a parameter, and today's callers pass defined values. The nearest thing to a
-live path is `AMFDeregistration/accessType`: `DeregistrationScope` returns 0 for a NAS access
-type it does not recognise, and each of its two callers is expected to notice and substitute the
-access the message arrived on. A third caller written without that check would have emitted a
-mandatory zero.
-
-**What an agency will see.** Nothing, unless a builder produces a zero — in which case the record
-is refused and reported here rather than encoded and discarded at the far end. Every golden
-vector is unchanged, which is the check that no conformant record moved. The boundary is
-`li v0.9.9`: product delivered by an element built against it is refused where an earlier build
-would have emitted an undefined zero, and no other record differs.
-
-**And the class is closed structurally.** The sweep is a test whose source of truth is the
-published module, so a record type added later, or a field that becomes mandatory later, cannot
-join the exemption unremarked. Three further directions are asserted: a type-keyed entry that
-starts refusing an optional carrier, a guarded type with no `enumConstraints` bounds to run under
-(the guard would never be consulted), and a stale exclusion. `AMFRegistrationResult` is the entry
-the first of those will catch — the module gives it to `AMFUEConfigurationUpdate` as `OPTIONAL`, a
-record this project does not emit.
-
-**`PDUSessionType`'s correspondence is now asserted.** `smf/lawfulintercept` built the field as
-`iri.PDUSessionType(sc.SelectedPDUSessionType)` — a direct cast from the NAS value, correct
-because TS 24.501 and TS 33.128 happen to number the concept identically, with nothing holding it
-there. That is the construct that produced both handover defects. The cast stays; the agreement
-is asserted member by member against both definitions in
-`TestPDUSessionTypeCorrespondsToTS24501`, so a later release of either fails a test rather than
-reaching an agency.
-
-**A module-versus-payload-table discrepancy, recorded.** `TS33128Payloads.asn` gives
-`SMFPDUSessionModification/requestType` no `OPTIONAL`, and table 6.2.3-2 marks only
-`gTPTunnelInfo` **M**. Both point the same way here — this project populates the field and now
-guards it — and the module is what a receiver validates against, so the module is what the guard
-follows. Listed with finding 5's `CauseRadioNetwork` discrepancy as a place the two halves of the
-specification disagree.
-
-**The conversion sites are enumerated, in both network functions.** `PDUSessionType` was found by
-reading; the two before it were found by a delivered record being wrong. None of those is a
-check, so `amf/lawfulintercept` and `smf/lawfulintercept` each carry one:
-every conversion `iri.T(x)` whose argument is not one of `li/iri`'s own constants must be
-recorded as a value *carried* (no second numbering) or *mapped* (an enumeration, naming the
-assertion that covers it, which must exist). Forty-two sites over thirty-one targets in the AMF,
-thirty-one over twenty-four in the SMF; eight of them enumerated. It keys on the shape rather
-than on a list of `li`'s enumerations, because such a list maintained in a network function is
-the thing that goes stale.
-
-It cannot see an *implicit* conversion — a function declared to return `iri.AccessType` that
-writes `return 0`, which `DeregistrationScope` deliberately does. The encode-time guard above is
-what covers those, and the two are complementary: one catches an unasserted correspondence, the
-other catches a value the enumeration does not define however it got there.
-
-### 8. `currentLoc` cannot be reported as `false` — OPEN, latent
+### `currentLoc` cannot be reported as `false` — latent
 
 `LocationInfo.CurrentLocation` models `currentLoc [2] BOOLEAN OPTIONAL` as a plain `bool`, and
-the emitter writes it only when it is `true` (`emit.go`). So a `LocationInfo` saying the location
-it carries is *not* current is not expressible: `false` and absent encode identically. It is the
-same defect class as finding 2, in the field that finding's remedy was not applied to.
+the emitter writes it only when it is `true`, so a `LocationInfo` saying its location is *not*
+current cannot be expressed: `false` and absent encode identically.
 
-It is latent rather than live. The AMF sets `CurrentLocation: true` in every record that carries a
-`Location`, and no record here reports a last-known location, so no delivered record has lost a
-value. It becomes live the day a location that is not current is reported.
+It is latent rather than live: the AMF sets `CurrentLocation: true` in every record that carries
+a `Location`, and no record here reports a last-known location. It becomes live the day a
+location that is not current is reported. The remedy is the one `sUPIUnauthenticated` uses —
+declare the field as a pointer, which the emitter writes exactly when it is non-nil. It is
+recorded here because a field the encoder cannot represent is a known defect, not a presence
+rule that happens to hold for the values seen so far.
 
-The remedy is finding 2's: declare the field as a pointer (`*bool`), which the emitter then writes
-exactly when it is non-nil. Not done in `li v0.10.0`, because that release replaced the encoder and
-was required to change no delivered byte. It is recorded here because the `li-iri-reporting`
-specification requires a field the encoder cannot represent to be recorded as a known defect,
-rather than left as a presence rule that happens to hold for the values seen so far.
+## Where the module and the tables disagree
+
+- **`gTPTunnelInfo`** is `OPTIONAL` in the module and **M** in tables 6.2.3-1, 6.2.3-2 and
+  6.2.3-4. This package follows the tables and populates it.
+- **`SMFPDUSessionModification/requestType`** has no `OPTIONAL` in the module, while table
+  6.2.3-2 marks only `gTPTunnelInfo` **M**. The module is what a receiver validates against, so
+  the zero guard follows the module; the SMF populates the field either way.
+- **`CauseRadioNetwork`** runs 1..52 with **no value 28**, so it defines 51 causes where NGAP
+  defines 58. Three of its names are spelled differently from NGAP's
+  (`iMSVoiceeEPSFallbackOrRATFallbackTriggered`, `uPIntegrityProtectioNotPossible`, and
+  `nPMAccessDenied` for NPN access); each sits at the position its NGAP counterpart predicts, so
+  all three are read as the same cause. `enumConstraints` admits 28 because a range cannot
+  express a hole, and an AMF's mapping must never produce it.
+- **`FiveGSMCause`** is `INTEGER (0..255)` and mandatory in `SMFUnsuccessfulProcedure`, while
+  TS 24.501's 5GSM cause values start at 8. The module's range is what a receiver validates
+  against, so zero is not refused here; a tighter range would be a correction to TS 33.128, not
+  to this encoder. The same holds for `FiveGMMCause` in the AMF.
