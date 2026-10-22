@@ -432,7 +432,7 @@ func (r *Reporter) reserve(k reportKey) bool {
 // commit records that a reserved report reached the ADMF. The throttle window starts
 // here rather than at the decision, so a window only ever suppresses repeats of
 // something that was actually delivered, and the condition becomes retractable.
-func (r *Reporter) commit(k reportKey) {
+func (r *Reporter) commit(k reportKey, record bool) {
 	if r == nil {
 		return
 	}
@@ -445,13 +445,14 @@ func (r *Reporter) commit(k reportKey) {
 	delete(r.sending, k)
 	r.lastSent[k] = now
 
-	// A task-scoped report is recorded only for a condition that is a state, which the task
-	// watcher retracts; an event at task scope has no ending, and the record would grow with
-	// every interception that ever had one. The task watcher forgets the record of a task
-	// that is no longer held, so this one is bounded by the tasking. An element-scoped
-	// *event* (Notify) is never retracted either, but its entry is keyed by condition alone,
-	// so there is at most one per condition.
-	if k.scope != scopeTask || taskStates[k.condition] {
+	// A record is what a retraction later finds. A task-scoped report is recorded only when
+	// it comes from NotifyTaskFault, the task watcher's form, because the watcher is what
+	// retracts it and forgets it when the task ends — and the server forgets a removed task's
+	// records at once (forgetTask). An event pushed with NotifyTaskAsync has no ending, so
+	// recording it would grow the record with every interception that ever had one, with
+	// nothing to drop it. An element-scoped *event* (Notify) is never retracted either, but
+	// its entry is keyed by condition alone, so there is at most one per condition.
+	if record {
 		r.reported[k] = true
 	}
 
@@ -495,7 +496,18 @@ func (r *Reporter) settle(k reportKey, err error) {
 
 		return
 	}
-	r.commit(k)
+	r.commit(k, k.scope != scopeTask)
+}
+
+// settleRecorded is settle for a report that is always recorded: a task-scoped state the task
+// watcher will retract.
+func (r *Reporter) settleRecorded(k reportKey, err error) {
+	if err != nil {
+		r.release(k)
+
+		return
+	}
+	r.commit(k, true)
 }
 
 // clearing reports whether a fault this element has reported at this key is now
@@ -800,6 +812,11 @@ func (r *Reporter) NotifyTask(xid, reportType, details string) {
 // *before* the goroutine is spawned, so a condition recurring quickly costs a lock acquisition
 // rather than a goroutine; reports are throttled per (xid, condition), and the goroutine ends
 // within x1RequestTimeout.
+//
+// It is the form for an event, which has no ending, so the report is never recorded as a
+// standing fault: nothing will retract it. A condition that is a state and should be retracted
+// when it ends belongs to the task watcher (WatchTaskFaults), through the WithTaskFaults
+// supplier.
 func (r *Reporter) NotifyTaskAsync(xid, reportType, condition, details string) {
 	if r == nil || xid == "" {
 		return
@@ -869,7 +886,7 @@ func (r *Reporter) NotifyTaskFault(xid, condition, details string) {
 	if !r.reserve(k) {
 		return
 	}
-	r.settle(k, r.ReportTaskIssue(xid, TaskReportNonTerminatingFault, condition+": "+details))
+	r.settleRecorded(k, r.ReportTaskIssue(xid, TaskReportNonTerminatingFault, condition+": "+details))
 }
 
 // NotifyTaskClear retracts a task-scoped fault previously reported, with an AllClear, and
@@ -903,6 +920,27 @@ func (r *Reporter) standingTaskFaults() []reportKey {
 	}
 
 	return out
+}
+
+// forgetTask drops every task-scoped record of xid without retracting it: the task has ended,
+// which ends its faults, and an AllClear would name an XID the ADMF has deactivated. Done when
+// the task is removed rather than at the next watcher sample, so a task re-activated under the
+// same XID within one interval does not inherit the old task's faults. A record whose report
+// is still in flight is left to settle.
+func (r *Reporter) forgetTask(xid string) {
+	if r == nil || xid == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for k := range r.reported {
+		if k.scope == scopeTask && k.id == xid && !r.sending[k] {
+			delete(r.reported, k)
+			delete(r.lastSent, k)
+		}
+	}
 }
 
 // forget drops the record of a fault without retracting it. The task watcher uses it for a

@@ -208,3 +208,51 @@ func TestWatchTaskFaultsStops(t *testing.T) {
 		t.Fatal("WatchTaskFaults did not return when stop closed")
 	}
 }
+
+// TestAStatePushedAsAnEventIsNotRecorded: NotifyTaskAsync is the form for an event, which has
+// no ending, so even a condition that is a state is not recorded when pushed that way. Recorded,
+// it would wait for a retraction only the task watcher sends, and an element running no watcher
+// would keep one record per task forever.
+func TestAStatePushedAsAnEventIsNotRecorded(t *testing.T) {
+	rig := newTaskRig(t)
+
+	rig.reporter.NotifyTaskAsync(taskID, TaskReportNonTerminatingFault, TaskIssueTriggerNotRunning, "pushed")
+	within(t, "the pushed report", func() bool { return len(rig.admf.reports()) == 1 })
+	awaitSettled(t, rig.reporter, reportKey{scope: scopeTask, id: taskID, condition: TaskIssueTriggerNotRunning})
+	if got := rig.reporter.standingTaskFaults(); len(got) != 0 {
+		t.Errorf("a state pushed with NotifyTaskAsync is recorded as standing: %v", got)
+	}
+}
+
+// TestADeactivatedTaskLeavesNoFaultForItsSuccessor: a task deactivated and activated again under
+// the same XID within one watcher interval must not inherit the old task's fault. Forgotten only
+// at the next sample, the record would still stand when that sample finds the XID held again,
+// and the watcher would retract a fault the new task never had.
+func TestADeactivatedTaskLeavesNoFaultForItsSuccessor(t *testing.T) {
+	rig := newTaskRig(t)
+
+	rig.set(TaskFault(TaskIssueTriggerNotRunning, "refused"))
+	rig.sampleAt(0)
+	k := reportKey{scope: scopeTask, id: taskID, condition: TaskIssueTriggerNotRunning}
+	if !rig.reporter.holds(k) {
+		t.Fatal("precondition: the fault was not recorded")
+	}
+
+	deactivate := string(request("DeactivateTaskRequest", `
+    <ns1:xId>`+taskID+`</ns1:xId>`))
+	if m := serve(t, rig.srv, deactivate); m.OK != ackOK {
+		t.Fatalf("deactivate: %+v", m.ErrorInformation)
+	}
+	if rig.reporter.holds(k) {
+		t.Error("the deactivated task's fault is still recorded")
+	}
+
+	// Its successor, healthy, under the same XID before the next sample.
+	rig.set()
+	rig.st.Activate(types.InterceptTask{XID: testXID, Targets: []types.TargetIdentifier{supiTarget("1")}})
+	rig.sampleAt(30 * time.Second)
+	rig.sampleAt(2 * time.Minute)
+	if got := rig.admf.counting(allClear)[allClear]; got != 0 {
+		t.Errorf("the successor task was sent %d AllClears for a fault it never had", got)
+	}
+}

@@ -194,6 +194,9 @@ type Server struct {
 	keepalive keepaliveState
 	// keepaliveReporter carries the procedure's reports to the ADMF. See KeepaliveReporter.
 	keepaliveReporter *Reporter
+	// taskFaultReporter is the reporter the task fault watcher reports through, guarded by
+	// mu. A removed task's records are forgotten in it at once (see notifyRemoved).
+	taskFaultReporter *Reporter
 	// requireDIDs refuses a CC task whose destinations are unknown, rather than
 	// accepting it and delivering nothing.
 	requireDIDs bool
@@ -1047,6 +1050,11 @@ func (s *Server) notifyRemoved(task types.InterceptTask, reason PurgeReason) {
 	if s.onPurge != nil {
 		s.onPurge(task, reason)
 	}
+
+	s.mu.Lock()
+	reporter := s.taskFaultReporter
+	s.mu.Unlock()
+	reporter.forgetTask(string(task.XID))
 }
 
 // destinationsInUse counts the destinations some task still references.

@@ -184,7 +184,7 @@ func TestTheReportRecordStaysBoundedUnderTaskReports(t *testing.T) {
 		if !r.reserve(k) {
 			t.Fatalf("report %d was refused a reservation", i)
 		}
-		r.commit(k)
+		r.commit(k, false) // an event, as NotifyTaskAsync settles it
 		at = at.Add(reportThrottle)
 	}
 

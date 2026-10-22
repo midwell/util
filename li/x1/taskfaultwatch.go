@@ -67,6 +67,9 @@ func newTaskWatch(s *Server, r *Reporter, interval time.Duration) *taskWatch {
 	if interval <= 0 {
 		interval = reportThrottle
 	}
+	s.mu.Lock()
+	s.taskFaultReporter = r
+	s.mu.Unlock()
 
 	return &taskWatch{
 		srv:      s,
