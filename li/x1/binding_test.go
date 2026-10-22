@@ -191,14 +191,11 @@ func TestADetailsAnswerIsNotRefusedForCarryingNoAcknowledgement(t *testing.T) {
 	}
 }
 
-// TestAnUnparseableRequestIsAnsweredWithATopLevelError covers the clause 6.1 gap
-// the X1 disposition turned up.
-//
-// Two things were wrong with the previous answer, and clause 7.2.2.2 settles the
-// second outright: "HTTP error codes shall only be used to indicate HTTP-level
-// errors, and shall not be used to indicate errors with the X1 responses
-// themselves." A request that arrived intact and could not be parsed is an
-// X1-level error, so the answer is a 200 carrying the defined response — not a
+// TestAnUnparseableRequestIsAnsweredWithATopLevelError: clause 6.1 defines the response to
+// a request that cannot be parsed, and clause 7.2.2.2 rules out the alternative: "HTTP error
+// codes shall only be used to indicate HTTP-level errors, and shall not be used to indicate
+// errors with the X1 responses themselves." A request that arrived intact and could not be
+// parsed is an X1-level error, so the answer is a 200 carrying the defined response — not a
 // 400 carrying the XML decoder's own message.
 func TestAnUnparseableRequestIsAnsweredWithATopLevelError(t *testing.T) {
 	srv := NewServer(store.New(), "upf-1", WithADMF("smf-1"))
@@ -283,10 +280,9 @@ func TestAMultiArmTargetIdentifierIsRefused(t *testing.T) {
 	}
 }
 
-// TestPopulatedArmsCountsEveryArm guards the guard. The defect being closed is
-// that a switch's ordering decided the answer, so a counter that shared the
-// switch's blind spots would inherit them — and a new arm added to the struct and
-// not added to the counter would be silently exempt.
+// TestPopulatedArmsCountsEveryArm guards the guard. If a switch's ordering decided the
+// answer, a counter that shared the switch's blind spots would inherit them — and a new arm
+// added to the struct and not added to the counter would be silently exempt.
 func TestPopulatedArmsCountsEveryArm(t *testing.T) {
 	if n := populatedArms(TargetIdentifier{SUPIIMSI: "262019876543210"}); n != 1 {
 		t.Errorf("one populated arm counted as %d", n)

@@ -24,6 +24,9 @@ const (
 	// 2020 per table 6.7-3, not 1020 ("Unsupported version"): a wrong code is as unhelpful
 	// to an ADMF as an invented one.
 	errCodeNoSuchTask = 2020 // XID does not exist on NE
+	// 2010 answers an ActivateTask naming a held XID with a different task; an identical
+	// replay is acknowledged instead.
+	errCodeXIDExists = 2010 // XID already exists on NE
 	// Destination and bulk-operation codes, from the same table. A generic 1000 in place of
 	// one of these is not a small matter: an ADMF distinguishes "the DID I named is not
 	// there" from "something went wrong" by the code, and only the first tells it what to do.

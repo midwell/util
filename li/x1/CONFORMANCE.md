@@ -59,13 +59,15 @@ These follow the specification and are recorded here because each is a choice a 
 check:
 
 - **A task's target identifiers must all match** (table 6.2.1.2-1: "Where multiple criteria
-  are present, all criteria are required to be matched"), and a combination an element cannot
-  match together is refused rather than narrowed.
+  are present, all criteria are required to be matched"). A task naming an identifier the
+  element does not evaluate, or a combination no subject or packet satisfies — two SUPIs, two
+  sessions, two directions, two port criteria — is refused (3000/3001) rather than narrowed.
 - **An ActivateTask for an XID already held** is acknowledged when it is identical to the held
   task, so a retried activation stays idempotent, and refused with 2010 when it differs:
   clause 6.2.1 makes a held XID an error, and a change goes through ModifyTask.
-- **A task-scoped fault is reported as cleared** when its condition ends (clause 6.5.2), and
-  the keepalive fail-safe follows clause 6.6.2.
+- **A task-scoped fault is reported as cleared** when its condition ends (clause 6.5.2.1), and
+  the keepalive procedure follows clause 6.6.2 and is enabled by default. Both are described
+  under *Issue reporting* and *Pings and keepalives* below.
 
 ## Message envelope — table 6.1-1
 
@@ -124,7 +126,7 @@ discover that:
 | `taskDetailsExtensions` other than the LI_T3 one | — | Refused. An extension exists in order to change the meaning of the message carrying it, so an unknown one cannot be ignored. Includes `HeaderReporting`, which TS 33.128 marks C and M in tables 6.2.3-0A and 6.2.3-9 |
 | `listOfMediationDetails` | O | Accepted and disregarded, deliberately — `li/README.md`, *Fields accepted and disregarded* |
 | `implicitDeactivationAllowed` | O | Accepted and disregarded, likewise |
-| LI_T3 `PDRID` and `QERID` | — (TS 33.128 table 6.2.3-7) | Mapped to criteria by this package; **refused by the UPF CC-POI** (its `CanApply`), 3000/3001. Both name a rule allocated *per PFCP session* and reused across sessions from a low number, so on its own a rule ID names a rule in every session that holds that number. A triggering function needing one session's traffic has `FSEID` |
+| LI_T3 `PDRID` and `QERID` | — (TS 33.128 table 6.2.3-7) | Mapped to criteria by this package; **refused by the UPF CC-POI** (its `CanApply`), 3000/3001. Both name a rule allocated *per PFCP session* and reused across sessions from a low number, so on its own a rule ID names a rule in every session that holds that number. A session could qualify them, since a task's criteria are conjunctive, but each criterion is judged alone at activation, so they are refused whatever accompanies them. A triggering function needing one session's traffic has `FSEID` |
 | LI_T3 `PDR` whose rule leaves a field to the element | — (same table) | **Refused by the UPF CC-POI** where the encoded rule asks the UPF to allocate the UE address or to choose the tunnel endpoint (`CH`). Such a criterion names a value the UPF assigns, so it can never compare equal to any session's rule: accepted, it is an interception acknowledged and producing nothing |
 
 **Identifier formats.** `xId`, `dId` and `productID` are all `etsi103280:UUID` in the schema.
@@ -161,9 +163,12 @@ would leave the identical gap at the one level where a CC-POI actually reads its
 criteria.
 
 **This does not forbid a task from carrying several target identifiers.** A task's
-`targetIdentifiers` *list* may hold several entries, and all of them are required to match
-(table 6.2.1.2-1). What is refused is two arms inside *one* identifier. The two rules are about
-different levels of the structure.
+`targetIdentifiers` list may name several, and they are conjunctive: TS 103 221-1 table
+6.2.1.2-1, "Where multiple criteria are present, all criteria are required to be matched." An
+element refuses (3000/3001) a task naming an identifier it does not evaluate, or a combination
+no subject or packet satisfies — two SUPIs, two sessions, two directions, two port criteria.
+What is refused as a schema error (1010) is two arms inside *one* identifier. The two rules are
+about different levels of the structure.
 
 **Every member of a `UPFLIT3TargetIdentifier` list becomes a criterion.** It is a SEQUENCE OF
 CHOICE, so a list of several is what the structure is for, and all of a task's criteria are
@@ -335,7 +340,14 @@ require it to know how this element resolves them.
 
 **A fault that ends is reported as having ended**, per clause 5.3 — "The NE shall also
 indicate that a fault has been cleared (see clauses 6.5.2 and 6.5.3) unless otherwise
-configured" — as `AllClear` at destination scope and `FaultCleared` at element scope.
+configured" — as `AllClear` at task and destination scope and `FaultCleared` at element scope.
+A `FaultCleared` carries the status/fault code of the fault it clears (table 6.5.4-1).
+
+Task-scoped faults that are states (`duplicationNotProgrammed`, `noTrafficSelected`,
+`triggerNotRunning`) are reported as `NonTerminatingFault` when they appear and retracted with
+`AllClear` once absent for one sampling interval (clause 6.5.2.1). Task-scoped events
+(`recordNotEncoded`) are reported once and have no ending. The faults of a task that is
+deactivated are not retracted: the deactivation ends them.
 
 Three properties of how that is done, because each is a place the obvious implementation is
 wrong:
@@ -378,9 +390,11 @@ because there is nowhere else in a distributed document that they appear.
   it was and as it becomes. A `ModifyTask` keeps the XID, so as two events "the old task" and
   "the new task" would share a key, and a POI that installed state for the new task and
   removed state for the old under it could reclaim what the installation had just created.
-- **An exact replay is not a transition and fires nothing.** Re-provisioning is how a
-  provisioning function restores tasking after a restart, and it must not re-emit records
-  reporting the beginning of an interception that never stopped.
+- **An exact replay is not a transition and fires nothing.** An `ActivateTask` repeating the
+  task held under its XID is acknowledged and changes nothing, so a retried activation stays
+  idempotent and does not re-emit records reporting the beginning of an interception that never
+  stopped; a different task under a held XID is refused with 2010 (table 6.2.1.1-2: "it is an
+  error if the XID is already present at the NE").
 - **`OnPurge` names its reason** — `PurgeWithdrawal`, `PurgeBulkDeactivate`,
   `PurgeKeepaliveLapse` — because only the third is unasked-for. A purge an ADMF requested and
   a purge caused by that ADMF falling silent are the same event to the element and completely
@@ -397,13 +411,17 @@ because there is nowhere else in a distributed document that they appear.
 
 ## Pings and keepalives — clause 6.6
 
-`Ping` (6.6.1) and `Keepalive` (6.6.2) are both implemented. The keepalive fail-safe — purging
-all tasking when the controlling function stops answering within the configured window — is
-**opt-in**, off unless a window is configured, and a window that is present but unparseable is
-an error rather than a silent "off": a deployment that asked for the fail-safe and did not get
-it holds tasking nothing will ever reclaim.
+`Ping` (6.6.1) and `Keepalive` (6.6.2) are both implemented, and so is the clause 6.6.2
+procedure for an ADMF that falls silent. When TIME_P2 (default 1 h) passes with no X1 request,
+the element sends a ReportNEIssue `FaultReport` with code 9050 and starts TIME_P1 (default
+1 min). An OK answer within TIME_P1 starts TIME_P3 (default 2 h); when TIME_P3 expires, or
+TIME_P1 expires with no OK answer, the element deactivates all tasks and sends an `Alert` with
+code 10000. Any X1 request ends the procedure, with a `FaultCleared` carrying 9050 when the
+`FaultReport` was delivered. An element configured to retain tasking restarts TIME_P2 instead.
+The procedure is enabled by default; a network function disables it only by configuration, and
+timers outside what the procedure allows are refused rather than silently ignored.
 
-**Only an authenticated message resets the watchdog.** Unauthenticated traffic must not, or
+**Only an authenticated message resets TIME_P2 or ends the procedure.** Unauthenticated traffic must not, or
 anyone able to reach the X1 port could hold the fail-safe open indefinitely while the real
 ADMF is gone.
 
@@ -421,6 +439,7 @@ does. The codes it emits, and what each means here:
 | 1040 | Unexpected ADMF Identifier | A peer in the LI domain that is not this element's responsible ADMF |
 | 1060 | Unexpected NE Identifier | A message addressed to a different element |
 | 1080 | Unsupported request | An unimplemented message type, and the Generic Object CRUD |
+| 2010 | XID already exists on NE | An `ActivateTask` naming a held XID with a different task; an identical replay is acknowledged |
 | 2020 | XID does not exist on NE | `DeactivateTask`, `ModifyTask` or `GetTaskDetails` for tasking not held |
 | 2030 | DID already exists on the NE | `CreateDestination` re-creating a DID |
 | 2040 | DID does not exist on the NE | `GetDestinationDetails` for a DID not held; a task naming a destination identifier the element cannot resolve |

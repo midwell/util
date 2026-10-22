@@ -183,8 +183,8 @@ func TestAConditionAtPacketRateCostsOneAttempt(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Errorf("%d reports cost the observing path %s; it must not wait on the ADMF", burst, elapsed)
 	}
-	// Generous, because it is a mutation detector and not a budget: the fix holds this
-	// at 1 and `go Notify` spawns one per copy.
+	// Generous, because it is a mutation detector and not a budget: the dispatch holds this
+	// at 1, and an unbounded `go Notify` would spawn one per copy.
 	if peakGoroutines > 25 {
 		t.Errorf("the burst reached %d concurrent goroutines; the dispatch is not bounded by the condition", peakGoroutines)
 	}

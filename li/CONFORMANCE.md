@@ -42,6 +42,21 @@ named with enough detail that a reader can tell whether it matters to them.
 
 **None open.** `x1/CONFORMANCE.md` lists what the implementation does not cover.
 
+## Deliberate deviations
+
+Three places where these packages depart from the letter of TS 103 221-1, each for a stated
+reason and recorded in full in `x1/CONFORMANCE.md`:
+
+- **`RemoveAllDestinations` is disabled by default**, where clause 6.3.4 enables it absent
+  agreement: bulk destination removal strands an element that is still tasked.
+- **`CorrelationID` is acted on by the triggered CC-POI**, which clause 6.2.1.2 says a
+  non-mediation NE shall ignore; TS 33.128 table 6.2.3-6 makes it mandatory on the LI_T3
+  trigger.
+- **The emitted X1 Version is `v1.6.1`** while the behaviour is built against V1.21.1.
+
+The X2/X3 Version field above is a gap, not a deviation: it is held at 5 by the
+interoperability peer, not by choice.
+
 ## Capabilities refused by design, which are not gaps
 
 These capabilities are refused by design rather than pending. Each was read against the

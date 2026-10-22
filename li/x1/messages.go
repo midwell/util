@@ -228,13 +228,14 @@ func (a IPAddress) Arms() int {
 // names.
 //
 // **The family matters as much as the cardinality.** TS 103 280 types these as an IPv4
-// and an IPv6 address, and the element took the text of the IPv4 arm as an address
-// without parsing it — so a destination whose address is not an address at all was
-// created, acknowledged, and then dialled forever, with the failure reported as an
-// unreachable mediation function rather than as the provisioning error it is. Checking
-// the family and not just the syntax also refuses an IPv6 literal placed in the IPv4 arm,
-// which would otherwise be joined to a port without brackets and produce an address
-// nothing can dial.
+// and an IPv6 address. An address that is not one would be created, acknowledged and then
+// dialled forever, with the failure reported as an unreachable mediation function rather
+// than as the provisioning error it is. Checking the family and not just the syntax also
+// refuses an IPv6 literal placed in the IPv4 arm, which would otherwise be joined to a port
+// without brackets and produce an address nothing can dial.
+//
+// The IPv4 arm is read by the schema's own pattern, which admits a leading zero in an
+// octet ("010.000.000.001") that netip.ParseAddr refuses as ambiguous.
 func (a IPAddress) Valid() error {
 	switch n := a.Arms(); {
 	case n == 0:
@@ -244,8 +245,7 @@ func (a IPAddress) Valid() error {
 	}
 
 	if a.IPv4 != "" {
-		ip, err := netip.ParseAddr(a.IPv4)
-		if err != nil || !ip.Is4() {
+		if _, ok := parseSchemaIPv4(a.IPv4); !ok {
 			return errors.New("IPv4Address is not an IPv4 address")
 		}
 
@@ -255,24 +255,25 @@ func (a IPAddress) Valid() error {
 	if err != nil || ip.Is4() || ip.Is4In6() || ip.Zone() != "" {
 		// A zone or an IPv4-mapped address parses, but neither is an address of the
 		// schema's IPv6 type: a zone has no representation in it, and a mapped address
-		// names an IPv4 endpoint. Accepting either stored a value this element could
-		// not render back into the arm it came in.
+		// names an IPv4 endpoint. Accepting either would store a value this element
+		// could not render back into the arm it came in.
 		return errors.New("IPv6Address is not an IPv6 address")
 	}
 
 	return nil
 }
 
-// Canonical returns the address in the form the schema's type spells it: dotted-quad for
+// Canonical returns the address in one spelling: dotted-quad without leading zeros for
 // IPv4, and eight four-digit lowercase groups for IPv6. Call it only on an address Valid
 // accepted.
 //
-// The IPv6 pattern admits only the expanded form, so a destination stored as the peer
-// sent it — "::1", or upper case — made this element's own destination answers invalid
-// against the schema the request was validated with.
+// The IPv6 pattern admits only the expanded form, so a destination stored as the peer sent
+// it — "::1", or upper case — would make this element's own destination answers invalid
+// against the schema the request was validated with. The IPv4 form is canonical so that one
+// endpoint has one key, however a peer spelled it.
 func (a IPAddress) Canonical() string {
 	if a.IPv4 != "" {
-		if ip, err := netip.ParseAddr(a.IPv4); err == nil {
+		if ip, ok := parseSchemaIPv4(a.IPv4); ok {
 			return ip.String()
 		}
 
@@ -442,11 +443,11 @@ type TargetIdentifierExtension struct {
 }
 
 // UPFLIT3Extensions holds the LI_T3 packet-detection criteria for a triggered
-// CC-POI in a UPF. The schema allows several and **every one of them is a
-// criterion**: this is a SEQUENCE OF CHOICE, so a list is what the structure is
-// for, and a CC-POI is already required to intercept traffic matching any
-// criterion a task carries. This element sends one, because a session is
-// identified by its F-SEID; it accepts as many as a provisioning function sends.
+// CC-POI in a UPF. The schema allows several and every one of them is a criterion:
+// this is a SEQUENCE OF CHOICE, so a list is what the structure is for, and every
+// member joins the task's criteria, all of which are required to match (TS 103 221-1
+// table 6.2.1.2-1). This element sends one, because a session is identified by its
+// F-SEID; it accepts as many as a provisioning function sends.
 type UPFLIT3Extensions struct {
 	Identifiers []UPFLIT3Identifier `xml:"urn:3GPP:ns:li:3GPPX1Extensions:r18:v6 UPFLIT3TargetIdentifier"`
 }

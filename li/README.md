@@ -75,11 +75,13 @@ Three network functions act as POIs:
   the packets to a userspace socket, and the UPF's X3 shipper frames and
   delivers them.
 - **X1 keepalive (TS 103 221-1 clause 6.6.2, enabled by default):** the element runs
-  timer P2 over the X1 requests it receives. When P2 expires with nothing received, it
-  reports fault 9050 "Keepalives not received" to the ADMF, and clears the fault with
-  `FaultCleared` as soon as any X1 request arrives. Where the element is configured to
-  allow it, it then deactivates all tasks when timer P3 also expires and reports Alert
-  10000 "Database cleared" — so warrants do not outlive an operational controller.
+  timer P2 (default 1 h) over the X1 requests it receives. When P2 expires with nothing
+  received, it reports fault 9050 "Keepalives not received" to the ADMF and starts P1
+  (default 1 min). An OK answer starts P3 (default 2 h); when P3 expires, or P1 expires with
+  no OK answer, it deactivates all tasks and reports Alert 10000 "Database cleared" — so
+  warrants do not outlive an operational controller — unless it is configured to retain
+  tasking. Any X1 request ends the procedure, and a delivered fault 9050 is cleared with
+  `FaultCleared`.
 - **X2/X3 keepalive (on by default):** a different mechanism, in the other
   direction. ETSI TS 103 221-2 clause 6.2.4 has each POI send a Keepalive PDU on
   every delivery connection at least every TIME_P1 (60 s), and disconnect,
@@ -125,7 +127,7 @@ more expensive than one read here.
 | Area | Feature | Notes |
 |---|---|---|
 | **X1 provisioning** | `ActivateTask`, `ModifyTask`, `DeactivateTask` | ETSI TS 103 221-1, mutual TLS |
-| | `Keepalive`, and the clause 6.6.2 procedure when it stops | Enabled by default: fault 9050 when timer P2 expires, `FaultCleared` when the ADMF returns, and — where configured — deactivation of all tasks with Alert 10000 when timer P3 expires |
+| | `Keepalive`, and the clause 6.6.2 procedure when it stops | Enabled by default: fault 9050 when timer P2 expires; all tasks deactivated with Alert 10000 when P3 expires after an OK answer, or P1 expires without one, unless configured to retain tasking; `FaultCleared` when the ADMF returns |
 | | The whole interrogation set clause 6.4.1 makes mandatory: `GetTaskDetails`, `GetAllDetails`, `GetAllTaskDetails`, `GetDestinationDetails`, `GetAllDestinationDetails`, `GetNEStatus`, `ListAllDetails`, `GetAllGenericObjectDetails` | How an ADMF audits what an element actually holds — and how it reconciles after one restarts. Holding nothing is a successful empty answer, not an error. Every response is validated against the published XSD |
 | | `DeactivateAllTasks`, **enabled by default** | The specification's own default. One authenticated message stops every interception on the element — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* |
 | | `RemoveAllDestinations`, **disabled by default** | A deliberate deviation: TS 103 221-1 clause 6.3.4 makes it enabled unless agreed otherwise — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)*. Answered with the specification's error when disabled (8020); when enabled, refused while any destination is referenced by a task (8010) |
@@ -289,7 +291,9 @@ or have the task name no X3 destination so the SMF's `mdf3` serves it.
 
 **The X1 destination address carries its port as the `TCPPort`/`UDPPort` child element the
 TS 103 280 schema defines.** A peer sending the port as the element's text instead is read
-as port `0`, and its destination is refused. That fails safe and loudly: the CC Triggering
+as port `0`, and its destination is refused. Each arm is held to its own type: a `TCPPort`
+must be at least 2 (the type is `minExclusive 1`), and a `UDPPort` of 0 — schema-valid, but no
+endpoint — is refused with **6000**. That fails safe and loudly: the CC Triggering
 Function's `CreateDestination` is refused, the trigger is never installed, and the LIPF
 receives a `ReportTaskIssue` with a terminating fault rather than an interception quietly
 producing nothing.
@@ -297,7 +301,8 @@ producing nothing.
 #### A deactivation is not always a success
 
 `DeactivateTask` for an XID this element does not hold is refused with **2020**, and one
-carrying an `xId` that is not a UUID with **1010**. TS 103 221-1 table 6.2.3-2 requires the
+carrying an `xId` that is not a UUID with **1010**. Identifiers are read in the schema's value
+space: `xs:token` collapses surrounding whitespace, so a padded `xId` names the same task. TS 103 221-1 table 6.2.3-2 requires the
 first outright — "it is an error if the XID is not already present at the NE" — the mirror
 of the `CreateDestination` rule answered with 2030.
 
@@ -367,8 +372,9 @@ follow, and the third is a limit rather than a feature:
   alongside it. Durable withdrawal — the retry above — is the remedy for a single failed
   withdrawal; the keepalive behaviour only ensures the backstop is reachable at all.
 
-**A purge is reported only when nobody asked for it.** A UPF raises `taskingPurged` when its
-triggering function has gone quiet and the fail-safe has acted. An ordinary `DeactivateTask`,
+**A purge is reported only when nobody asked for it.** An element raises `taskingPurged`
+(Alert 10000, clause 6.6.2) when its controlling function — the ADMF, or for a UPF its
+triggering function — has gone quiet and the keepalive procedure has deactivated its tasking. An ordinary `DeactivateTask`,
 a `ModifyTask` and a bulk deactivation all tear the interception down exactly as thoroughly
 and raise nothing: the `DeactivateTaskResponse` is the acknowledgement that they happened.
 An element that reported every withdrawal as a fail-safe purge would teach its operator to
@@ -431,10 +437,11 @@ types in table 6.2.3-7. What this implementation does with each:
 | GTP Tunnel Direction | `TargetIdentifierExtension/GTPTunnelDirection` | **Yes** | The PDR's source interface, and the datapath's tag on each copy |
 | PDR | `TargetIdentifierExtension/PDR` | **Yes**, except where the rule leaves a field for this element to assign | The encoded Create PDR IE, parsed with the agent's own PFCP parser and compared against a session's rules in that form. A rule asking the UPF to allocate the UE address or choose the tunnel endpoint (`CH`) is refused: it names a value this element assigns, so it can never compare equal |
 
-A task's criteria are a list, and **all of them must match** (TS 103 221-1 table
-6.2.1.2-1): traffic is intercepted when it satisfies every criterion, once. A combination
-this element cannot evaluate together is refused at activation, as the same table
-requires.
+A task's criteria are a list, and they are **conjunctive**: traffic is intercepted only
+where every one of them matches (TS 103 221-1 table 6.2.1.2-1), so a list narrows — a
+session's F-SEID with a tunnel direction is that session's traffic in one direction. A
+combination no packet satisfies (two sessions, two directions, two ports) is refused at
+activation, as the same table requires.
 
 What is left is the two rule identifiers and the IPv6 form of UE IP Address.
 
@@ -650,9 +657,11 @@ recovery path is built out of the messages in this section. In order:
    `GetAllDetails` for the detail. An element holding nothing answers all of them
    *successfully*, with empty lists — the specification is explicit that empty is not an
    error, and that is precisely the state a restarted element is in.
-4. **The ADMF re-provisions.** An `ActivateTask` naming an XID the element already holds
-   replaces it rather than being refused, so re-provisioning is safe to repeat and does not
-   depend on the ADMF knowing what survived.
+4. **The ADMF re-provisions.** A restarted element holds nothing, so every `ActivateTask`
+   is a fresh activation. An `ActivateTask` repeating a task the element already holds is
+   acknowledged and changes nothing, so a re-provisioning that overlaps with surviving
+   tasking is safe; one naming a held XID with a different task is refused with **2010** —
+   changes go through `ModifyTask`.
 
 What the status answer will *not* say is that this element restarted. `GetNEStatus`
 reports the fault conditions that hold at the moment it is asked, computed from what the
@@ -904,10 +913,14 @@ configuration:
       - nodeId: "upf"                     # the UPF's N4 node address — IP or DNS name (resolved as on the PFCP path)
         x1Url: "https://upf-1:8443/X1/NE" # its X1 endpoint; the host must be a name its certificate covers
         neId: "upf-1"                     # the identifier its certificate is bound to
-    # --- optional: NE→ADMF fault reporting + keepalive fail-safe ---
+    # --- optional: NE→ADMF fault reporting + the clause 6.6.2 keepalive procedure ---
     admfUrl: "https://admf.li.example/X1/NE"  # ADMF X1 endpoint for NE-initiated issue reports
     admfId: "admf-1"                          # responsible ADMF identifier
-    keepaliveTimeout: "30s"                   # Go duration; purge tasking if no X1 message within it
+    keepaliveTimeout: "1h"                    # TIME_P2: no X1 request for this long starts the procedure
+    # keepaliveTimeP1: "1m"                   # wait for the ADMF's answer to fault 9050
+    # keepaliveTimeP3: "2h"                   # grace after an OK answer before deactivating all tasks
+    # keepaliveRetainTasking: false           # true: restart TIME_P2 instead of deactivating
+    # keepaliveDisabled: false                # true: no keepalive procedure at all
 ```
 
 ### UPF
@@ -1003,12 +1016,15 @@ The blocks above are what LI reads on disk; deployment tooling sets them for you
 | `cert` / `key` / `caCert` | `cert` / `key` / `ca_cert` | LI PKI credential file paths | yes |
 | `admfUrl` | `admf_url` | ADMF X1 endpoint for NE-initiated fault reports | optional |
 | `admfId` | `admf_id` | Responsible ADMF identifier — on the AMF/SMF it also restricts who may task the NF (recommended). **Unset, any peer the LI CA certified may act as the ADMF**, including another network element's certificate, since the identity binding carries no role — see *[Restricting who can reach X1](#restricting-who-can-reach-x1)* | optional |
-| `keepaliveTimeout` | — | Purge-all-tasking window (Go duration, e.g. `30s`). The fail-safe is **off unless set**; leave it unset until you know the ADMF's keepalive cadence, since a window shorter than that purges live warrants | AMF/SMF: optional |
+| `keepaliveTimeout` | `keepalive_timeout` | TIME_P2 of the TS 103 221-1 clause 6.6.2 keepalive procedure: how long without an X1 request before fault 9050 is reported (Go duration; default `1h`). Set it longer than the ADMF's keepalive cadence, since the procedure ends in deactivating all tasks | optional |
+| `keepaliveTimeP1` | `keepalive_time_p1` | TIME_P1: how long to wait for the ADMF's answer to fault 9050 before deactivating all tasks (Go duration; default `1m`) | optional |
+| `keepaliveTimeP3` | `keepalive_time_p3` | TIME_P3: how long after an OK answer before all tasks are deactivated (Go duration; default `2h`) | optional |
+| `keepaliveRetainTasking` | `keepalive_retain_tasking` | `true` keeps all tasking when the procedure would deactivate it, restarting TIME_P2 instead. Boolean; default `false` | optional |
+| `keepaliveDisabled` | `keepalive_disabled` | `true` runs no keepalive procedure at all, so tasking outlives a silent ADMF or triggering function. Boolean; default `false`, the specification's default of enabled | optional |
 | `deactivateAllTasks` | `deactivate_all_tasks` | Whether this element performs a bulk deactivation of all its tasking. Boolean; **unset means "no agreement in advance"**, which is the specification's default of *enabled*. Recommended `false` on the UPF — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
 | `removeAllDestinations` | `remove_all_destinations` | Whether this element performs a bulk removal of all its destinations. Boolean; unset means *disabled*, a deliberate deviation from the specification's default of enabled (TS 103 221-1 clause 6.3.4) — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
 | `x2x3KeepaliveEnabled` | `x2x3_keepalive_enabled` | Whether the TS 103 221-2 clause 6.2.4 keepalive runs on X2/X3 delivery connections. Boolean; unset means enabled. `false` is for a mediation function that never acknowledges a keepalive | optional |
 | `x2x3KeepaliveTimeP1` / `x2x3KeepaliveTimeP2` | `x2x3_keepalive_time_p1` / `x2x3_keepalive_time_p2` | The keepalive's TIME_P1 and TIME_P2 (Go durations; defaults `60s` and `180s`). Each must be at least `1s`, the minimum TS 103 221-2 table C.4-1 allows, and TIME_P2 must exceed TIME_P1 | optional |
-| — | `trigger_keepalive` | How long the UPF keeps its tasking after the last message from its triggering function (Go duration, e.g. `5m`). The fail-safe is **off unless set** — see *[When a withdrawal cannot be delivered](#when-a-withdrawal-cannot-be-delivered)* | UPF: optional |
 | — | `x3_sockaddr` | Datapath X3 tee socket (match `LI_X3_SOCKET_PATH`) | UPF: yes |
 
 ### What only the deployment can guarantee
@@ -1147,8 +1163,8 @@ the rest of that host's firewall is persisted.
   are reported to the ADMF over X1 when `admfUrl`/`admf_url` is configured, not
   to general logs.
 - Removing the `li` block (or deactivating a warrant) stops all product for it;
-  and, when `keepaliveTimeout` is set, all tasking is purged automatically if the
-  ADMF stops sending keepalives.
+  and the clause 6.6.2 keepalive procedure, enabled by default, deactivates all
+  tasking if the ADMF falls silent, unless the element is configured otherwise.
 - **One edge worth knowing when restarting the SMF under load.** A PDU session
   established while an SMF instance is *shutting down* takes its duplication rule
   from a process that is about to exit. The replacement SMF never knew that
@@ -1156,11 +1172,11 @@ the rest of that host's firewall is persisted.
   duplicating traffic for a warrant no live SMF holds. Content in that state is
   dropped rather than delivered — the CC-POI refuses to ship what it cannot
   attribute — so nothing unauthorised reaches an MDF, but the duplication persists
-  for the life of that session unless `trigger_keepalive` is set on the UPF, in
-  which case the fail-safe clears it when the triggering function stops calling —
-  and it only stops calling while the replacement SMF holds nothing else at that
-  UPF, since the fail-safe purges a whole connection's tasking or none of it (see
-  *When a withdrawal cannot be delivered*). Setting `trigger_keepalive` is the
+  for the life of that session unless the UPF's keepalive procedure, enabled by
+  default, deactivates it when the triggering function stops calling — and it only
+  stops calling while the replacement SMF holds nothing else at that UPF, since the
+  procedure deactivates a whole connection's tasking or none of it (see *When a
+  withdrawal cannot be delivered*). Leaving the procedure enabled on the UPF is the
   mitigation; draining sessions before replacing the SMF avoids it entirely.
 
 ## Testing
@@ -1271,7 +1287,10 @@ reason; `x1/CONFORMANCE.md` records them with the rest of its dispositions.
 - **`RemoveAllDestinations` is disabled by default**, where clause 6.3.4 enables it absent
   agreement — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)*.
 - **The emitted X1 Version is `v1.6.1`** while the behaviour is built against V1.21.1 — see
-  `x1/CONFORMANCE.md`, *Message envelope*.
+  `x1/CONFORMANCE.md`, *Message envelope*. Every message this element encodes carries it,
+  responses included: table 6.1-1 defines Version as the version used to encode the message,
+  so a response states this element's version rather than echoing the request's. A message
+  whose version is not a `v1.x.y` is refused with **1020**.
 - **`CorrelationID` is acted on by the triggered CC-POI**, below.
 
 #### `CorrelationID` on X3

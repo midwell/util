@@ -1598,9 +1598,6 @@ func (s *Server) resolveDIDs(dids []string) (endpoints []types.DeliveryEndpoint,
 	return endpoints, unresolved
 }
 
-// errCodeXIDExists is TS 103 221-1 table 6.7-3's "XID already exists on NE".
-const errCodeXIDExists = 2010
-
 // activateHeld answers an ActivateTask naming an XID this element already holds.
 //
 // Table 6.2.1.1-2 makes it an error: "it is an error if the XID is already present at

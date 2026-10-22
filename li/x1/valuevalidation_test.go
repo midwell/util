@@ -208,7 +208,7 @@ func TestAForeignOwnerExtensionAppliesNoCriteria(t *testing.T) {
 // operator's static declaration is the one source with no X1 answer to carry a refusal, so
 // an unusable entry is dropped — and a task naming its DID is then refused for an
 // identifier the operator believes they supplied, which is a confusing way to learn that
-// the address was wrong. SplitHostPort alone accepted a host that is not an address.
+// the address was wrong. SplitHostPort alone accepts a host that is not an address.
 func TestAConfiguredDestinationsValueIsValidated(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

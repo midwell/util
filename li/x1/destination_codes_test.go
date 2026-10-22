@@ -160,3 +160,16 @@ func TestRefusalsCarryTheirSpecificCodes(t *testing.T) {
 		})
 	}
 }
+
+// TestAZeroPaddedIPv4DestinationIsAccepted: TS 103 280's IPv4Address pattern admits a
+// leading zero in an octet, so "010.000.000.001" is a schema-valid destination address.
+// It is accepted and held, and answered, as the one canonical spelling of that endpoint.
+func TestAZeroPaddedIPv4DestinationIsAccepted(t *testing.T) {
+	srv := NewServer(store.New(), "neID")
+	mustAck(t, srv, createDestinationXML(didAgencyA, deliveryX2Only, "010.000.000.001", tcpPort("42069"), ""))
+
+	held := srv.heldDestinations()
+	if len(held) != 1 || held[0].Address != "10.0.0.1:42069" {
+		t.Errorf("the destination is held as %+v, want the canonical 10.0.0.1:42069", held)
+	}
+}

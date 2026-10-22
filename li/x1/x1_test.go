@@ -158,8 +158,8 @@ func TestKeepaliveResetsWatchdog(t *testing.T) {
 	}
 }
 
-// activateXML is the ETSI TS 103 221-1 ActivateTaskRequest from the sipgate
-// simulator's sim-to-ne examples — an independent implementation's real output.
+// activateXML is the ETSI TS 103 221-1 ActivateTaskRequest from the reference simulator's
+// sim-to-ne examples — an independent implementation's real output.
 //
 // Its dId is *not* theirs. The example says `pre-shared-did`, which is not the UUID the
 // schema types a DId as, so it is replaced here with one. An independent implementation's
