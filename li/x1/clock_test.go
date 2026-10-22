@@ -26,7 +26,9 @@ func TestTheDefaultClocksKeepTheMonotonicReading(t *testing.T) {
 		"reporter":  NewReporter("https://admf.invalid", "admfID", "neID", nil).now,
 		"requester": NewRequester("https://ne.invalid", "admfID", "neID", nil).now,
 	} {
-		if got := now(); got == got.Round(0) {
+		// == rather than Equal, deliberately: Equal ignores the monotonic reading, which is
+		// the one difference this compares.
+		if got := now(); got == got.Round(0) { //nolint:staticcheck // see above
 			t.Errorf("the %s's clock carries no monotonic reading, so its elapsed-time "+
 				"comparisons follow the wall clock and a clock step can purge or keep tasking", name)
 		}
