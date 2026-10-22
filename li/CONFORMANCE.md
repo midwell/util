@@ -42,12 +42,13 @@ named with enough detail that a reader can tell whether it matters to them.
 
 **None open.** `x1/CONFORMANCE.md` lists what the implementation does not cover.
 
-## Capabilities declared unsupported, which are not gaps
+## Capabilities refused by design, which are not gaps
 
-Five capabilities are declared permanently unsupported rather than pending. Each was read
-against the question "what here is mandatory", and none is. They are recorded so that a
-refusal is distinguishable from unfinished work: a capability the element does not implement
-is declared, not faked. Each is summarised in `README.md`'s feature table.
+These capabilities are refused by design rather than pending. Each was read against the
+question "what here is mandatory", and none is. They are recorded so that a refusal is
+distinguishable from unfinished work: a capability the element does not implement is
+declared, not faked. `README.md`'s feature table lists every refusal, including smaller ones
+not repeated here.
 
 - **Generic Objects** (TS 103 221-1 clause 6.8), and therefore **destination sets** (`dSId`,
   annex E), which are Generic Objects.

@@ -19,6 +19,11 @@ behaves and looks exactly as before, and even when active it emits nothing to
 general logs, metrics, or signalling that would reveal that a subscriber — or
 the network element itself — is being intercepted.
 
+> **Scope of this document.** These packages are a library. What this document says
+> about network-function configuration keys, Helm and OnRamp values, the BESS datapath and
+> deployment behaviour describes the SD-Core consumers — the AMF, SMF and UPF — which are
+> delivered in their own repositories.
+
 ---
 
 ## How it works
@@ -69,10 +74,12 @@ Three network functions act as POIs:
   Parameters on the target session's FAR; the UPF's BESS datapath tees a copy of
   the packets to a userspace socket, and the UPF's X3 shipper frames and
   delivers them.
-- **Keepalive fail-safe (opt-in):** when a `keepaliveTimeout` is configured and
-  the controlling ADMF goes silent (no X1 message within that window) the network
-  function purges all tasking — so warrants never outlive an operational
-  controller. It is off until that window is set.
+- **X1 keepalive (TS 103 221-1 clause 6.6.2, enabled by default):** the element runs
+  timer P2 over the X1 requests it receives. When P2 expires with nothing received, it
+  reports fault 9050 "Keepalives not received" to the ADMF, and clears the fault with
+  `FaultCleared` as soon as any X1 request arrives. Where the element is configured to
+  allow it, it then deactivates all tasks when timer P3 also expires and reports Alert
+  10000 "Database cleared" — so warrants do not outlive an operational controller.
 - **X2/X3 keepalive (on by default):** a different mechanism, in the other
   direction. ETSI TS 103 221-2 clause 6.2.4 has each POI send a Keepalive PDU on
   every delivery connection at least every TIME_P1 (60 s), and disconnect,
@@ -118,16 +125,16 @@ more expensive than one read here.
 | Area | Feature | Notes |
 |---|---|---|
 | **X1 provisioning** | `ActivateTask`, `ModifyTask`, `DeactivateTask` | ETSI TS 103 221-1, mutual TLS |
-| | `Keepalive` and the fail-safe purge of all tasking | Purge is opt-in via a keepalive window; off by default |
+| | `Keepalive`, and the clause 6.6.2 procedure when it stops | Enabled by default: fault 9050 when timer P2 expires, `FaultCleared` when the ADMF returns, and — where configured — deactivation of all tasks with Alert 10000 when timer P3 expires |
 | | The whole interrogation set clause 6.4.1 makes mandatory: `GetTaskDetails`, `GetAllDetails`, `GetAllTaskDetails`, `GetDestinationDetails`, `GetAllDestinationDetails`, `GetNEStatus`, `ListAllDetails`, `GetAllGenericObjectDetails` | How an ADMF audits what an element actually holds — and how it reconciles after one restarts. Holding nothing is a successful empty answer, not an error. Every response is validated against the published XSD |
 | | `DeactivateAllTasks`, **enabled by default** | The specification's own default. One authenticated message stops every interception on the element — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* |
 | | `RemoveAllDestinations`, **disabled by default** | A deliberate deviation: TS 103 221-1 clause 6.3.4 makes it enabled unless agreed otherwise — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)*. Answered with the specification's error when disabled (8020); when enabled, refused while any destination is referenced by a task (8010) |
 | | `CreateDestination` | DID → endpoint; the `dId` is validated as the UUID the schema defines, and re-creating one is refused with 2030 (clause 6.3.1.1) |
 | | Identifiers validated where they enter | `dId`, `xId` and `productID` are all `etsi103280:UUID` in the schema; a value outside that format is refused with 1010 rather than stored and acted on |
-| | **A target identifier populating more than one arm is refused** | `targetIdentifier` is an `xs:choice`, so two populated arms cannot occur and no reading of such a message is authoritative — 1010, as the schema error it is. Selecting one would mean this element deciding the scope of an interception your ADMF ordered. It does **not** restrict a task to one identifier: a `targetIdentifiers` *list* naming several is normal and they are combined as alternatives |
+| | **A target identifier populating more than one arm is refused** | `targetIdentifier` is an `xs:choice`, so two populated arms cannot occur and no reading of such a message is authoritative — 1010, as the schema error it is. Selecting one would mean this element deciding the scope of an interception your ADMF ordered. It does **not** restrict a task to one identifier: a `targetIdentifiers` *list* naming several is normal, and all of them must match (TS 103 221-1 table 6.2.1.2-1) |
 | | Every criterion of a nested LI_T3 list is applied | `UPFLIT3TargetIdentifier` is a sequence of choices, so a list of several is what it is for; one that cannot be mapped refuses the whole task, naming which member of how many |
 | | An unparseable request is answered with `TopLevelError` | Clause 6.1's four-field response, at HTTP 200 — clause 7.2.2.2 reserves HTTP error codes for HTTP-level errors |
-| | **Every X1 response this element receives is bound to the request that produced it** | Response type, `x1TransactionId`, both element identities and the version. A well-formed acknowledgement from an endpoint naming a different NE is refused, and reported as `x1ResponseUnattributable` — distinct from the POI refusing, because the operator action is the opposite one. See *[Standards](#standards)* for what this does and does not defend against |
+| | **Every X1 response this element receives is bound to the request that produced it** | Response type, `x1TransactionId`, both element identities and the version. A well-formed acknowledgement from an endpoint naming a different NE is refused, and reported as `x1ResponseUnattributable` — distinct from the POI refusing, because the operator action is the opposite one |
 | | `DeactivateTask` refuses what it cannot honour | Table 6.2.3-2: "it is an error if the XID is not already present at the NE" — 2020. See *[A deactivation is not always a success](#a-deactivation-is-not-always-a-success)* |
 | **Delivery destinations** | **A task's product goes to the destinations the task named** | `listOfDIDs`, for X2 as for X3. TS 33.128 marks it mandatory in every ActivateTask table it defines — see *[Where a task's product goes](#where-a-tasks-product-goes)* for the three sources and their precedence |
 | | Destinations **provisioned over X1** with `CreateDestination` | Source 1, and the one that wins |
@@ -140,12 +147,12 @@ more expensive than one read here.
 | | The element answers for the conditions it can currently observe | `GetNEStatus` reports `mdfUnreachable` while delivery is failing and `x3EgressDown` while the datapath egress is down, and stops reporting each when it stops holding — see *Asking an element how it is* below |
 | **Targets** | SUPI/IMSI, PEI/IMEI, GPSI/MSISDN | |
 | | Six of the nine LI_T3 detection criteria of TS 33.128 table 6.2.3-7, plus UE IP Address for IPv4 | Session ID, tunnel ID, TCP/UDP port, network instance, tunnel direction, PDR; UE IP Address for IPv4. **PDR ID and QER ID are refused**, because they name a rule allocated per PFCP session and reused across sessions — see *LI_T3 detection criteria* below |
-| | Several criteria on one task, matched as alternatives | Traffic matching any of them is intercepted, and ships **once** however many matched |
+| | Several criteria on one task, all of which must match | TS 103 221-1 table 6.2.1.2-1: "Where multiple criteria are present, all criteria are required to be matched." A combination this element cannot evaluate together is refused before the task is acknowledged |
 | | Criteria replaced by `ModifyTask`, mid-interception | Table 6.2.3-8. The task is not torn down: superseded traffic stops, newly selected traffic starts, attribution is unchanged |
 | | A `ModifyTask` that changes the **products** a task requires | Adding CC begins content interception for the target's existing sessions; removing it withdraws the trigger and clears the duplication. Derived from the task as a whole rather than from its target identifiers, so a change that leaves the target alone is still a change |
 | | A criterion this element cannot evaluate is refused **before** the task is acknowledged | Accepting one would leave the requesting function believing an interception is running that can never produce anything — undiscoverable from outside |
-| **IRI (X2)** | Every xIRI record TS 33.128 defines for the AMF and SMF is accounted for — produced, or out of scope with the reason | 16 of the 25 produced; see *Which xIRI records this produces* below. A count is not a coverage claim: "11 record types" was true of an implementation missing six mandated ones |
-| | TS 33.128 ASN.1 (BER) encoding | Verified against the published module, not against our own codec |
+| **IRI (X2)** | Every xIRI record TS 33.128 defines for the AMF and SMF is accounted for — produced, or out of scope with the reason | 16 of the 25 produced; see *Which xIRI records this produces* below. A count is not a coverage claim, so the records are listed |
+| | TS 33.128 ASN.1 (BER) encoding | Each record's tags, optionality and value bounds are audited against the text of the published module, and every encoding is pinned as fixed hex |
 | | Activation mid-session, on already-established sessions | |
 | | Delivery asynchronous, off the signalling path | A slow MDF cannot delay a target's signalling |
 | **CC (X3)** | UPF CC-POI duplication via the PFCP `DUPL` apply-action | Both directions |
@@ -379,8 +386,8 @@ addresses each of them to something this element is not.
 > delivery function). This shall be included between the ADMF and the MDF.
 
 The AMF, SMF and UPF host POIs, not an MDF, so the details are not addressed to them.
-Disregarding them is conformant; refusing them would refuse a legal task. An implementation
-of an MDF2, every field inside the structure — including the `StartTime` and
+Disregarding them is conformant; refusing them would refuse a legal task. For an MDF2
+implementation, every field inside the structure — including the `StartTime` and
 `EndTime` of the authorisation — becomes mandatory work.
 
 **`implicitDeactivationAllowed`** —
@@ -424,9 +431,10 @@ types in table 6.2.3-7. What this implementation does with each:
 | GTP Tunnel Direction | `TargetIdentifierExtension/GTPTunnelDirection` | **Yes** | The PDR's source interface, and the datapath's tag on each copy |
 | PDR | `TargetIdentifierExtension/PDR` | **Yes**, except where the rule leaves a field for this element to assign | The encoded Create PDR IE, parsed with the agent's own PFCP parser and compared against a session's rules in that form. A rule asking the UPF to allocate the UE address or choose the tunnel endpoint (`CH`) is refused: it names a value this element assigns, so it can never compare equal |
 
-A task's criteria are a list, and its entries are **alternatives**: traffic
-matching any one of them is intercepted, once. A triggering function needing
-traffic that matches a *combination* of properties cannot express it as a list.
+A task's criteria are a list, and **all of them must match** (TS 103 221-1 table
+6.2.1.2-1): traffic is intercepted when it satisfies every criterion, once. A combination
+this element cannot evaluate together is refused at activation, as the same table
+requires.
 
 What is left is the two rule identifiers and the IPv6 form of UE IP Address.
 
@@ -439,12 +447,12 @@ that warrant, indistinguishable downstream from the traffic it did name. That is
 interception of subjects the warrant does not name, which is the one failure this plane
 may never have.
 
-They cannot be rescued by qualification. A task's criteria are *alternatives*, so naming
-the PFCP Session ID beside the rule ID widens the interception rather than narrowing it;
-and nothing in a duplicated copy distinguishes the intended session's rule from any
-other session's rule of the same number, because every one of them holds it
-legitimately. So the element refuses the criterion at activation, with a reason, rather
-than acknowledging an interception that over-collects.
+Qualification does not make them worth supporting. Beside a PFCP Session ID, with all
+criteria required to match, a rule ID only narrows a selection the Session ID already makes
+to one session; on its own, it names every session holding a rule of that number, and
+nothing in a duplicated copy distinguishes the intended session's rule from any other's.
+So the element refuses the criterion at activation, with a reason, rather than accepting a
+form whose only new reach is over-collection.
 
 A triggering function needing to intercept one session's traffic has the PFCP Session ID,
 which is exactly that and is supported.
@@ -561,7 +569,9 @@ with the specification's own error (8020).
 
 Both are **deployment configuration**, because TS 103 221-1 makes them a matter of prior
 agreement — "It should be agreed in advance as to whether the DeactivateAllTasks request is
-enabled or disabled" — and an agreement differs per deployment. Honouring one is not
+enabled or disabled" (clause 6.2.4) and "It shall be agreed in advance as to whether the
+RemoveAllDestinations request is enabled or disabled" (clause 6.3.4) — and an agreement
+differs per deployment. Honouring one is not
 supposed to need a rebuilt image.
 
 | Element | Where | Keys |
@@ -573,7 +583,7 @@ Each is a **tri-state**, and leaving it out is a meaningful answer rather than a
 
 | Value | Meaning |
 |---|---|
-| unset | "no agreement in advance", the specification's phrase. Bulk deactivation is performed, the specification's default; bulk destination removal is refused, the one deviation from it (see above) |
+| unset | "no agreement in advance", the specification's phrase. Bulk deactivation is performed, the specification's default; bulk destination removal is refused, a deliberate deviation from it (see above) |
 | `false` | the operation is refused, with the error the specification defines for it (5010 / 8020) |
 | `true` | the operation is performed |
 
@@ -613,7 +623,7 @@ turning them off cannot break content interception:
 
 **On the AMF and SMF neither direction is recommended.** Their X1 peer is the agency's ADMF,
 and the setting follows the agreement between you and that agency. The bulk-deactivation
-default is the specification's; the bulk-removal default is the one deviation, stated
+default is the specification's; the bulk-removal default is a deliberate deviation, stated
 above.
 
 The defaults are not changed per element to match the UPF recommendation: an element would
@@ -795,15 +805,16 @@ interception emits that record at all. See the out-of-scope note above.
 
 **The two handover records have never been produced by a real handover.**
 
-Everything else in the tables above has been exercised end to end against a live
-cluster: a record is generated, delivered over X2, and decoded at the receiving end
-against the published ASN.1 module. `AMFRANHandoverCommand` and `AMFRANHandoverRequest`
-have not, because an N2 handover needs two RAN nodes and the test deployment had one.
+Everything else in the tables above has been exercised end to end in an SD-Core deployment,
+outside this repository: a record is generated, delivered over X2, and decoded at the
+receiving end against the published ASN.1 module. `AMFRANHandoverCommand` and
+`AMFRANHandoverRequest` have not, because an N2 handover needs two RAN nodes and that
+deployment had one.
 
 What *is* established for them:
 
-- both encode and decode against `TS33128Payloads.asn` with every mandatory member
-  populated, using the same module-conformance check the other records pass;
+- both encode with every mandatory member populated, and pass the same tag, optionality
+  and bounds audits against `TS33128Payloads.asn` as the other records;
 - unit tests cover each cause group, the carried source-to-target container, an
   incomplete handover emitting nothing rather than a partial record, and silence for an
   untasked subscriber;
@@ -1204,15 +1215,17 @@ lists the open gaps across all three in one place — start there.**
   the M/C/O verdict for every field the published ASN.1 module defines and they do not
   populate.
 
-All three are readings rather than checks where the specification is prose, and each says
-which it is. Two mechanical checks sit beside them: `iri/asn1_drift_test.go` fails when the
+The X2/X3 and IRI dispositions are readings rather than checks, and each says which of its
+statements are: ETSI publishes nothing machine-readable for X2/X3 framing, and the M/C/O
+markers of the IRI records live in prose tables. X1 also has a schema validator. Two mechanical checks sit beside them: `iri/asn1_drift_test.go` fails when the
 module defines a field no record models and nothing declares it absent, and
 `x1/schema_drift_test.go` fails when the X1 schema defines an element no struct declares.
 Neither can notice that a "shall" in the prose has no code behind it, which is what the
 dispositions are for.
 
-The published X1 schemas are vendored under `x1/testdata/schemas/`, pinned by digest, with
-their source URLs and versions beside them. Every X1 message this element sends is
+The X1 schemas are vendored under `x1/testdata/schemas/` — the ETSI schemas as published on
+ETSI Forge (CR branch `cr/103120/088`), the 3GPP extension from the TS 33.128 attachments —
+pinned by digest, with their source URLs and versions beside them. Every X1 message this element sends is
 validated against them in test, and `x1/testdata/schemas/SOURCES.md` records the exact
 statements the provisioning decisions rest on, so a reviewer can check one against the
 other without re-downloading anything.
@@ -1250,7 +1263,18 @@ element tells a provisioning function something is wrong.
 asserts the boundary values directly, so a return to a stripping format fails every case
 rather than one run in ten.
 
-### One knowing departure, put here rather than left to be discovered
+### Deliberate deviations
+
+Three places where these packages depart from the letter of TS 103 221-1, each for a stated
+reason; `x1/CONFORMANCE.md` records them with the rest of its dispositions.
+
+- **`RemoveAllDestinations` is disabled by default**, where clause 6.3.4 enables it absent
+  agreement — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)*.
+- **The emitted X1 Version is `v1.6.1`** while the behaviour is built against V1.21.1 — see
+  `x1/CONFORMANCE.md`, *Message envelope*.
+- **`CorrelationID` is acted on by the triggered CC-POI**, below.
+
+#### `CorrelationID` on X3
 
 TS 103 221-1 says of `CorrelationID`:
 
