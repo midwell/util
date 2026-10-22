@@ -13,10 +13,6 @@ disagree, the prose is normative for behaviour and the schema still decides what
 `testdata/schemas/README.md` carries that tension, and `SOURCES.md` carries the quoted
 statements the provisioning decisions rest on.
 
-**This disposition was last reviewed 2026-08-15.** The revisions above say what was read;
-this says when, so that a statement quoted from here can be checked against the revision of
-this document it was taken from.
-
 When a newer revision is published, this document is what tells you whether the code
 disagrees with the specification or merely predates it. That distinction is the reason the
 versions are stated at the top rather than left implied.
@@ -31,9 +27,8 @@ package uses it in both directions:
   published XSD. It catches a malformed answer.
 - **`schema_drift_test.go`** compares the schema's own content models against the structs
   this package declares, and fails on an unmodelled element. It catches what this element
-  fails to *read* — the class that produced two earlier defects, where an unmodelled
-  `xs:sequence` element was silently discarded and the task acknowledged with the
-  discarded narrowing thrown away.
+  fails to *read* — an unmodelled `xs:sequence` element would be silently discarded and the
+  task acknowledged with the narrowing it carried thrown away.
 
 So the questions this document answers are the ones neither check can reach: **which of the
 specification's messages this element implements at all, what it refuses and with which code,
@@ -41,7 +36,24 @@ and where a deliberate decision diverges from the prose.** A schema cannot say t
 type is unimplemented, and it cannot say that a "shall" in clause 6 has no code behind it.
 
 Do not close a question about this package by citing this document alone. It is a reading,
-and it is only as current as its version stamp.
+and it is only as current as the revisions it names.
+
+## Deliberate deviations
+
+Three places where this element departs from the letter of TS 103 221-1, each for a stated
+reason. Everything else in this document is a disposition, not a deviation.
+
+- **`RemoveAllDestinations` is disabled by default.** Clause 6.3.4 enables it unless agreed
+  otherwise, as it does `DeactivateAllTasks`. Bulk deactivation keeps the clause's default,
+  because stopping every interception fails safe; bulk destination removal is off until a
+  deployment enables it (`WithRemoveAllDestinations`), because it strands an element that is
+  still tasked with nowhere to deliver. See *Destinations* below.
+- **`CorrelationID` is acted on by the triggered CC-POI**, which clause 6.2.1.2 says a
+  non-mediation NE "shall" ignore. TS 33.128 table 6.2.3-6 makes it mandatory on the LI_T3
+  trigger and the means of joining content to signalling; the reasoning and both quotations
+  are in `testdata/schemas/SOURCES.md`.
+- **The emitted Version is `v1.6.1`** while the behaviour is built against v1.21.1 — a knowing
+  understatement, explained under *Message envelope*.
 
 ## Message envelope — table 6.1-1
 
@@ -50,10 +62,10 @@ and it is only as current as its version stamp.
 | ADMF Identifier | M | Emitted on every message. On inbound, bound per message to the configured responsible ADMF **and** to the peer's X.509 certificate (clause 8.2.4) — 1030 on a certificate mismatch, 1040 on an unexpected ADMF |
 | NE Identifier | M | Emitted from configuration. On inbound, a message naming a different NE is refused with 1060 |
 | MessageTimestamp | M | Emitted as the TS 103 280 Qualified Microsecond Date Time, rendered to a fixed six digits — see `li/README.md`, *X1 timestamps are rendered to a fixed six digits*, for why that is a conformance decision and not a formatting one |
-| Version | M | Emitted as `v1.6.1`. Read below |
+| Version | M | Emitted as `v1.6.1` on the requests and reports this element originates; a response echoes the version its request carried — see *Echo substitution*. Read below |
 | X1TransactionID | C | Echoed on every response. Generated per request when this element is the requester. Substituted when a peer's value is outside the TS 103 280 UUID format — see *Echo substitution* |
 
-**The emitted Version is `v1.6.1`, and the behaviour is built against v1.21.1.** This is a
+**The Version this element originates is `v1.6.1`, and the behaviour is built against v1.21.1.** This is a
 knowing understatement rather than a claim: clause 4.5 makes minor increments backwards
 compatible, so declaring an older revision than you implement is the direction that cannot
 mislead a peer into expecting a message you do not answer. The reverse would be. It is
@@ -125,17 +137,17 @@ this element cannot honour, and the existing ordering — malformed checked befo
 — puts it in the right place: asking whether the contents could be honoured presumes a
 well-formed message.
 
-The arms are counted over every field of the structure rather than in the order the mapping
-switch happens to try them. That ordering is what let the cardinality go unchecked, so a guard
-sharing it would inherit the same blind spot.
+The arms are counted over every field of the structure — unmodelled ones included — rather
+than in the order the mapping switch happens to try them: a guard sharing that order would
+leave the cardinality unchecked wherever the switch stopped first.
 
 **The same rule applies to the inner choice.** `UPFLIT3TargetIdentifier` is a sequence *of*
 choices, so several members are valid and several arms of one member are not — and the reason
 is unchanged: a member with two arms has no authoritative reading, so selecting one narrows or
 widens an interception by this element's decision rather than the provisioning function's.
 Also 1010, naming which criterion of how many. Checking the outer choice and not this one
-would have left the identical defect at the one level where a CC-POI actually reads its
-detection criteria.
+would leave the identical gap at the one level where a CC-POI actually reads its detection
+criteria.
 
 **This does not forbid a task from carrying several target identifiers.** The documented
 precedence — subscriber identifiers before packet criteria, because a task carrying both is
@@ -146,13 +158,11 @@ identifier. The two rules are about different levels of the structure.
 **Every member of a `UPFLIT3TargetIdentifier` list becomes a criterion.** It is a SEQUENCE OF
 CHOICE, so a list of several is what the structure is for, and a CC-POI is already required to
 intercept traffic matching any criterion a task carries. A member that cannot be mapped
-**refuses the whole task**, naming which member of how many — the rule already applied to the
-outer list, applied one level deeper where it was not. An empty list is refused, unchanged.
-
-Until 2026-08-15 this mapped only the first member and dropped the rest, which acknowledged a
-task while running an interception narrower than the one ordered. That under-collection was
-invisible to every party: the triggering function was told the task was accepted, and the
-mediation function received well-formed product for the criterion that survived.
+**refuses the whole task**, naming which member of how many — the rule applied to the outer
+list, applied one level deeper. An empty list is refused. Mapping only some members would
+acknowledge a task while running an interception narrower than the one ordered, invisibly to
+every party: the triggering function would be told the task was accepted, and the mediation
+function would receive well-formed product for the criteria that survived.
 
 ## Destinations — clause 6.3
 
@@ -161,13 +171,14 @@ mediation function received well-formed product for the criterion that survived.
 | `CreateDestination` (6.3.1) | Implemented. `dId` validated as the schema's UUID; re-creating an existing DID refused with **2030** per clause 6.3.1.1 |
 | `ModifyDestination` (6.3.2) | **Not implemented**, refused with 1080. Optional in TS 103 221-1 |
 | `RemoveDestination` (6.3.3) | **Not implemented**, refused with 1080. Optional |
-| `RemoveAllDestinations` (6.3.4) | Implemented, **disabled by default** — answered with the specification's own error, 8020, when disabled. When enabled, refused with **8010** while any destination is still referenced by a task, which is the guard the specification itself puts on bulk removal |
+| `RemoveAllDestinations` (6.3.4) | Implemented, **disabled by default** — a deliberate deviation from clause 6.3.4, which enables it unless agreed otherwise. Answered with the specification's own error, 8020, when disabled. When enabled, refused with **8010** while any destination is still referenced by a task, which is the guard the specification itself puts on bulk removal |
 
-The asymmetry between bulk deactivation (on by default) and bulk destination removal (off by
-default) is the standard's, not this element's. Deactivating everything fails safe —
-interception stops, which is the direction this capability fails in anyway. Removing every
-destination is not symmetric with that: it strands an element that is still tasked and now has
-nowhere to deliver.
+The asymmetry between bulk deactivation (on by default, as clause 6.2.4 has it) and bulk
+destination removal (off by default, against clause 6.3.4) is this element's choice.
+Deactivating everything fails safe — interception stops, which is the direction this
+capability fails in anyway. Removing every destination is not symmetric with that: it strands
+an element that is still tasked and now has nowhere to deliver, so it waits for a deployment
+to agree to it.
 
 **`deliveryAddress` must be an IP address and port.** A URI, an E.164 number or an email
 address is refused with **6020**, the registry's own entry for an unsupported delivery address
@@ -201,14 +212,10 @@ Two properties of the answers matter more than the coverage:
   `deliveryFault` while the element cannot reach that destination's endpoint,
   `activeAndWorking` while it can, computed per request and never cached — so a destination
   that recovers is reported as recovered without anything having to clear a stored flag. The
-  answer comes from the same reachability state `ReportDestinationIssue` reports from, which is
-  the point: until 2026-08-19 this field was hard-coded `activeAndWorking`, so an element that
-  had just told the ADMF an endpoint was unreachable answered "working" when the ADMF checked.
-  Interrogation is how a provisioning function checks a pushed report, so the answer it would
-  have acted on was the wrong one — and wrong in the unsafe direction, claiming product was
-  arriving when it was not. An element that supplies no reachability answer at all still
-  reports `activeAndWorking`; that is now a stated default rather than a claim made on its
-  behalf.
+  answer comes from the same reachability state `ReportDestinationIssue` reports from, so an
+  element that has just told the ADMF an endpoint is unreachable does not answer "working"
+  when the ADMF checks. An element that supplies no reachability answer at all reports
+  `activeAndWorking`, as a stated default.
 
 `GetTaskDetails` round-trips a task's target identifiers back into the vocabulary the request
 used, across every identifier type this element models, so an ADMF can compare what the
@@ -220,23 +227,21 @@ which is verified and re-derived in the answer. A wrong check digit is schema-va
 refused as the operation's failure (3000 on activation) naming the check digit; a value of
 the wrong length is outside the type and refused with 1010.
 
-### What the status answer does not cover — declared 2026-08-25
+### What the status answer does not cover
 
 `GetNEStatus` answering "the conditions the element can currently observe" is only half a
 statement. **The conditions it does not answer for are named here**, so that "no faults" is a
-stated answer rather than an omission. Until now it was an omission.
+stated answer rather than an omission.
 
-**The CC-POI does not answer for a disagreement between its record of what it programmed and what
-the datapath actually holds.** It cannot: the BESS `ExactMatch` module carrying each FAR's
-duplication flag accepts `add`, `delete`, `clear` and `set_default_gate` and offers no read, so the
-element's own record is the only copy of that state on the control-plane side. There is no peer to
-ask, and so no path that could ask again.
+**The CC-POI does not answer for a disagreement between its record of what it programmed and
+what the datapath actually holds.** It cannot: the UPF's BESS `ExactMatch` module carrying each
+FAR's duplication flag accepts `add`, `delete`, `clear` and `set_default_gate` and offers no
+read, so the element's own record is the only copy of that state on the control-plane side.
 
-The consequence is stated rather than left to be inferred. Where a rule is programmed into the
-datapath but not recorded — the case `omec-project/upf#1219` exists to remove — content can be
-duplicated with no task covering it, and **an interrogation of this element will answer that no
-fault holds**, because by its own record none does. The copies are dropped as unattributable rather
-than delivered, so no agency receives them; the condition is invisible from both ends.
+Where a rule is programmed into the datapath but not recorded, content can be duplicated with
+no task covering it, and **an interrogation of this element will answer that no fault holds**,
+because by its own record none does. The copies are dropped as unattributable rather than
+delivered, so no agency receives them; the condition is invisible from both ends.
 
 Three things bound it, and none of them makes it observable:
 
@@ -250,57 +255,37 @@ Three things bound it, and none of them makes it observable:
 A divergence therefore persists until the next event touching that session. For an idle,
 long-lived session there may be none.
 
-**Corrected 2026-08-26 — the divergence itself is detectable, and this entry first said it was
-not.** Two different events were conflated. The *recovery* is unobservable, for the reason above.
-The *onset* is not: it happens when a batch of rule writes fails to complete within its deadline,
-and at that point the element holds both facts it needs — that the batch was not confirmed, and
-whether the rules in it carried duplication. Nothing in the datapath has to be read to know this;
-it is the element's own send path.
-
-So of the two reporting routes, only one is closed. **Updated 2026-08-26 — the open one is now
-implemented, and the closed one turns out to be narrower than first declared:**
+**The onset is observable where the element itself caused the uncertainty.** A rule write that
+does not complete within its deadline is the element's own send path: it knows the batch was
+unconfirmed and whether the rules in it carried duplication. Of the three reporting routes,
+two are therefore implemented:
 
 | Route | Available | State |
 |---|---|---|
-| Answer at **element** scope in `GetNEStatus` — a record/datapath disagreement in general | **no** — needs a read the BESS module does not offer | declared, still open |
-| Answer at **task** scope, where this element itself created the uncertainty | **yes** | **implemented** — `duplicationNotProgrammed` |
-| Report the onset when it happens, over the push mechanism | **yes** | **implemented** — `duplicationRefused` |
+| Answer at **element** scope in `GetNEStatus` — a record/datapath disagreement in general | **no** — needs a read the BESS module does not offer | declared, open |
+| Answer at **task** scope, where this element itself created the uncertainty | **yes** | `duplicationNotProgrammed` |
+| Report the onset when it happens, over the push mechanism | **yes** | `duplicationRefused` |
 
-The element still cannot answer for the general case: where the datapath diverged for a reason this
-element never observed, its record is the only copy and there is nothing to compare it against.
+An unconfirmed write is recorded as *not* duplicating rather than as the value intended, so the
+next re-derivation rewrites the rules instead of skipping them, and an interrogation of the
+task answers `duplicationNotProgrammed` instead of claiming the task is faultless.
 
-**But where the element itself could not confirm a write, it has always held the facts**, and the
-first version of this entry was wrong to declare that unobservable. A refused rule write is the
-element's own send path: it knows the batch was unconfirmed and knows whether the rules carried
-duplication. It now records such a write as *not* duplicating rather than as the value it intended,
-which has two consequences — the next re-derivation rewrites the rules instead of skipping them, and
-an interrogation of the task answers `duplicationNotProgrammed` instead of claiming the task is
-faultless. The onset is additionally reported as `duplicationRefused` when it happens.
+**One asymmetry is declared rather than fixed, and it is load-bearing.** The pass that
+re-derives duplication distrusts its own record **only when the answer is "off"**: a rule
+recorded as not duplicating, which this element has ever turned on, is re-pushed whatever the
+record claims. A rule recorded as *duplicating*, where the tasking agrees, is skipped.
 
-Recorded at this length because the mistake is instructive: declaring a condition unobservable when
-only part of it is unobservable understates what the element owes, and the part that *was*
-observable was the part that mattered.
+That is deliberate and it is the right way round — over-collection is the graver harm and must
+never be permanent. The cost is that the opposite failure is not self-correcting from the
+record alone: an element that records a rule as duplicating when it does not know whether the
+write landed would skip that rule on every later pass, for the life of the session, and answer
+that the task is faultless throughout. Recording an unconfirmed write as not duplicating closes
+that on every path that arises today; any new caller recording a write it could not confirm
+must do the same, because nothing in the pass would catch it.
 
-**One asymmetry is declared rather than fixed, and it is load-bearing.** The pass that re-derives
-duplication distrusts its own record **only when the answer is "off"**: a rule recorded as not
-duplicating, which this element has ever turned on, is re-pushed whatever the record claims. A rule
-recorded as *duplicating*, where the tasking agrees, is skipped.
-
-That is deliberate and it is the right way round — over-collection is the graver harm and must never
-be permanent. The cost is that the opposite failure is not self-correcting from the record alone: an
-element that records a rule as duplicating when it does not know whether the write landed will skip
-that rule on every later pass, for the life of the session, and answer that the task is faultless
-throughout.
-
-This element closes that on the path where it arises, by recording an unconfirmed write as *not*
-duplicating. **The asymmetry itself remains**, so a future path that records what it intended rather
-than what the datapath confirmed reintroduces the condition, and nothing in the pass will catch it.
-Any new caller recording a write it could not confirm must record it as not duplicating.
-
-Closing this needs a read path into the datapath, which needs a command the BESS module does not
-have. It is declared here rather than deferred silently because the requirement is on the element
-regardless of whether the capability exists: a condition whose observation and classification
-cannot be made to agree must be named, not omitted.
+Closing the general case needs a read path into the datapath, which needs a command the BESS
+module does not have. It is declared here because a condition whose observation and
+classification cannot be made to agree must be named, not omitted.
 
 ## Issue reporting — clause 6.5
 
@@ -311,7 +296,8 @@ cannot be made to agree must be named, not omitted.
 | `ReportNEIssue` (6.5.4) | Implemented, with the closed `TypeOfNEIssueMessage` enumeration — `Warning`, `FaultCleared`, `FaultReport`, `Alert` — and issue codes from table 6.7-3 |
 | `TopLevelError` (6.1) | Implemented: an unparseable request is answered with `X1TopLevelErrorResponse` and its four fields, at HTTP 200 per clause 7.2.2.2 |
 
-**Reports are throttled to one per issue type per 30 seconds**, and this is a conformance
+**Reports are throttled to one per condition per 30 seconds** (see *Scope* below for what a
+condition is), and this is a conformance
 statement rather than a performance one: an ADMF that receives one report of a persistent
 fault has been told about it, and an ADMF flooded off the interface has not. It also means a
 condition that recurs inside the window is reported once, so a report is evidence that a
@@ -326,12 +312,10 @@ exists to avoid — and it means the fault channel is best-effort by constructio
 
 Clause 6.5.1 scopes an issue three ways — to a task, to a delivery destination, or to the
 whole network element — and **the scope is what tells a provisioning function where to act**.
-Until 2026-08-15 this element collapsed the middle case into the third: every site that
-noticed an unreachable mediation function reported `mdfUnreachable` at element scope, so an
-ADMF that had provisioned several destinations learned one of them was unreachable and could
-not learn which.
+Reported at element scope, an unreachable mediation function would tell an ADMF that had
+provisioned several destinations that one of them was unreachable, and not which.
 
-A destination-scoped fault is now reported as one, naming the DID. **Naming it is not a
+A destination-scoped fault is reported as one, naming the DID. **Naming it is not a
 widening of what this channel discloses**: it is the provisioning function's own identifier
 for an endpoint it created, and it names neither a target nor a warrant. Where one endpoint
 serves several provisioned identifiers, the fault is reported for each — the provisioning
@@ -340,23 +324,20 @@ require it to know how this element resolves them.
 
 **A fault that ends is reported as having ended**, per clause 5.3 — "The NE shall also
 indicate that a fault has been cleared (see clauses 6.5.2 and 6.5.3) unless otherwise
-configured" — as `AllClear` at task and destination scope and `FaultCleared` at element
-scope. Both values were declared in this package from the beginning and emitted by nothing,
-so an ADMF told a fault began was never told it ended.
+configured" — as `AllClear` at destination scope and `FaultCleared` at element scope.
 
 Three properties of how that is done, because each is a place the obvious implementation is
 wrong:
 
 - **One party owns both edges.** Reachability is re-observable — every supplier answers from
   state its senders already hold — so an ending is detectable, which is what makes the
-  clearing report possible at all. Nothing in the delivery layer signals recovery, and adding
-  a recovery callback beside the failure one would have put edge detection at five sites
-  across three network functions, each free to disagree about what "recovered" means. An
-  element where one party announces and another retracts eventually announces something
-  nobody retracts.
-- **The report is no later than it was.** Moving it off the delivery path would otherwise
-  have delayed first notice by up to one sampling interval; the sites that used to report now
-  ask the watcher to sample immediately, so the decision moved and the promptness did not.
+  clearing report possible at all. Nothing in the delivery layer signals recovery, and a
+  recovery callback beside the failure one would put edge detection at every delivery site
+  in every network function, each free to disagree about what "recovered" means. An element
+  where one party announces and another retracts eventually announces something nobody
+  retracts.
+- **The report is not delayed by sampling.** The sites that notice a delivery failure ask the
+  watcher to sample at once, so first notice does not wait for the next sampling interval.
 - **A fault that cannot be re-observed gets no clearing report.** A destination that could
   not be *prepared* is a credential or configuration fault rather than a reachability one,
   and a fault that cannot be observed to hold cannot be observed to end. Those are still
@@ -372,25 +353,20 @@ supplies that. The status answer remains determined from what is observable when
 and remains not a history of what was reported. These are the standard's own two mechanisms,
 answering "what changed" and "what holds now", and each is insufficient alone.
 
-**Report rate limiting is scoped to the condition, not to the message type.** One issue type
-was the right key while every report was element-scoped; it becomes wrong the moment a report
-names a destination, because two destinations failing inside one window would be one report
-and whichever failed first would hide the other. The limit also does not apply across a state
-change: a fault beginning and that same fault clearing are two events, not a repetition, and
+**Report rate limiting is scoped to the condition, not to the message type.** Keyed by issue
+type alone, two destinations failing inside one window would be one report, and whichever
+failed first would hide the other. The limit also does not apply across a state change: a fault beginning and that same fault clearing are two events, not a repetition, and
 throttling the second against the first would report a fault this element never retracts.
 
-### The withdrawal-durability surface
+### Withdrawal durability
 
-Withdrawal durability adds X1-visible behaviour. It is recorded here because there is
-nowhere else in a distributed document that it appears.
+How this element keeps a withdrawal from being lost has X1-visible consequences, recorded here
+because there is nowhere else in a distributed document that they appear.
 
-- **`OnTaskChange`** replaced the `OnActivate`/`OnDeactivate` pair as the lifecycle callback,
-  and the reason is an X1 semantics one. A `ModifyTask` keeps the XID, so "the old task" and
-  "the new task" share a key; a POI receiving them as two events had to infer an ordering the
-  provisioning interface never states, and where it installed state for the new task and
-  removed state for the old under that shared key, the removal could reclaim what the
-  installation had just created. One event per transition, carrying the task as it was and as
-  it becomes, states what X1 actually said.
+- **`OnTaskChange` is the lifecycle callback: one event per transition**, carrying the task as
+  it was and as it becomes. A `ModifyTask` keeps the XID, so as two events "the old task" and
+  "the new task" would share a key, and a POI that installed state for the new task and
+  removed state for the old under it could reclaim what the installation had just created.
 - **An exact replay is not a transition and fires nothing.** Re-provisioning is how a
   provisioning function restores tasking after a restart, and it must not re-emit records
   reporting the beginning of an interception that never stopped.
@@ -427,19 +403,22 @@ does. The codes it emits, and what each means here:
 
 | Code | Meaning | Where |
 |---|---|---|
-| 1010 | Syntax/schema error | An identifier outside the format the schema defines, or a `targetIdentifier` populating more than one arm of the schema's choice |
-| 1030 | ADMF Identifier does not match certificate details | Clause 8.2.4 binding |
+| 1000 | Generic error | The fallback for a refusal no more specific code fits. Every path this element knows names a specific one |
+| 1010 | Syntax/schema error | A message violating its own schema: a missing mandatory element (`xId`, `dId`, `taskDetails`, `destinationDetails`); an identifier or target value outside the format the schema defines; a `deliveryType` outside its enumeration; an IPv6 destination address with a zone or in IPv4-mapped form; a `targetIdentifier` populating more than one arm of the schema's choice; a request carrying no message (answered as a `TopLevelError`) |
+| 1030 | ADMF Identifier does not match certificate details | Clause 8.2.4 binding, and any message arriving without a client certificate |
 | 1040 | Unexpected ADMF Identifier | A peer in the LI domain that is not this element's responsible ADMF |
 | 1060 | Unexpected NE Identifier | A message addressed to a different element |
 | 1080 | Unsupported request | An unimplemented message type, and the Generic Object CRUD |
-| 2020 | XID does not exist on NE | `DeactivateTask` / `GetTaskDetails` for tasking not held |
+| 2020 | XID does not exist on NE | `DeactivateTask`, `ModifyTask` or `GetTaskDetails` for tasking not held |
 | 2030 | DID already exists on the NE | `CreateDestination` re-creating a DID |
-| 3000 / 3001 | Generic ActivateTask / ModifyTask failure | Task details this element cannot honour and has no more specific code for |
+| 2040 | DID does not exist on the NE | `GetDestinationDetails` for a DID not held; a task naming a destination identifier the element cannot resolve |
+| 3000 / 3001 | Generic ActivateTask / ModifyTask failure | Task details this element cannot honour and has no more specific code for, including an IMEI whose check digit does not match |
 | 3050 | Unsupported ServiceType | `listOfServiceTypes` |
-| 6000 | Generic destination failure | |
+| 5010 | DeactivateAllTasks not enabled | `DeactivateAllTasks` on an element configured without it |
+| 6000 | Generic CreateDestination failure | A destination this element declines to create with no more specific code: an unrecognised destination extension, or a DID declared in configuration and referenced by an active task |
 | 6020 | Unsupported DeliveryAddress type | A URI, E.164 number or email address |
 | 8010 | Destinations in use | `RemoveAllDestinations` while a task still references one |
-| 8020 | RemoveAllDestinations not enabled | |
+| 8020 | RemoveAllDestinations not enabled | `RemoveAllDestinations` on an element that has not enabled it, the default |
 
 **Malformed is checked before unhonourable**, and the ordering is deliberate: a message that
 violates its schema has no authoritative reading at all, so asking whether the element could
@@ -479,14 +458,10 @@ resolves the warrant's own X3 destinations, provisions each distinct endpoint at
 only a task that names no X3 destination the element can resolve — the same three-source
 precedence, and the same fallback, that the IRI path applies to `mdf2`.
 
-Until 2026-08-17 it did not. A task's X3 destinations were parsed, resolved, carried into the
-task and then ignored: every trigger named one endpoint, the one in the triggering function's
-own configuration. With a single agency that is invisible. With two, both agencies' **content**
-— the subscriber's own traffic, not metadata — arrived wherever configuration happened to
-point, which is the disclosure `li-security-isolation` forbids unconditionally for every
-product type and every delivery path. It survived the equivalent fix on the IRI path because
-that fix was made in the IRI-POI, and the content path resolves its destinations somewhere
-else entirely.
+Naming the triggering function's own configured endpoint on every trigger instead would be
+invisible with a single agency. With two, both agencies' **content** — the subscriber's own
+traffic, not metadata — would arrive wherever configuration happened to point, crossing from
+one agency to another, which no product type and no delivery path may do.
 
 **A change to a task's labelling reaches the triggers already installed for it.** Where a
 `ModifyTask` changes the `productID` a warrant's product is labelled with, its correlation
@@ -534,10 +509,6 @@ fail-safe cannot reclaim the tasking either. Reported only as `taskingWithdrawal
 presents as a POI at fault while the POI is answering perfectly well and being disbelieved
 here — and the operator action is the opposite one.
 
-Until 2026-08-15 none of this was checked. The requester posted a request and read the first
-message, checking only whether it carried `errorInformation` and — on one of its two readers,
-not the other — whether it carried an acknowledgement at all.
-
 Two limits on what the binding achieves, stated so it is not credited with a property it has
 not got:
 
@@ -580,8 +551,8 @@ plainly, so nobody mistakes its scope for a clean bill of health:
   annex F for traffic policies. The rest were not.
 - **The schema checks cover form, not meaning.** `TestRenderedResponsesValidate` and
   `schema_drift_test.go` between them catch a malformed answer and an unmodelled element.
-  Neither can notice that a "shall" in clause 6 has no code behind it, which is how both of
-  the gaps below were found.
+  Neither can notice that a "shall" in clause 6 has no code behind it; this document is what
+  reads for that.
 - **Nothing here was verified against a strict third-party ADMF.** The interoperability
   evidence is against the sipgate reference and against this project's own endpoints. A gap
   that only a strict validator would reject has not been exercised.
@@ -590,96 +561,21 @@ plainly, so nobody mistakes its scope for a clean bill of health:
   *answers* X1 on the SMF's behalf, so no test has yet observed this element reading a
   well-formed answer it should have refused.
 
-## Known gaps, in order of consequence
+## A held task's own faults
 
-**No known gap remains at the top of this list.** The entry that stood here — that
-`triggerFaulty` could not be raised against a point of interception by this project — was closed
-on 2026-08-20 and is recorded among the closures below, since a gap that has been closed belongs
-with the others rather than at the head of a list ordered by consequence.
+`taskStatus` carries a `listOfFaults` computed when the question is asked, from what the
+element supplies through `WithTaskFaults` — not a fault state stored on the task, which would
+go stale and need clearing. At the content POI it answers `duplicationNotProgrammed` for a task
+whose duplication is not in place, and a fault for a content task whose criterion selects no
+session the element holds. A triggering function that reads it reports `triggerFaulty` against
+the warrant, rather than at element scope where the attribution would be lost.
 
-**Closed since this disposition was written**, most consequential first. Six of the eight were
-found by writing it, and none of those six could have been found by the schema checks — that is
-the class this document exists for. One, near the end, was found by review rather than by
-writing, and it is the same class: a field whose value validated against the schema and
-contradicted what the element was reporting elsewhere.
+## Known gaps
 
-The eighth is the `triggerFaulty` entry that heads the list, and it is the only one that was
-found by *writing this document* and then took four further changes to close — it was recorded
-as a known gap three times before the mechanism that closes it existed. What it needed was not
-a bigger effort but a different one: every attempt assumed a held task would have to carry a
-fault state, and the answer was to compute the state when asked.
-
-- **`triggerFaulty` could not be raised against a point of interception (2026-08-20).** The
-  condition was declared, encoded and reportable, and the SMF's CC Triggering Function was the
-  element that would raise it — but the fault it names has to come from the POI's own answer
-  about the task, and this library's POIs could not give one. `taskStatus` answered
-  `provisioningStatus: complete` with an empty `listOfFaults` for every task in the store,
-  unconditionally, because a task reaches the store only after activation has established that
-  the element can carry it out. So a POI that had been triggered, had acknowledged, and was
-  producing nothing answered exactly as one that was working.
-
-  **The destination half had already been closed** — `destinationDeliveryStatus` answers from the
-  delivery layer, so a POI whose X3 delivery has failed says so when interrogated. What remained
-  was a POI whose *duplication* was not in place while its task was held. Those conditions were
-  reported, at element scope, by the POI's own `ReportNEIssue`; the information reached the
-  triggering function and the attribution did not, which is precisely what `triggerFaulty` is
-  for.
-
-  Closed by `WithTaskFaults`, an element-supplied answer consulted when `taskStatus` is
-  rendered, and by the CC-POI supplying it from datapath state it already holds. **Asked rather
-  than stored**, which is what the note here expected to be the obstacle: giving a held task a
-  fault *state* would have required every POI to track one and to clear it, and a stored fault
-  goes stale — the answer is instead computed from the record of what the datapath was last told,
-  compared against what the task's criteria select. The SMF then reports the condition against
-  the warrant rather than against itself; it had been reading the POI's `taskStatus` all along and
-  reporting at element scope, because there was nothing per-task to attribute.
-
-  Also closed by that: the note that **no end-to-end section could exercise it**. The condition
-  no longer rests on interoperation with a third-party POI — this project's own CC-POI populates
-  a task's `listOfFaults`. `tests/e2e-li/sections/31_task_scoped_faults.sh` drives it against
-  the deployed CC-POI, using the condition arrangeable from outside: a content task whose
-  criterion selects no session the element holds. It asserts the attribution as well as the
-  presence, since an element answering one condition for every task would satisfy a presence
-  check and leave the triggering function exactly where it was.
-
-  Named here rather than left as "a suite could": a disposition that claims a condition is
-  drivable end to end, with nothing driving it, is the same defect as one that claims a
-  constraint is checked. The remaining condition — a duplication rule the datapath refuses —
-  needs a datapath that can be made to refuse one on demand, which this deployment cannot do;
-  it is covered by `pfcpiface.TestATaskTheDatapathIsNotDuplicatingReportsAFault`.
-
-- **`ReportDestinationIssue` was not implemented (clause 6.5.3)**, so an issue relating
-  specifically to one DID was reported at network-element scope instead. The information
-  reached the ADMF; the scoping clause 6.5.1 draws did not. See *Scope, and the ending of a
-  fault*.
-- **No fault was ever reported as cleared (clause 5.3).** `AllClear` and `FaultCleared` were
-  both declared and emitted by nothing, for task issues as well as destination ones, so an
-  ADMF told a fault began was never told it ended. Same section.
-
-- **An X1 response was not bound to the request that produced it.** A well-formed
-  acknowledgement from the wrong element was accepted, so a triggering function could record
-  an interception as installed at a POI that never received the trigger. Silent in both
-  directions. See *This element as an X1 client*.
-- **A `UPFLIT3TargetIdentifier` list was narrowed to its first member**, so a task naming
-  several detection criteria was acknowledged and a narrower interception run. See *Identifier
-  cardinality*.
-- **A `TargetIdentifier` populating more than one arm of the schema's choice was accepted**,
-  as whichever arm the mapping switch reached first, rather than refused. Now 1010.
-- **`TopLevelError` was not implemented (clause 6.1)**, and the answer violated clause 7.2.2.2
-  as well. An unparseable request was answered with an HTTP 400 carrying the XML decoder's own
-  message. Clause 7.2.2.2 is explicit that "HTTP error codes shall only be used to indicate
-  HTTP-level errors, and shall not be used to indicate errors with the X1 responses
-  themselves"; a request that arrived intact and could not be parsed is an X1-level error. It
-  is now a 200 carrying `X1TopLevelErrorResponse` with its four fields — and no
-  `x1TransactionId`, which table 6.1-1 says "shall be omitted for 'TopLevelError' situations",
-  consistently, since the identifier would have had to come from the message nobody could
-  read. The ADMF identifier comes from configuration, or from the peer's certificate where
-  this element has none configured, which is clause 6.1's own provision.
-- **`destinationDeliveryStatus` was hard-coded `activeAndWorking`** (clause 6.4.5), so the
-  answer to an interrogation contradicted the element's own `ReportDestinationIssue` about the
-  same endpoint. Closed 2026-08-19; see *Interrogation*.
+No gap is known against the clauses this element implements. Closed gaps are not listed: the
+dispositions above describe the behaviour as it stands.
 
 **Deliberate divergences, which are not gaps**, are recorded above with their reasoning rather
-than repeated here: the emitted Version, the echo substitutions, the timestamp rendering, the
-report throttle, and the four capabilities declared permanently unsupported in
+than repeated here: those under *Deliberate deviations*, the echo substitutions, the timestamp
+rendering, the report throttle, and the capabilities declared permanently unsupported in
 `li/CONFORMANCE.md`.

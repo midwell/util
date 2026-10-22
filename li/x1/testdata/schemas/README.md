@@ -9,8 +9,8 @@ These are the published ETSI schemas the X1 implementation is validated against.
 here so that the validation runs without network access, and so that a schema revision
 arrives as a reviewable diff rather than as a test whose behaviour changes on its own.
 
-**Do not edit them.** `TestRenderedResponsesValidate` checks each file against the digest
-below, so a local edit — including a well-meant one to add a `schemaLocation` — fails the
+**Do not edit them.** `TestRenderedResponsesValidate` checks each file against a SHA-256
+digest pinned in `schema_validation_test.go`, so a local edit — including a well-meant one to add a `schemaLocation` — fails the
 build. The imports are resolved by `validate.xsd` instead.
 
 | File | Target namespace | Schema version |
@@ -41,8 +41,8 @@ https://www.3gpp.org/ftp/Specs/archive/33_series/33.128/33128-ig0.zip
 ```
 
 That same attachments archive holds `TS33128Payloads.asn`, the module the xIRI records are
-validated against (also mirrored at
-`https://forge.3gpp.org/rep/sa3/li/-/raw/main/33128/r18/TS33128Payloads.asn`).
+validated against (vendored under `li/iri/testdata/asn1`; 3GPP's forge publishes later
+revisions of it, which are not byte-identical).
 
 ## A version mismatch to be aware of
 
@@ -51,9 +51,9 @@ two could disagree, the prose is normative and the schema is what a peer's valid
 actually runs. Both were consulted for this implementation: the field descriptions and
 M/C/O markers come from the prose, the element names and structures from the schema.
 
-Nothing has yet been found where they conflict. If something is, the prose wins for
-behaviour and the schema still governs what validates — and that tension belongs in a
-change document rather than being resolved silently here.
+Nothing has been found where they conflict. If something is, the prose wins for behaviour
+and the schema still governs what validates, and the conflict is recorded in
+`li/x1/CONFORMANCE.md` rather than resolved silently here.
 
 ## `validate.xsd`
 

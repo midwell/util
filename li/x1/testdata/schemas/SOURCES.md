@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # The statements the X1 provisioning decisions rest on
 
 This file exists so that a reviewer can check every X1 provisioning decision against a
-quoted statement without re-downloading a specification. Where a decision cites "the spec says", the words it means
-are below, transcribed from the sources named here.
+quoted statement without re-downloading a specification. Where a decision cites "the spec
+says", the words it means are below, transcribed from the sources named here.
 
 Three documents govern, and they are not interchangeable:
 
@@ -44,16 +44,16 @@ the specifications' own inconsistent spacing.
 > instances of this parameter may be included (e.g. when multiple LIIDs are associated
 > with an XID).
 
-This is the statement D2 rests on, and the one that corrected an earlier draft: the field
-is addressed to a mediation function, and the AMF, SMF and UPF host POIs. Disregarding it
-is what the specification asks of us; refusing it would refuse a legal task.
+This is why a task carrying it is accepted with the field disregarded: the field is
+addressed to a mediation function, and the AMF, SMF and UPF host POIs. Disregarding it is
+what the specification asks; refusing it would refuse a legal task.
 
 **`CorrelationID`** — O:
 
 > Correlation identifier to assign to intercepted material for this Task. Intended for use
 > in triggering scenarios, and shall be ignored by non-mediation function NEs.
 
-D9 departs from this knowingly — see below.
+The UPF's triggered CC-POI departs from this knowingly — see the last section.
 
 **`ImplicitDeactivationAllowed`** — O:
 
@@ -62,8 +62,8 @@ D9 departs from this knowingly — see below.
 > message with the appropriate TaskReportType (see clause 6.5.2).
 
 The subject is a task that has *completed*, not one whose element has stopped hearing from
-its ADMF. That is why D3 disregards it rather than refusing it, and why the keepalive purge
-— which an earlier draft thought this field forbade — is unrelated to it.
+its ADMF. That is why the element disregards it rather than refusing it, and why the
+keepalive purge is unrelated to it.
 
 **`ProductID`** — O:
 
@@ -87,9 +87,9 @@ its ADMF. That is why D3 disregards it rather than refusing it, and why the keep
 >
 > *Format:* Given in ETSI TS 103 120 [28], clause 8.2.13 ListOfTrafficPolicyReferences.
 
-D4 refuses it: it is an instruction *about the task*, defined in a specification this
-project does not implement, and a policy silently unapplied is the `listOfServiceTypes`
-defect again.
+A task carrying it is refused: it is an instruction *about the task*, defined in a
+specification this element does not implement, and a policy silently unapplied is the same
+undetectable divergence an unhonoured `listOfServiceTypes` would be.
 
 And, immediately beneath the same table, two rejection rules:
 
@@ -101,9 +101,10 @@ And, immediately beneath the same table, two rejection rules:
 > If a Task has a ServiceType not supported by the NE, then the NE shall reject the
 > ActivateTaskRequest with an appropriate error.
 
-The second is already implemented. The first is **not**, and is recorded as follow-on work
-rather than done here — it interacts with the configured-default layer of D1, since a task
-naming nothing resolvable is deliberately accepted.
+The second is implemented: such a task is refused with 3050. The first is enforced in
+part: with `RequireResolvableDIDs`, a task ordering content with no X3 destination is
+refused, and a task naming a destination identifier the element cannot resolve is refused
+with 2040. Other combinations of DeliveryType and destinations are not checked.
 
 ## TS 103 221-1 clause 6.3.1 — CreateDestination
 
@@ -118,7 +119,8 @@ Clause 6.3.1.2, table 6.3.1.2-1 — `DID`, M:
 >
 > *Format:* UUIDv4 (see clause 5.1).
 
-That format is what D7 validates, and the schema agrees: `DId` restricts
+That format is what the element validates, refusing anything outside it with 1010, and
+the schema agrees: `DId` restricts
 `etsi103280:UUID`, whose pattern is `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`.
 Note the pattern is lowercase-only and does not itself pin the version nibble.
 
@@ -134,7 +136,7 @@ From clause 6.7's error table:
 
 > 2030  DID already exists on the NE
 
-## TS 103 221-1 annex E — destination sets, which D6 refuses
+## TS 103 221-1 annex E — destination sets, which this element refuses
 
 > The ADMF issues a CreateObject request, containing the DestinationSetDetails object, to
 > the NE (see clause 6.8.1).
@@ -174,10 +176,11 @@ AMF is governed by — `ListOfDIDs`, **M**:
 > clause 6.3.1 prior to the task activation.
 
 That sentence is not peculiar to the AMF. The phrase "configured using the CreateDestination
-message" occurs **48 times** in TS 33.128 v18.16.0, once per ActivateTask table that names
-delivery endpoints, and `ListOfDIDs` appears as a field name 73 times. Every one of them
-marks it M. This is the finding that turned a deferral into a conformance gap: the schema
-permits an empty `listOfDIDs`, but 33.128 is normative on top of the schema and does not.
+message" occurs 48 times in TS 33.128 v18.16.0, and `ListOfDIDs` appears as a field name in
+73 rows: 57 of them mark it M — every ActivateTask and ModifyTask table — and the other 16,
+the Mediation Details tables for MDF2 and MDF3, mark it C. So for a POI the field is
+mandatory: the schema permits an empty `listOfDIDs`, but 33.128 is normative on top of the
+schema and does not.
 
 Table 6.2.3-9, *ActivateTask message for triggering the UPF IRI-POI* — the table this
 element is checked against:
@@ -197,16 +200,19 @@ clause 6.2.3.9.1 is used for packet header information reporting". This project'
 no IRI-POI: it hosts a triggered CC-POI, which already takes its X3 destination from the
 task. So the table describes a function that is absent rather than one that is wrong.
 
-Table 6.2.2.1-1 also carries a row this change does **not** resolve, recorded here because
-it is the one place the "refuse an unrecognised extension" rule collides with conformant
-tasking — `TaskDetailsExtensions/IdentifierAssociationExtensions`, **C**:
+Table 6.2.2.1-1 also carries the one task extension this element recognises —
+`TaskDetailsExtensions/IdentifierAssociationExtensions`, **C**:
 
 > This field shall be included if the IRI POI is required to generate
 > AMFIdentifierAssociation and AMFIdentifierDeassociation records (see clause 6.2.2.2.1).
 > If the field is absent, AMFIdentifierAssociation and AMFIdentifierDeassociation records
 > shall not be generated.
 
-## D9: a knowing departure from a `shall`
+Every element accepts it on a task — an SMF or UPF has no identifier-association records to
+produce, and loses nothing by being told which to produce — and refuses it on a destination,
+where it would mean nothing.
+
+## A knowing departure from a `shall`
 
 TS 103 221-1 says `CorrelationID` "shall be ignored by non-mediation function NEs" (quoted
 above). The triggered CC-POI in the UPF is not a mediation function and does not ignore it:
@@ -214,4 +220,4 @@ it stamps the value on every X3 PDU. TS 33.128 table 6.2.3-6 makes `CorrelationI
 mandatory on the LI_T3 trigger and defines it as the value that lets an MDF join content to
 the signalling the IRI-POI reported, and where 33.128 specialises 221-1 for 5G, 33.128
 governs. Recorded so that a reviewer who finds the contradiction finds the reasoning with
-it; see `docs/li-upstream-talking-points.md`.
+it.

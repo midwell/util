@@ -279,17 +279,17 @@ func TestASingleRequestIsAnsweredWithASingleMessage(t *testing.T) {
 	}
 }
 
-// TestNoDeployedADMFSendsAShapeSectionFourWouldRefuse is
+// TestNoDeployedADMFSendsAShapeThisElementRefuses is
 // answered from the test material rather than from a live ADMF, which is stated
 // so the limit of the evidence is visible.
 //
-// The two shapes section 4 and section 5 change the handling of are a
-// TargetIdentifier populating more than one arm, and a UPFLIT3TargetIdentifier
-// list of more than one. This walks every X1 request fixture in the package —
+// The two shapes in question are a TargetIdentifier populating more than one arm,
+// which is refused, and a UPFLIT3TargetIdentifier list of more than one, every member
+// of which becomes a criterion. This walks every X1 request fixture in the package —
 // including the ones transcribed from the sipgate simulator, which is the only
 // third-party ADMF this project has exchanged X1 with — and reports what they
 // carry.
-func TestNoDeployedADMFSendsAShapeSectionFourWouldRefuse(t *testing.T) {
+func TestNoDeployedADMFSendsAShapeThisElementRefuses(t *testing.T) {
 	fixtures := map[string]string{
 		"activate (sipgate-derived)": activateXML,
 		"getAllDetails":              getAllDetailsXML,
