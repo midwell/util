@@ -1028,7 +1028,7 @@ The blocks above are what LI reads on disk; deployment tooling sets them for you
 | `neId` | `ne_id` | This network element's identifier | yes |
 | `cert` / `key` / `caCert` | `cert` / `key` / `ca_cert` | LI PKI credential file paths | yes |
 | `admfUrl` | `admf_url` | ADMF X1 endpoint for NE-initiated fault reports | optional |
-| `admfId` | `admf_id` | Responsible ADMF identifier — on the AMF/SMF it also restricts who may task the NF (recommended) | optional |
+| `admfId` | `admf_id` | Responsible ADMF identifier — on the AMF/SMF it also restricts who may task the NF (recommended). **Unset, any peer the LI CA certified may act as the ADMF**, including another network element's certificate, since the identity binding carries no role — see *[Restricting who can reach X1](#restricting-who-can-reach-x1)* | optional |
 | `keepaliveTimeout` | — | Purge-all-tasking window (Go duration, e.g. `30s`). The fail-safe is **off unless set**; leave it unset until you know the ADMF's keepalive cadence, since a window shorter than that purges live warrants | AMF/SMF: optional |
 | `deactivateAllTasks` | `deactivate_all_tasks` | Whether this element performs a bulk deactivation of all its tasking. Boolean; **unset means "no agreement in advance"**, which is the specification's default of *enabled*. Recommended `false` on the UPF — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
 | `removeAllDestinations` | `remove_all_destinations` | Whether this element performs a bulk removal of all its destinations. Boolean; unset is the specification's default of *disabled* | optional |
@@ -1115,6 +1115,15 @@ reach, which in a NodePort deployment means every host that can reach the node
 can open a connection to them. Authentication holds — a peer without a bound LI
 certificate gets nowhere — but nothing should be relying on that alone, and a
 peer that can connect can consume the listener's capacity before authenticating.
+
+**Authentication is not authorisation unless `admfId` is set.** A peer passes
+TS 103 221-1 clause 8.2.4 when the identifier it asserts is bound into its own LI
+certificate. With no `admfId` configured, any such identifier is accepted as the
+ADMF — and every network element in the LI domain holds a certificate binding its
+own identifier, so a UPF's or an SMF's certificate is enough to task an AMF, point
+its product at an address of its choosing, or deactivate all of its tasking.
+Configure `admfId` on every element whose responsible ADMF is known; on the UPF,
+`tf_id` plays the same role for the triggering function.
 
 **Do not do this with a NetworkPolicy.** A policy that selects a network
 function's pod isolates it for every listed `policyType`, so an Ingress policy

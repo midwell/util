@@ -611,6 +611,14 @@ func OnAuthFailure(fn func(code int)) Option {
 // request asserting a different ADMF identifier is refused even if that
 // identifier is properly bound into the peer's certificate — certification by
 // the LI CA is not by itself authority to task this NE (TS 103 221-1 error 1040).
+//
+// **Unset, or set to "", it accepts any peer the LI CA certified as the ADMF.** The
+// clause 8.2.4 binding still holds — the identifier a peer asserts must be bound into
+// its own certificate — but any identifier will do. That includes another network
+// element's: a UPF's or an SMF's certificate binds its own identifier by Subject UID
+// exactly as an ADMF's does, and the binding carries no role, so without this option
+// any element holding an LI certificate can create destinations on this one, task it,
+// or deactivate all of its tasking. Set it wherever the responsible ADMF is known.
 func WithADMF(admfID string) Option {
 	return func(s *Server) { s.admfID = admfID }
 }
