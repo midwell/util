@@ -834,6 +834,11 @@ func (s *Server) topLevelError(peer *x509.Certificate) []byte {
 // A request carrying no message is refused as unparseable. The schema requires at least
 // one, and so does an answer: an X1Response with no message would not validate, so the
 // clause 6.1 top-level error is the only well-formed reply.
+//
+// So is a request one of whose typed fields does not decode — a port above 65535, a
+// non-numeric number. The decode is of the whole container, so one such field makes every
+// message in it unreadable and the answer is the top-level error, not a 1010 against the one
+// message that carried it.
 func (s *Server) Process(body []byte, peer *x509.Certificate) (*X1Response, error) {
 	var req X1Request
 	if err := xml.Unmarshal(body, &req); err != nil {

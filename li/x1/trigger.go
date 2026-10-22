@@ -23,10 +23,10 @@ import (
 
 // Requester is the requesting side of X1 — the role TS 103 221-1 calls the
 // "ADMF". A Triggering Function uses it to task a triggered POI: TS 33.128
-// clause 5.2.6 realises the LI_T3 triggering interface as TS 103 221-1 with "the
-// CC-TF playing the role of the ADMF … and the triggered CC-POI playing the role
-// of the NE", so triggering is an ordinary X1 exchange rather than a private
-// protocol. Requests carry the requester's own identifier, which the NE
+// clause 5.2.6 realises the LI_T3 triggering interface as TS 103 221-1: "the CC-TF
+// plays the role of the "ADMF" as defined in ETSI TS 103 221-1 [7] reference model
+// (clause 4.2), and the triggered CC-POI plays the role of the "NE"". So triggering is an
+// ordinary X1 exchange rather than a private protocol. Requests carry the requester's own identifier, which the NE
 // authenticates against the certificate presented (clause 8.2.4) exactly as it
 // would a real ADMF's — being the SMF is not authority in itself.
 //
@@ -51,10 +51,10 @@ const x1RequestTimeout = 10 * time.Second
 //
 // Larger than maxRequestBytes, the server's limit on a request, because an answer's size is
 // set by the state the peer holds rather than by what was asked: a GetAllDetailsResponse lists
-// every task, at roughly 850 bytes for a minimal one, so the request limit would refuse the
-// reconciliation answer of an element holding about 1,200 tasks — permanently, on every
-// attempt. 16 MiB covers about twenty thousand while still bounding what a peer can make this
-// element buffer.
+// every task, several hundred bytes each even for a minimal one, so the request limit would
+// refuse the reconciliation answer of an element holding a few thousand tasks — permanently,
+// on every attempt. 16 MiB covers tens of thousands while still bounding what a peer can make
+// this element buffer.
 const maxResponseBytes = 16 << 20
 
 // maxDrainBytes is how much of an unread answer is discarded before its body is closed, so
@@ -140,6 +140,7 @@ type RequestError struct {
 	Description string
 }
 
+// Error renders the refusal with its code and the peer's description.
 func (e *RequestError) Error() string {
 	return fmt.Sprintf("x1: request refused with code %d: %s", e.Code, e.Description)
 }
@@ -167,6 +168,7 @@ type ResponseError struct {
 	Want, Got string
 }
 
+// Error names the header field that did not match and both values.
 func (e *ResponseError) Error() string {
 	return fmt.Sprintf("x1: response could not be attributed to the request that produced it: %s = %q, want %q",
 		e.Field, e.Got, e.Want)

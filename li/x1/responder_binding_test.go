@@ -4,21 +4,16 @@
 package x1
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/omec-project/util/li/store"
 	"github.com/omec-project/util/li/types"
@@ -31,16 +26,8 @@ import (
 func liCert(t *testing.T, uid, binding string) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "li-peer"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
@@ -51,26 +38,19 @@ func liCert(t *testing.T, uid, binding string) (tls.Certificate, *x509.CertPool)
 		tmpl.Subject.ExtraNames = []pkix.AttributeTypeAndValue{{Type: oidUID, Value: uid}}
 	}
 	if binding != "" {
-		u, parseErr := url.Parse(binding)
-		if parseErr != nil {
-			t.Fatal(parseErr)
+		u, err := url.Parse(binding)
+		if err != nil {
+			t.Fatal(err)
 		}
 		tmpl.URIs = []*url.URL{u}
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
+	leaf, key := issueCert(t, tmpl, nil, nil)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
+	return tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key, Leaf: leaf}, pool
 }
 
 // poiNEID is the element identifier the stub POI asserts about itself. Constant,
