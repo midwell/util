@@ -34,7 +34,19 @@ const (
 // each constructed their own server, and a disclosure fixed in one had to be
 // fixed again in the other two; the same would be true of every
 // timeout here.
+//
+// **Mutual authentication is enforced here, not trusted to the caller.** The
+// configuration is cloned and its ClientAuth set to RequireAndVerifyClientCert.
+// Server.ServeHTTP binds the peer by PeerCertificates[0], which is populated under
+// RequestClientCert or RequireAnyClientCert too — but unverified, so a caller passing
+// either would have made the whole identity binding self-asserted. A nil configuration
+// is left nil: that is the certificate-less mode, served without TLS.
 func NewListener(handler http.Handler, tlsConfig *tls.Config) *http.Server {
+	if tlsConfig != nil {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
 	return &http.Server{
 		Handler:   handler,
 		TLSConfig: tlsConfig,
