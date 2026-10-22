@@ -3,7 +3,10 @@
 
 package x2x3
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
 
 // Sender is the minimal delivery contract an X2/X3 POI depends on. *Client
 // satisfies it, and so does *AsyncSender, so a POI can wrap one in the other
@@ -247,6 +250,13 @@ func (a *AsyncSender) Close() error {
 }
 
 // send delivers a batch, using one write when the underlying sender supports it.
+//
+// Without that, every PDU is still attempted when one before it fails, and the failures are
+// returned together. Stopping at the first would lose the rest of the batch on the strength of
+// one PDU -- one that could not be marshalled, say, which says nothing about the others -- and
+// report it as a single error, so the element's own account would show one failure where the
+// mediation function sees a run of missing sequence numbers. Client.SendBatch skips a PDU it
+// cannot marshal for the same reason.
 func (a *AsyncSender) send(batch []*PDU) error {
 	if len(batch) == 1 {
 		return a.inner.Send(batch[0])
@@ -256,11 +266,13 @@ func (a *AsyncSender) send(batch []*PDU) error {
 		return bs.SendBatch(batch)
 	}
 
+	var errs []error
+
 	for _, pdu := range batch {
 		if err := a.inner.Send(pdu); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

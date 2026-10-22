@@ -199,3 +199,41 @@ func TestForgetContextIsForwardedByIdentity(t *testing.T) {
 		t.Errorf("Identity holds %d contexts after forgetting the XID, want 0", n)
 	}
 }
+
+// TestAForgetCannotFallBetweenFindingACounterAndAdvancingIt pins the ordering Next relies on:
+// the counter is advanced while the read lock is still held, so a deactivation's Forget, which
+// needs the write lock, is either wholly before the lookup or wholly after the increment.
+//
+// Checked at the instant it matters rather than by racing two goroutines and hoping: inside that
+// window a writer must not be able to take the lock. When it could, a Next racing a deactivation
+// numbered its PDU from a counter Forget had just dropped, and the reactivated context then handed
+// the same numbers out again from zero.
+func TestAForgetCannotFallBetweenFindingACounterAndAdvancingIt(t *testing.T) {
+	s := NewSequencer()
+	s.Next(sampleXID, sampleCID) // creates the counter, so the next call takes the lookup path
+
+	reached := false
+	afterSequencerLookup = func(seq *Sequencer) {
+		if seq != s {
+			return
+		}
+
+		reached = true
+
+		if seq.mu.TryLock() {
+			seq.mu.Unlock()
+			t.Error("a writer could take the lock between Next finding the counter and advancing " +
+				"it, so Forget can drop the counter in that window and the number is handed out " +
+				"from a context that no longer exists")
+		}
+	}
+	t.Cleanup(func() { afterSequencerLookup = nil })
+
+	if got := s.Next(sampleXID, sampleCID); got != 1 {
+		t.Errorf("Next() = %d, want 1", got)
+	}
+
+	if !reached {
+		t.Fatal("the lookup path was not taken, so this test checked nothing")
+	}
+}

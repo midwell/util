@@ -417,3 +417,50 @@ func TestAsyncCloseIsIdempotentInWhatItDoes(t *testing.T) {
 			"on which Sender implementation was behind it", n)
 	}
 }
+
+// failingFirstSender fails the first PDU it is given and accepts every later one, recording how
+// many it was asked to send. It has no SendBatch, so AsyncSender sends a batch to it one PDU at a
+// time.
+type failingFirstSender struct {
+	mu       sync.Mutex
+	attempts int
+}
+
+func (f *failingFirstSender) Send(*PDU) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.attempts++
+	if f.attempts == 1 {
+		return errors.New("the first PDU could not be sent")
+	}
+
+	return nil
+}
+
+func (f *failingFirstSender) Close() error { return nil }
+
+// TestAFailedPDUDoesNotCostTheRestOfItsBatch: delivered one PDU at a time, a batch whose first
+// PDU fails must still attempt the others, and the failure must still be returned. Stopping at
+// the first error lost the remainder silently: one error reported, a run of sequence numbers
+// missing at the mediation function, and nothing in the element's own account for the rest.
+func TestAFailedPDUDoesNotCostTheRestOfItsBatch(t *testing.T) {
+	inner := &failingFirstSender{}
+	a := NewAsyncSender(inner, 4, nil, nil)
+	t.Cleanup(func() { _ = a.Close() })
+
+	err := a.send([]*PDU{{Type: PDUTypeX2}, {Type: PDUTypeX2}, {Type: PDUTypeX2}})
+
+	if err == nil {
+		t.Error("a batch with a PDU that failed was reported as delivered")
+	}
+
+	inner.mu.Lock()
+	attempts := inner.attempts
+	inner.mu.Unlock()
+
+	if attempts != 3 {
+		t.Errorf("%d of the batch's 3 PDUs were attempted; one PDU's failure cost the rest of "+
+			"the batch", attempts)
+	}
+}

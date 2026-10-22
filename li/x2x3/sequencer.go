@@ -47,6 +47,10 @@ type seqContext struct {
 	corr [CorrelationIDLength]byte
 }
 
+// afterSequencerLookup is called inside Next, after an existing counter has been found and
+// before it is advanced. Set only by tests; nil otherwise.
+var afterSequencerLookup func(*Sequencer)
+
 // NewSequencer returns a Sequencer holding no contexts.
 func NewSequencer() *Sequencer {
 	return &Sequencer{counters: make(map[seqContext]*atomic.Uint32)}
@@ -59,24 +63,36 @@ func NewSequencer() *Sequencer {
 // its queue is full, and a number taken before the queue leaves a gap the mediation
 // function can see, which is how loss becomes visible at all; a number taken in the
 // delivery worker would close the gap over the missing product.
+//
+// The increment happens before the read lock is released, so Forget and ForgetContext,
+// which take the write lock, cannot fall between finding a counter and advancing it.
+// If they could, a Next racing a deactivation would number its PDU from a counter that
+// had already been dropped, and the reactivated context would hand out the same number
+// again from zero.
 func (s *Sequencer) Next(xid [xidLength]byte, corr [CorrelationIDLength]byte) uint32 {
 	key := seqContext{xid: xid, corr: corr}
 
 	s.mu.RLock()
-	c, ok := s.counters[key]
-	s.mu.RUnlock()
+	if c, ok := s.counters[key]; ok {
+		if afterSequencerLookup != nil {
+			afterSequencerLookup(s)
+		}
 
-	if ok {
-		return c.Add(1) - 1
+		n := c.Add(1) - 1
+		s.mu.RUnlock()
+
+		return n
 	}
+	s.mu.RUnlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Another goroutine may have created it while the read lock was released.
-	if c, ok = s.counters[key]; ok {
+	if c, ok := s.counters[key]; ok {
 		return c.Add(1) - 1
 	}
-	c = &atomic.Uint32{}
+
+	c := &atomic.Uint32{}
 	c.Store(1)
 	s.counters[key] = c
 
