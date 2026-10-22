@@ -76,21 +76,16 @@ func echoedEnvelope(t *testing.T, send func(*Requester) error) X1ResponseMessage
 	return out.Messages[0]
 }
 
-// TestEveryResponseThisElementReturnsCarriesTheFullEnvelope is answered by measurement
-// rather than by reading.
+// TestEveryResponseThisElementReturnsCarriesTheFullEnvelope measures the envelope of every
+// answer this package's Server returns.
 //
-// **The peer answering this element's X1 requests is this package's own Server.**
-// That is the finding, and it is not what one would assume. `Requester` has
-// exactly one caller — `smf/lawfulintercept/trigger.go`, pointing at a UPF's LI_T3
-// endpoint — and a UPF runs this Server. The sipgate reference is an ADMF and MDF
-// simulator: it is an X1 *client* toward these network functions and an X2/X3
-// peer, never the responder to a request this element sends. So there is no
-// third-party X1 responder to measure, and the fields below can be required
-// rather than checked only when present.
-//
-// The residual, which is why `x1Url` is named here: it is deployment
-// configuration, so a third-party CC-POI is possible in principle. Nothing this
-// project ships or tests has one.
+// In SD-Core the peer answering a Requester is this package's own Server: the SMF's CC
+// triggering function points a Requester at a UPF's LI_T3 endpoint, and the UPF runs a
+// Server. The reference simulator used for interoperability is an ADMF and MDF — an X1
+// client toward these network functions, never the responder to a request they send. So
+// the fields below can be required rather than checked only when present. The responder's
+// URL is deployment configuration, so a third-party CC-POI is possible in principle; none
+// is exercised here.
 func TestEveryResponseThisElementReturnsCarriesTheFullEnvelope(t *testing.T) {
 	cases := []struct {
 		request  string
@@ -286,13 +281,13 @@ func TestASingleRequestIsAnsweredWithASingleMessage(t *testing.T) {
 // The two shapes in question are a TargetIdentifier populating more than one arm,
 // which is refused, and a UPFLIT3TargetIdentifier list of more than one, every member
 // of which becomes a criterion. This walks every X1 request fixture in the package —
-// including the ones transcribed from the sipgate simulator, which is the only
-// third-party ADMF this project has exchanged X1 with — and reports what they
+// including the ones transcribed from the reference simulator's examples, the only
+// third-party ADMF these packages have exchanged X1 with — and reports what they
 // carry.
 func TestNoDeployedADMFSendsAShapeThisElementRefuses(t *testing.T) {
 	fixtures := map[string]string{
-		"activate (sipgate-derived)": activateXML,
-		"getAllDetails":              getAllDetailsXML,
+		"activate (reference simulator)": activateXML,
+		"getAllDetails":                  getAllDetailsXML,
 	}
 
 	for name, body := range fixtures {

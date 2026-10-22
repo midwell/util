@@ -273,8 +273,9 @@ func destinationResponseDetails(ind int, d ReportedDestination) string {
 	status, faults := "activeAndWorking", []X1Error(nil)
 	if d.Unreachable {
 		status = "deliveryFault"
-		// The same code the pushed report carries for this condition, so an ADMF
-		// correlating the two sees one fault and not two.
+		// The TS 103 221-1 non-terminating-fault code: the one a ReportNEIssue carries for a
+		// fault of this kind. The pushed ReportDestinationIssue states a report type rather
+		// than a code, so the interrogation answer is where the code appears.
 		faults = []X1Error{{
 			ErrorCode:        issueCodeNonTerminatingFault,
 			ErrorDescription: "delivery destination is unreachable",

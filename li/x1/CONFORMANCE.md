@@ -561,7 +561,7 @@ plainly, so nobody mistakes its scope for a clean bill of health:
   Neither can notice that a "shall" in clause 6 has no code behind it; this document is what
   reads for that.
 - **Nothing here was verified against a strict third-party ADMF.** The interoperability
-  evidence is against the sipgate reference and against this project's own endpoints. A gap
+  evidence is against the reference simulator and against these packages' own endpoints. A gap
   that only a strict validator would reject has not been exercised.
 - **The client direction has the least evidence.** The suite's negative cases are all
   absences — a path removed, a withdrawal watched to fail — and there is no fixture that

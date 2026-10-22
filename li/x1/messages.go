@@ -318,12 +318,10 @@ func (p Port) Valid() error {
 	return nil
 }
 
-// TaskDetails describes the interception task being (de)provisioned. Field order
-// follows the TS_103_221_01.xsd xs:sequence, which is normative for the wire
-// form; CorrelationID and ProductID sit where the schema puts them (after
-// listOfDIDs, either side of implicitDeactivationAllowed). Note the schema spells
-// these two "correlationID"/"productID", not the "xId"/"dId" pattern used by its
-// other fields.
+// TaskDetails describes the interception task being (de)provisioned. It is only ever
+// decoded — answers are rendered by templates — so its field order does not bind the wire
+// form; the element names do. Note the schema spells correlationID and productID with a
+// capitalised "ID", not the "xId"/"dId" pattern its other identifiers use.
 type TaskDetails struct {
 	XID               string             `xml:"xId"`
 	TargetIdentifiers []TargetIdentifier `xml:"targetIdentifiers>targetIdentifier"`

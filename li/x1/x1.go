@@ -365,11 +365,10 @@ func NEFault(condition, detail string) *X1Error {
 // TaskFault is one condition an element reports against a task it holds, for a WithTaskFaults
 // supplier to return.
 //
-// It exists so the code is chosen once rather than by each element: it is the same
-// non-terminating-fault code the pushed ReportNEIssue carries for a condition of this kind, so a
-// provisioning function correlating the interrogation answer against the report it already
-// received sees one condition and not two. The destination answers make the same choice for the
-// same reason.
+// It exists so the code is chosen once rather than by each element: the TS 103 221-1
+// non-terminating-fault code, the one a ReportNEIssue carries for a fault of this kind. The
+// pushed ReportTaskIssue states a report type rather than a code, so the interrogation answer is
+// where the code appears; the destination answers make the same choice.
 //
 // Non-terminating, because every condition an element can say this about leaves the task
 // installed and the element running: what has stopped is the interception's product, not the
@@ -403,8 +402,8 @@ func TaskFault(condition, detail string) X1Error {
 // this element delivers to can be reached right now.
 //
 // count answers how many destinations are currently unreachable and how many are in use at
-// all — x2x3.Pool.Unreachable is that function, and a POI keeping its own clients supplies
-// the equivalent. It is called on the X1 request goroutine, so it must not perform I/O
+// all — x2x3.Pool.UnreachableAmong over the destinations in use answers it, and a POI keeping
+// its own clients supplies the equivalent. It is called on the X1 request goroutine, so it must not perform I/O
 // (see FaultProbe).
 //
 // It takes counts rather than the destinations themselves so that the answer *cannot* name
@@ -799,16 +798,14 @@ var topLevelErrorTemplate = template.Must(template.New("x1tle").Funcs(x1Template
 // configuration — or, where this element has no configured ADMF, from the peer's
 // certificate, which is what clause 6.1's "extracting the identifier of the
 // Requester from the X.509 certificate if necessary" provides for. An empty value
-// would not validate against the schema, and answering a peer we cannot name at
-// all with a malformed message would compound the fault rather than report it.
+// is schema-valid but names nobody, and an ADMF matching answers to itself by this
+// identifier could not attribute the one message that says its request was unreadable.
 func (s *Server) topLevelError(peer *x509.Certificate) []byte {
 	admf := s.admfID
 	if admf == "" {
 		// Both binding forms, not just the Subject UID. certBinds accepts either that
 		// or an annex G binding URI when authenticating, so a peer identified solely by
-		// the second is one this element has already accepted and then could not name:
-		// it answered with an empty admfIdentifier, which does not validate against the
-		// schema, compounding the fault this message exists to report.
+		// the second is one this element has accepted and must also be able to name.
 		admf = certIdentifier(peer, roleADMF)
 	}
 

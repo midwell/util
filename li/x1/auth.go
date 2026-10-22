@@ -133,9 +133,8 @@ func certUID(cert *x509.Certificate) string {
 // which is what clause 6.1 needs when a request could not be parsed. This is the
 // second question asked of both forms, and it exists because answering it from the
 // Subject alone cannot name a peer whose identity is carried only by the URI — a form
-// certBinds accepts for authentication. Such a peer was answered with an empty
-// identifier and therefore a message invalid against the schema, which compounds the
-// fault instead of reporting it.
+// certBinds accepts for authentication — and an answer naming nobody is one that peer
+// cannot attribute to itself.
 //
 // The role is part of the question because the URN carries it: a certificate binding
 // an identifier as an ADMF says nothing about that identifier as an NE.
