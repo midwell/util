@@ -4,6 +4,7 @@
 package x1
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -301,5 +302,68 @@ func TestATaskFaultMustNameADeclaredCondition(t *testing.T) {
 	}
 	if !strings.Contains(bad.ErrorDescription, "does not declare as task-scoped") {
 		t.Errorf("the refusal does not say what went wrong: %q", bad.ErrorDescription)
+	}
+}
+
+// TestTheFaultSupplierIsAskedOnlyForAnswersThatReportFaults: the supplier may walk every
+// session the element holds, once per task. ListAllDetails names tasks by XID and renders no
+// fault, so asking it there was work done and thrown away — but the answers that do render
+// faults must still ask, or they would report a faulty task as healthy.
+func TestTheFaultSupplierIsAskedOnlyForAnswersThatReportFaults(t *testing.T) {
+	for msgType, wantAsked := range map[string]bool{
+		"ListAllDetailsRequest":    false,
+		"GetAllTaskDetailsRequest": true,
+		"GetAllDetailsRequest":     true,
+	} {
+		sup := &faultSupplier{}
+		answerTo(t, twoTaskServer(t, WithTaskFaults(sup.supply)), msgType, "")
+
+		if asked := len(sup.questions()) > 0; asked != wantAsked {
+			t.Errorf("%s: the fault supplier was asked=%v, want %v", msgType, asked, wantAsked)
+		}
+	}
+}
+
+// TestEveryRendererThatReportsTaskFaultsIsListed keeps rendersTaskFaults in step with
+// responseBody: a renderer that reports faults but is missing from the list would answer every
+// task as faultless, and no test of the renderer itself would notice. Every response type is
+// rendered with a marked fault, and any that prints it must be listed.
+func TestEveryRendererThatReportsTaskFaultsIsListed(t *testing.T) {
+	src, err := os.ReadFile("response.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := string(src)
+	start := strings.Index(body, "func responseBody(")
+	if start < 0 {
+		t.Fatal("cannot find responseBody")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+
+	const marker = "a fault only the renderer under test could print"
+	faults := map[types.XID][]X1Error{testXID: {{ErrorCode: 9020, ErrorDescription: marker}}}
+
+	seen := 0
+	for _, line := range strings.Split(body[start:start+end], "\n") {
+		label, ok := strings.CutPrefix(strings.TrimSpace(line), "case \"")
+		if !ok {
+			continue
+		}
+		typ := strings.TrimSuffix(label, "\":")
+		seen++
+
+		m := X1ResponseMessage{
+			Type:       typ,
+			Tasks:      []types.InterceptTask{{XID: testXID}},
+			TaskFaults: faults,
+		}
+		if strings.Contains(responseBody(m), marker) && !rendersTaskFaults(typ) {
+			t.Errorf("%s renders task faults but rendersTaskFaults does not list it", typ)
+		}
+	}
+
+	if seen == 0 {
+		t.Fatal("no response types were found in responseBody, so nothing was checked")
 	}
 }

@@ -1384,7 +1384,13 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 	// sites that set rm.Tasks — the same argument GetAllTaskDetails makes about projecting one
 	// task state through one renderer. An ADMF that asked two ways and got two answers could
 	// not tell which to trust, and a site added later inherits this instead of remembering it.
-	rm.TaskFaults = s.faultsForTasks(rm.Tasks)
+	//
+	// Only for the answers that render them, though. ListAllDetails names its tasks by XID
+	// and nothing more, and the supplier may walk every session this element holds, once per
+	// task — work done outside any lock and then thrown away.
+	if rendersTaskFaults(rm.Type) {
+		rm.TaskFaults = s.faultsForTasks(rm.Tasks)
+	}
 
 	if err != nil {
 		rm.Type = errorResponse

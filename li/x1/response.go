@@ -24,6 +24,18 @@ import (
 // tested. `TestRenderedResponsesValidate` validates every one of these against the
 // published XSD.
 
+// rendersTaskFaults reports whether a response type's renderer reports a task's faults, so
+// that the supplier is consulted only for answers that carry what it says. It must agree with
+// responseBody: every case below that calls taskResponseDetails is listed here.
+func rendersTaskFaults(responseType string) bool {
+	switch responseType {
+	case "GetAllDetailsResponse", "GetTaskDetailsResponse", "GetAllTaskDetailsResponse":
+		return true
+	default:
+		return false
+	}
+}
+
 // responseBody renders the elements a response type defines, indented to sit inside
 // x1ResponseMessage.
 func responseBody(m X1ResponseMessage) string {
