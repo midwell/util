@@ -71,9 +71,8 @@ const requireValidationEnv = "LI_REQUIRE_SCHEMA_VALIDATION"
 // The guarantee is an explicit opt-in rather than a test for CI, and that distinction is
 // load-bearing. The shared `unit-test` reusable workflow runs on a runner image whose
 // declared package list does not include libxml2-utils, so keying off CI would either fail
-// that job or quietly depend on a transitive package — and depending on an undeclared
-// transitive package is how this validation came to skip unnoticed in the first place. The
-// `li-conformance` job in .github/workflows/main.yml installs the validator and sets this
+// that job or quietly depend on a transitive package, which can disappear and leave the
+// validation skipping unnoticed. The `li-conformance` job in .github/workflows/main.yml installs the validator and sets this
 // variable, so exactly one job promises to validate and fails if it cannot.
 func requireXmllint(t *testing.T) {
 	t.Helper()
@@ -594,9 +593,8 @@ func TestOriginatedRequestsValidate(t *testing.T) {
 		report(t, "ReportNEIssue", validateAgainstSchema(t, []byte(body)))
 
 		// TaskReportTerminatingFault, not an NE-issue identifier: the two vocabularies are
-		// different and the schema enumerates this one. A first draft of this test passed
-		// "taskingAbsent" here and the validator caught it — the value is real, but it
-		// travels as a ReportNEIssue alert, not as a taskReportType.
+		// different and the schema enumerates this one. "taskingAbsent", for instance, is
+		// real, but it travels as a ReportNEIssue alert, not as a taskReportType.
 		if err := rep.ReportTaskIssue(string(testXID), TaskReportTerminatingFault,
 			"the triggered POI refused its trigger"); err != nil {
 			t.Fatalf("ReportTaskIssue: %v", err)

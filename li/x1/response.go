@@ -113,8 +113,7 @@ func errorBody(m X1ResponseMessage) string {
 }
 
 // allDetailsBody renders a GetAllDetailsResponse: neStatusDetails, then the task list, then
-// the destination list. All three are mandatory, and none was being emitted — the tasks were
-// rendered bare, directly under x1ResponseMessage.
+// the destination list, all three mandatory and in the schema's order.
 //
 // listOfGenericObjectResponseDetails is optional and omitted: this element implements no
 // Generic Objects, and the schema permits leaving it out rather than claiming an empty set.
@@ -244,10 +243,6 @@ func taskStatus(ind int, faults []X1Error) string {
 	// outright — "to stop a Task 'temporarily', ADMFs shall deactivate the Task and then
 	// activate a new Task" — so there is no dormant task for `awaitingProvisioning` to
 	// describe either.
-	//
-	// An earlier version of this function branched on the task's state to pick
-	// `awaitingProvisioning`. That branch could never be taken, and encoded a retained-
-	// inactive state the specification says does not exist.
 	var b strings.Builder
 	b.WriteString(open(ind, "taskStatus"))
 	b.WriteString(el(ind+2, "provisioningStatus", "complete"))
@@ -446,8 +441,13 @@ func deliveryTypeOf(p []types.ProductType) string {
 }
 
 // ── XML emission helpers ────────────────────────────────────────────
-// Small and explicit, because the alternative was a template in which the difference between
-// a valid and an invalid response was invisible.
+// Small and explicit, so the difference between a valid and an invalid response is visible
+// where the response is built. ind is the indentation in spaces; the body renderers nest
+// their elements two spaces per level below x1ResponseMessage, which sits at four.
+//
+// **Values are passed already escaped.** el and elNS write value verbatim, so every caller
+// escapes what it did not produce itself (escapeXML) -- a peer-sourced identifier, an
+// address, a description. Element names are always this package's own constants.
 
 func indent(n int) string { return strings.Repeat(" ", n) }
 
@@ -539,16 +539,14 @@ func (s *Server) reportedLocked(did string, d heldDestination) ReportedDestinati
 // egress, an authentication attempt refused — is reported when it happens and is not
 // re-observable afterwards, so it does not appear here. That is why the push reporting is not
 // redundant.
-// It consults only what a POI registers. This package shipped one condition of its own —
-// "tasking is held that no destination resolves for" — and a deployed run showed it could
-// only ever be false: no POI this library serves delivers from a task's resolved
-// destinations. The AMF sends X2 to the MDF2 in its configuration, the SMF provisions its
-// configured MDF3 at the CC-POI, and the UPF, which *does* read them, refuses a content task
-// without one before storing it. So the condition held for every ordinary task an ADMF
-// provisions without DIDs, and every element reported itself faulty while delivering
-// perfectly. An element that always answers "Faults" is ignored exactly as fast as one that
-// always answers "OK", which is the failure this design exists to avoid — so it is gone
-// rather than narrowed.
+//
+// It consults only what a POI registers, and holds no condition of its own. "Tasking is held
+// that no destination resolves for" looks like one, but it is not a fault for these POIs:
+// the AMF sends X2 to the MDF2 in its configuration, the SMF provisions its configured MDF3 at
+// the CC-POI, and the UPF, which does read a task's destinations, refuses a content task
+// without one before storing it. The condition would hold for every ordinary task provisioned
+// without DIDs, and an element that always answers "Faults" is ignored exactly as fast as one
+// that always answers "OK".
 func (s *Server) unresolvedFaults() []X1Error {
 	var faults []X1Error
 

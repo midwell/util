@@ -358,9 +358,7 @@ func TestServeHTTPMutualTLS(t *testing.T) {
 // what surfaced this, having received a code that is not in the standard's table.
 func TestUnsupportedRequestUsesStandardCode(t *testing.T) {
 	st := store.New()
-	// A type this element genuinely does not implement. GetTaskDetails used to serve
-	// here and no longer can, which is the point: an ADMF must be able
-	// to ask what tasking an element holds.
+	// A type this element genuinely does not implement.
 	body := strings.Replace(activateXML, "ActivateTaskRequest", "SomeFutureRequest", 1)
 	assertRejected(t, processWith(t, st, admfPeer(t), body), st, errCodeUnsupportedRequest)
 }

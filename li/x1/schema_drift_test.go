@@ -17,12 +17,11 @@ import (
 // by someone reading the schema.
 //
 // The class it catches: `encoding/xml` silently discards an element a struct does not
-// declare. On this interface that is not a parsing detail — `listOfServiceTypes` was
-// unmodelled, so a task narrowing interception to particular service types was
-// acknowledged with the narrowing thrown away, and the provisioning function had no
-// channel through which the divergence could have been reported. Two of these have now
-// been found by hand, each after the code had been reviewed. The third should be found
-// here.
+// declare. On this interface that is not a parsing detail: an unmodelled
+// `listOfServiceTypes` would let a task narrowing interception to particular service types
+// be acknowledged with the narrowing thrown away, and the provisioning function would have
+// no channel through which the divergence could be reported. This test finds such a field
+// before a reviewer has to.
 //
 // It is not the same check as TestRenderedResponsesValidate. That one validates what this
 // element *emits* against the published schema, which says nothing about what it fails to
@@ -284,7 +283,7 @@ var disregardedResponseElements = map[string]map[string]string{
 		// own health is a different question, with its own message (GetNEStatus) and its
 		// own condition set.
 		//
-		// Worth knowing before this changes: over the internal triggering interface the
+		// Worth knowing: over the internal triggering interface the
 		// ADMF cannot ask the UPF anything — the UPF authenticates its peer as the SMF's
 		// triggering function — so this SMF is the only party that could ever relay a
 		// UPF's element health onward. If that is wanted, this field is where it comes
@@ -495,11 +494,11 @@ func TestDriftAuditDistinguishesChoiceFromSequence(t *testing.T) {
 // TestResponseParsingGaps runs the same audit over the types a *requester* parses a peer's
 // answer with — the CC Triggering Function reading what a triggered POI reports.
 //
-// It is reported rather than enforced. The gaps are real but they are not this change's
-// subject: a requester that drops a field of an answer misreads what a peer holds, which
-// is a different failure from an element that drops a field of an instruction, and fixing
-// them means deciding what the CC-TF should do with each. Recorded here so the next
-// increment starts from a list rather than from another reading of the schema.
+// It is reported rather than enforced: a requester that drops a field of an answer misreads
+// what a peer holds, which is a different failure from an element that drops a field of an
+// instruction, and closing each gap means deciding what the CC-TF should do with that field.
+// The list is kept here so that decision starts from it rather than from another reading of
+// the schema.
 // mergedDisregards combines disposition lists, later entries winning per type+element.
 func mergedDisregards(maps ...map[string]map[string]string) map[string]map[string]string {
 	out := map[string]map[string]string{}

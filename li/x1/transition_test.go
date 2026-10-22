@@ -66,17 +66,17 @@ func TestAnActivationRacingTheFailSafePurgeLeavesNoOrphan(t *testing.T) {
 
 	<-inWindow // the purge has read what it will tear down and has not cleared yet
 
+	peer := admfPeer(t) // built here: t.Fatal is not valid off the test goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		//nolint:errcheck // the acknowledgement is not what this asserts on
-		_, _ = srv.Process([]byte(activateXML), admfPeer(t))
+		_, _ = srv.Process([]byte(activateXML), peer)
 	}()
 
-	// Long enough for the activation to land if nothing stops it. Under the
-	// transition lock it does not land here at all — it waits, and runs after the
-	// purge — which is the fix; without it, it stores the task and tells the POI to
-	// apply it inside a window the purge is about to wipe without telling anyone.
+	// Long enough for the activation to land if nothing stops it. Under the transition
+	// lock it does not land here at all -- it waits, and runs after the purge. A slow
+	// machine can only make this pass when it should not, never fail it.
 	time.Sleep(100 * time.Millisecond)
 	proceed <- struct{}{}
 	wg.Wait()
@@ -136,16 +136,17 @@ func TestConcurrentOperationsOnOneXIDEndConsistent(t *testing.T) {
 
 		var wg sync.WaitGroup
 
+		peer := admfPeer(t) // built here: t.Fatal is not valid off the test goroutine
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			//nolint:errcheck // acknowledgement not asserted on
-			_, _ = srv.Process([]byte(activateXML), admfPeer(t))
+			_, _ = srv.Process([]byte(activateXML), peer)
 		}()
 		go func() {
 			defer wg.Done()
 			//nolint:errcheck // acknowledgement not asserted on
-			_, _ = srv.Process([]byte(deactivateXML), admfPeer(t))
+			_, _ = srv.Process([]byte(deactivateXML), peer)
 		}()
 		wg.Wait()
 
@@ -178,13 +179,10 @@ func TestConcurrentOperationsOnOneXIDEndConsistent(t *testing.T) {
 // queued behind a DeactivateTask's session walk would break that contract. This drives
 // exactly that: both are called from inside a callback, with the transition lock held.
 //
-// It is the kind of property that holds until somebody adds a convenient-looking lock,
-// which is the same reasoning as TestLIBlockCannotReturnFromStart.
+// It is the kind of property that holds until somebody adds a convenient-looking lock.
 func TestAProbeIsReachableFromInsideACallback(t *testing.T) {
 	st := store.New()
 
-	// A buffered send rather than close: the builtin close is shadowed at package
-	// scope in response.go and is not reachable from a test in this package.
 	reached := make(chan struct{}, 1)
 
 	var srv *Server
@@ -217,10 +215,10 @@ func TestAProbeIsReachableFromInsideACallback(t *testing.T) {
 // interception was notified with it rather than with an empty one.
 //
 // The two halves of that are one mechanism. activate re-reads the store to answer with
-// the task as this element now holds it, and used to discard the found bool — so a
-// removal landing in between produced the *zero* InterceptTask, with no XID and no
-// targets, handed to the POI as a successful activation and acknowledged to the ADMF.
-// Honouring found closes that; the lock makes it unreachable.
+// the task as this element holds it; were the found bool discarded, a removal landing in
+// between would produce the *zero* InterceptTask, with no XID and no targets, handed to
+// the POI as a successful activation and acknowledged to the ADMF. Honouring found
+// closes that; the lock makes it unreachable.
 //
 // **What this test can and cannot fail against.** With the lock in place a concurrent
 // removal cannot land between the store write and the read, so discarding found alone is
@@ -266,10 +264,11 @@ func TestAnAcknowledgedActivationIsNeverAnEmptyTask(t *testing.T) {
 		ackMu        sync.Mutex
 	)
 
+	peer := admfPeer(t) // built here: t.Fatal is not valid off the test goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resp, err := srv.Process([]byte(activateXML), admfPeer(t))
+		resp, err := srv.Process([]byte(activateXML), peer)
 		if err != nil || len(resp.Messages) == 0 {
 			return
 		}
@@ -278,6 +277,7 @@ func TestAnAcknowledgedActivationIsNeverAnEmptyTask(t *testing.T) {
 		ackMu.Unlock()
 	}()
 
+	// As above: a slow machine can only make this pass when it should not.
 	time.Sleep(100 * time.Millisecond)
 	proceed <- struct{}{}
 	wg.Wait()
@@ -341,11 +341,12 @@ func TestACreateRacingAnActivationResolvesOneWayOrTheOther(t *testing.T) {
 
 	created := make(chan X1ResponseMessage, 1)
 
+	peer := admfPeer(t) // built here: t.Fatal is not valid off the test goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		resp, err := srv.Process([]byte(createDestinationXML(testDIDInActivateXML, deliveryX2Only,
-			"10.0.60.199", tcpPort("42069"), "")), admfPeer(t))
+			"10.0.60.199", tcpPort("42069"), "")), peer)
 		if err != nil {
 			t.Errorf("create: %v", err)
 
@@ -356,19 +357,18 @@ func TestACreateRacingAnActivationResolvesOneWayOrTheOther(t *testing.T) {
 
 	<-inWindow // the guards are decided and nothing is stored yet
 
-	// A buffered send rather than close: the builtin close is shadowed at package scope
-	// in response.go and is not reachable from a test in this package.
-	activated := make(chan struct{}, 1)
+	activated := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		//nolint:errcheck // the acknowledgement is not what this asserts on
-		_, _ = srv.Process([]byte(activateXML), admfPeer(t))
-		activated <- struct{}{}
+		_, _ = srv.Process([]byte(activateXML), peer)
+		close(activated)
 	}()
 
 	// Long enough for the activation to land if nothing stops it. Under the transition
-	// lock it does not land here at all — it waits, and runs after the create.
+	// lock it does not land here at all -- it waits, and runs after the create. A slow
+	// machine can only make this pass when it should not, never fail it.
 	select {
 	case <-activated:
 		proceed <- struct{}{}

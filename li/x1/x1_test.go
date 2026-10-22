@@ -53,9 +53,8 @@ func TestReportNEIssue(t *testing.T) {
 	for _, want := range []string{
 		`xsi:type="ns1:ReportNEIssueRequest"`,
 		"<ns1:neIdentifier>neID</ns1:neIdentifier>",
-		// TypeOfNEIssueMessage is a closed enumeration. This assertion used to
-		// require the condition string itself, which is how an entire fault channel
-		// came to be schema-invalid without anything noticing.
+		// TypeOfNEIssueMessage is a closed enumeration: the condition string itself
+		// would make the whole fault channel schema-invalid.
 		"<ns1:typeOfNeIssueMessage>FaultReport</ns1:typeOfNeIssueMessage>",
 		// The condition still has to reach the ADMF — in the field that permits it.
 		"x3EgressDown",
@@ -163,10 +162,9 @@ func TestKeepaliveResetsWatchdog(t *testing.T) {
 //
 // Its dId is *not* theirs. The example says `pre-shared-did`, which is not the UUID the
 // schema types a DId as, so it is replaced here with one. An independent implementation's
-// example is authority for element names and structure — which is what it is used for —
-// and not a conformance oracle; keeping their literal value made this element's own test
-// material an unreliable guide to what a conformant ADMF sends, and it is what let a
-// malformed identifier through for months.
+// example is authority for element names and structure -- which is what it is used for --
+// and not a conformance oracle; keeping their literal value would make this element's own
+// test material an unreliable guide to what a conformant ADMF sends.
 const activateXML = `<?xml version="1.0" encoding="UTF-8"?>
 <ns1:X1Request xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ns1:x1RequestMessage xsi:type="ns1:ActivateTaskRequest">
@@ -194,13 +192,12 @@ const testXID = types.XID("50b93d1e-1b53-4d63-aacb-e4d99811bc0b")
 
 // testDIDInActivateXML is the destination identifier the shared activateXML fixture
 // names. TS 33.128 marks ListOfDIDs mandatory in every ActivateTask table it defines, so
-// the fixture keeps naming one — and the element now refuses a task naming a destination
+// the fixture keeps naming one -- and the element refuses a task naming a destination
 // identifier it cannot resolve, because storing it with the subset means an agency the
 // warrant names receives nothing while provisioning reports success.
 //
 // So the fixture's DID is declared in the element's configuration, which is the supported
-// arrangement for a destination agreed out of band and is what these tests were relying
-// on the old leniency to stand in for.
+// arrangement for a destination agreed out of band.
 const testDIDInActivateXML = "7d1c2f60-8a4e-4a1e-9f3b-2c5d6e7f8091"
 
 // testServer is NewServer with that destination declared, for the tests whose subject is
@@ -250,8 +247,7 @@ func TestProcessActivate(t *testing.T) {
 
 // TestParseTargetIdentifierTypes locks in the target-identifier element names
 // against the ETSI TS 103 221-1 XSD (verified verbatim: supiimsi/supinai/
-// peiImei/peiImeisv/gpsiMsisdn/imsi/e164Number — the casing is the schema's own).
-// Previously only e164Number was exercised.
+// peiImei/peiImeisv/gpsiMsisdn/imsi/e164Number -- the casing is the schema's own).
 func TestParseTargetIdentifierTypes(t *testing.T) {
 	cases := []struct {
 		elem, val string
@@ -367,12 +363,11 @@ func TestRejectsUnknownAndBadTarget(t *testing.T) {
 	}
 }
 
-// TestModifyUnknownTaskRefused: a ModifyTaskRequest naming tasking this element
-// does not hold used to create it, so an ADMF correcting a warrant that had been
-// lost — to a restart, say — was told the correction succeeded while the element
-// silently invented a task from whatever the modify happened to carry. It must be
-// refused with "XID does not exist on NE" instead, which is the answer that sends
-// the ADMF to activate the warrant properly.
+// TestModifyUnknownTaskRefused: a ModifyTaskRequest naming tasking this element does
+// not hold must not create it -- an ADMF correcting a warrant that had been lost, to a
+// restart say, would be told the correction succeeded while the element invented a task
+// from whatever the modify happened to carry. It is refused with "XID does not exist on
+// NE", which is the answer that sends the ADMF to activate the warrant properly.
 func TestModifyUnknownTaskRefused(t *testing.T) {
 	st := store.New()
 	srv := testServer(st)
@@ -498,10 +493,9 @@ func TestTaskDetailsQueryAnswersWhatIsHeld(t *testing.T) {
 		t.Fatalf("marshalResponse: %v", err)
 	}
 	// taskStatus is a complex type carrying provisioningStatus, whose enumeration is
-	// awaitingProvisioning / failed / complete. This assertion previously demanded
-	// "<taskStatus>Active</taskStatus>" — a shape and a value the schema does not define —
-	// and so held the defect in place. What makes the corrected form trustworthy is not this
-	// assertion but TestRenderedResponsesValidate, which checks it against the published XSD.
+	// awaitingProvisioning / failed / complete -- not a string such as "Active", which the
+	// schema does not define. What makes this form trustworthy is not this assertion but
+	// TestRenderedResponsesValidate, which checks it against the published XSD.
 	for _, want := range []string{
 		"<ns1:taskResponseDetails>", "<ns1:taskDetails>",
 		"<ns1:provisioningStatus>complete</ns1:provisioningStatus>",
@@ -748,11 +742,10 @@ func TestExactReplayIsANoOp(t *testing.T) {
 	}
 }
 
-// TestProductChangeReachesThePOI covers the two modifications that used to fire
-// nothing at all. Deriving "something changed" from the target identifiers alone
-// dropped both: adding CC never began content interception for sessions the target
-// already had, and removing it left content interception running after the
-// authority for it was withdrawn.
+// TestProductChangeReachesThePOI covers the two modifications that a "something changed"
+// derived from the target identifiers alone would miss: adding CC would never begin
+// content interception for sessions the target already had, and removing it would leave
+// content interception running after the authority for it was withdrawn.
 func TestProductChangeReachesThePOI(t *testing.T) {
 	st := store.New()
 	var log taskChangeLog

@@ -210,8 +210,8 @@ func TestNEFaultCarriesNoIdentity(t *testing.T) {
 }
 
 // TestAnElementHoldingNoTaskingIsNotFaulty guards the next plausible probe, which is
-// "taskingAbsent" — a condition this package *can* observe at any moment, unlike the one it
-// withdrew, and which still must not appear here.
+// "taskingAbsent" -- a condition this package *can* observe at any moment, and which still
+// must not appear here.
 //
 // Most elements hold no tasking most of the time. Reporting it would make "Faults" the normal
 // answer and the field worthless, and an ADMF could no longer tell an element that is losing

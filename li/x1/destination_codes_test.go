@@ -129,8 +129,8 @@ func TestAnIdentifierAssociationExtensionOnADestinationIsRefused(t *testing.T) {
 
 // TestRefusalsCarryTheirSpecificCodes: a missing mandatory element and a value outside a
 // closed enumeration are schema errors, 1010; an extension the element does not recognise
-// is a destination it cannot create, 6000. Each of these used to fall through to the
-// generic 1000, or to 3000 where nothing about the task was the problem.
+// is a destination it cannot create, 6000 -- not the generic 1000, and not 3000 where
+// nothing about a task is the problem.
 func TestRefusalsCarryTheirSpecificCodes(t *testing.T) {
 	for _, c := range []struct {
 		name string

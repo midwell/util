@@ -153,9 +153,9 @@ func TestAGtpuTunnelIdPastATEIDIsRefused(t *testing.T) {
 }
 
 // TestAModelledAndAnUnmodelledArmTogetherAreRefused: encoding/xml drops an element no
-// field claims, so an IMSI beside a macAddress used to count as one arm, and the element
-// narrowed the interception to the IMSI and acknowledged it — the element deciding the
-// scope of a warrant, which two modelled arms are already refused for.
+// field claims, so without counting it an IMSI beside a macAddress would count as one arm,
+// and the element would narrow the interception to the IMSI and acknowledge it -- the
+// element deciding the scope of a warrant, which two modelled arms are refused for.
 func TestAModelledAndAnUnmodelledArmTogetherAreRefused(t *testing.T) {
 	st := store.New()
 	m := serve(t, testServer(st), withTarget(

@@ -4,8 +4,13 @@
 // Package x1 implements the network-element (POI) side of the ETSI TS 103 221-1
 // X1 interface: it receives task-provisioning requests from an ADMF/LIPF over
 // HTTP (XML bodies) and applies them to the interception-task store. The NF is
-// the X1 server; the ADMF is the client. Transport security (mutual TLS, X0
-// credential pre-provisioning) is layered on separately.
+// the X1 server; the ADMF is the client.
+//
+// It also holds the element's X1 client side -- the Requester a triggering function tasks
+// a content POI with, and the Reporter that raises issues to the ADMF -- and the
+// clause 8 peer binding both directions share. Transport security comes from the
+// caller's TLS configuration (see NewListener and package mtls); credential
+// pre-provisioning (X0) is outside this package.
 package x1
 
 import (
@@ -46,9 +51,10 @@ type X1RequestMessage struct {
 	// (CreateDestination). A task references destinations by DID, so they must be
 	// installed before the first task that names them.
 	DestinationDetails *DestinationDetails `xml:"destinationDetails,omitempty"`
-	// DID is a bare destination identifier, as GetDestinationDetails and
-	// RemoveDestination carry it — distinct from the DID inside DestinationDetails,
-	// which is part of a destination being provisioned.
+	// DID is a bare destination identifier, as GetDestinationDetails carries it --
+	// distinct from the DID inside DestinationDetails, which is part of a destination
+	// being provisioned. (RemoveDestination carries one too; this element refuses that
+	// message, see CONFORMANCE.md.)
 	DID string `xml:"dId,omitempty"`
 }
 
@@ -99,7 +105,7 @@ type ExtensionItem struct {
 }
 
 // DeliveryAddress is a CHOICE of address forms. Only ipAddressAndPort is
-// modeled — the X2/X3 senders deliver to a host and port — so a destination
+// modelled — the X2/X3 senders deliver to a host and port — so a destination
 // given as a URI, E.164 number or email address is rejected rather than
 // silently accepted and never delivered to.
 type DeliveryAddress struct {
@@ -330,7 +336,7 @@ type MediationDetails struct {
 }
 
 // TargetIdentifier is a CHOICE of target-identifier kinds. Only the subset the
-// 5G POIs match on is modeled; the rest of the TS 103 221-1 set is unmodeled
+// 5G POIs match on is modelled; the rest of the TS 103 221-1 set is unmodelled
 // (an unknown identifier yields an empty match and is rejected).
 type TargetIdentifier struct {
 	IMSI      string `xml:"imsi,omitempty"`
@@ -358,7 +364,7 @@ type TargetIdentifier struct {
 	TCPPort      string `xml:"tcpPort,omitempty"`
 	UDPPort      string `xml:"udpPort,omitempty"`
 	// Extension carries identifier types defined outside TS 103 221-1. The only
-	// one modeled is the 3GPP LI_T3 packet-detection criteria a CC Triggering
+	// one modelled is the 3GPP LI_T3 packet-detection criteria a CC Triggering
 	// Function sends a triggered CC-POI.
 	Extension *TargetIdentifierExtension `xml:"targetIdentifierExtension,omitempty"`
 	// Unmodelled collects every child element no field above claims — an arm TS 103
@@ -403,7 +409,7 @@ type UPFLIT3Extensions struct {
 }
 
 // UPFLIT3Identifier is a CHOICE over the extension criteria of TS 33.128 table
-// 6.2.3-7. All seven arms the schema defines are modeled. Note that NetworkInstance
+// 6.2.3-7. All seven arms the schema defines are modelled. Note that NetworkInstance
 // and PDR are xs:hexBinary rather than strings, and that FTEID here may carry an
 // address beside the TEID — unlike the plain gtpuTunnelId identifier, which the
 // schema types as a bare integer.
@@ -426,11 +432,11 @@ type FTEID struct {
 	IPv6Address string `xml:"urn:3GPP:ns:li:3GPPX1Extensions:r18:v6 IPv6Address,omitempty"`
 }
 
-// GTP tunnel direction is a closed enumeration in the schema — "Outbound" or
-// "Inbound", not the uplink/downlink vocabulary used elsewhere in 3GPP. A value
-// outside it is refused rather than passed through: an unrecognised direction that
-// matched nothing would silently intercept nothing, and one that matched everything
-// would collect both directions when one was authorised.
+// GTPDirectionOutbound and GTPDirectionInbound are the schema's GTP tunnel directions, a
+// closed enumeration -- "Outbound" or "Inbound", not the uplink/downlink vocabulary used
+// elsewhere in 3GPP. A value outside it is refused rather than passed through: an
+// unrecognised direction that matched nothing would silently intercept nothing, and one
+// that matched everything would collect both directions when one was authorised.
 const (
 	GTPDirectionOutbound = "Outbound"
 	GTPDirectionInbound  = "Inbound"
@@ -542,9 +548,8 @@ type TaskResponseDetails struct {
 }
 
 // TaskStatus is how a peer reports the state of a task it holds. It is a complex
-// type in the schema, and this used to be parsed as a plain string — so a
-// requester read a peer's entire account of a task as concatenated character data
-// and acted on none of it.
+// type in the schema, parsed as one: read as a plain string, a peer's entire account of
+// a task would be concatenated character data a requester could act on none of.
 //
 // Only the two fields a requester can act on are modelled. The rest are declared
 // disregarded, with reasons, in the response-side drift audit:

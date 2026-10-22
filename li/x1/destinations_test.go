@@ -35,8 +35,8 @@ const (
 )
 
 // createDestinationXML builds a CreateDestinationRequest. portXML is the contents of the
-// TS 103 280 `port` element, so a test can send the shape the schema defines or the shape
-// this element used to send.
+// TS 103 280 `port` element, so a test can send the shape the schema defines or one it
+// does not.
 func createDestinationXML(did, deliveryType, addr, portXML, extra string) string {
 	return string(request("CreateDestinationRequest", `
     <ns1:destinationDetails>
@@ -414,7 +414,7 @@ func TestConformantPortShapeParses(t *testing.T) {
 	}
 }
 
-// A port in the element's text — the shape this element used to send — is not a port.
+// A port as the element's own text, rather than the TCPPort/UDPPort choice, is not a port.
 // Refusing beats storing a destination with no port, which is a task that delivers
 // nowhere while the ADMF is told all is well.
 func TestPortAsElementTextIsRefused(t *testing.T) {
@@ -472,8 +472,8 @@ func TestDestinationIdentifierMustBeAUUID(t *testing.T) {
 	}
 }
 
-// The refusal rule, per field. Each entry is a task that used to be accepted with the
-// field thrown away, and the difference between the two halves of this test is the whole
+// The refusal rule, per field. Each entry is a task that, accepted, would have the field
+// thrown away, and the difference between the two halves of this test is the whole
 // subject: a field is disregarded only where the specification addresses it to a function
 // this element is not, or where disregarding it cannot change what is intercepted or
 // where the product goes.
@@ -717,10 +717,8 @@ func TestAReportedTaskCarriesItsDestinationIdentifiers(t *testing.T) {
 	srv := NewServer(st, "neID")
 
 	provisionAgencyA(t, srv)
-	// Both provisioned. This test used to name one destination the element could not
-	// resolve, to show that what is reported is what the ADMF said rather than what
-	// resolved — but such a task is now refused, and the reporting property is asserted
-	// with two resolvable ones instead.
+	// Both provisioned: a task naming a destination the element cannot resolve is
+	// refused, so the reporting property is asserted with two resolvable ones.
 	mustAck(t, srv, createDestinationXML(didAgencyB, deliveryX2Only, "10.0.60.123", tcpPort("42069"), ""))
 	mustAck(t, srv, activateXMLWith(string(testXID), deliveryX2Only, dIDs(didAgencyA, didAgencyB), ""))
 
@@ -854,7 +852,7 @@ func TestATaskWantingX2NamingOnlyAnX3DestinationResolvesNoX2Endpoint(t *testing.
 }
 
 // TestDeactivationRefusesWhatItCannotHonour covers the answer TS 103 221-1 table 6.2.3-2
-// requires and this element used to get wrong in the most costly direction available.
+// requires, whose opposite fails in the most costly direction available.
 //
 // "OK or Error — … Also, it is an error if the XID is not already present at the NE." It is
 // the mirror of the CreateDestination rule answered with 2030, and an unconditional

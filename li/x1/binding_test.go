@@ -31,10 +31,10 @@ func answeringWith(t *testing.T, replace func(string) string) http.Handler {
 //
 // A misroute or a stale DNS record puts an endpoint in the path that is not the
 // UPF the trigger was addressed to. It holds LI-domain credentials, so the
-// handshake succeeds, and it answers `OK`. Before this, the triggering function
-// recorded content interception as installed at a point of interception that
-// never received the trigger — and nothing downstream reveals it, because the
-// product that would be missing was never produced.
+// handshake succeeds, and it answers `OK`. Accepted, that answer would have the
+// triggering function record content interception as installed at a point of
+// interception that never received the trigger -- and nothing downstream reveals it,
+// because the product that would be missing is never produced.
 func TestAWellFormedAcknowledgementFromTheWrongElementIsRefused(t *testing.T) {
 	req, _ := requesterTo(t, answeringWith(t, func(resp string) string {
 		return strings.Replace(resp, "<neIdentifier>upf-1</neIdentifier>",
@@ -422,14 +422,12 @@ const multiArmTargetXML = `<?xml version="1.0" encoding="UTF-8"?>
   </ns1:x1RequestMessage>
 </ns1:X1Request>`
 
-// TestAMultiArmLIT3CriterionIsRefused is the same-class check on the inner choice,
-// and it is here because finding one instance of a defect and not looking for its
-// siblings is how the first one survived.
+// TestAMultiArmLIT3CriterionIsRefused is the same-class check on the inner choice.
 //
 // UPFLIT3TargetIdentifier is a sequence *of* choices: several members are valid,
 // several arms of one member are not. Guarding the outer choice and not this one
-// would have left the defect at the level where a CC-POI actually reads its
-// detection criteria.
+// would leave the gap at the level where a CC-POI actually reads its detection
+// criteria.
 func TestAMultiArmLIT3CriterionIsRefused(t *testing.T) {
 	pdr := uint32(3)
 	td := TaskDetails{

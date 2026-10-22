@@ -1126,6 +1126,7 @@ func (s *Server) destinationsInUse() int {
 // specification's bulk removal is over "all Destinations on the NE" in the sense of
 // those an ADMF created, and an X1 message that could delete an element's own
 // configuration would be a different and much larger power.
+//
 // The in-use count and the removal are taken together, under the transition lock, for
 // the same reason createDestination takes it: the guard is decided from task state, and a
 // task activated between the count and the clear would be left referencing a destination
@@ -2480,11 +2481,11 @@ func populatedLIT3Arms(id UPFLIT3Identifier) int {
 // What is deliberately *not* here: listOfMediationDetails and
 // implicitDeactivationAllowed, both of which pass. See their declarations for the
 // sentences that put them on the other side of the rule.
-// honoursCorrelation says whether this element acts on a provisioned correlation
-// value. It is a parameter rather than a property of td because the answer differs by
-// element — see HonoursCorrelationID — which cost this function its purity as a rule
-// about fields alone. That was the price of the requirement's own conclusion: a field
-// one point of interception honours and another cannot has to follow the element.
+//
+// honoursCorrelation says whether this element acts on a provisioned correlation value.
+// It is a parameter rather than a property of td because the answer differs by element
+// -- see HonoursCorrelationID: a field one point of interception honours and another
+// cannot has to follow the element.
 func unhonourableTaskFields(td TaskDetails, honoursCorrelation bool) error {
 	if td.CorrelationID != "" && !honoursCorrelation {
 		// Accepted and then ignored, until now: parsed into the task, stored, and never

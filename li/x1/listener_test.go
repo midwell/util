@@ -10,12 +10,10 @@ import (
 	"time"
 )
 
-// TestListenerBoundsEveryPhase. net/http applies no deadline
-// unless one is set, so before this an unauthenticated peer could open a
-// connection, stall the TLS handshake, and hold it for as long as it liked. The
-// assertion is deliberately on the server the network functions actually get,
-// because the defect was not a wrong value anywhere — it was three servers
-// constructed by hand with none of these fields mentioned at all.
+// TestListenerBoundsEveryPhase: net/http applies no deadline unless one is set, so
+// without these an unauthenticated peer could open a connection, stall the TLS handshake,
+// and hold it for as long as it liked. The assertion is on the server the network
+// functions actually get, since a server constructed by hand would simply omit them.
 func TestListenerBoundsEveryPhase(t *testing.T) {
 	srv := NewListener(http.NewServeMux(), nil)
 
