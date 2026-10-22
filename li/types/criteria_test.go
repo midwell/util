@@ -3,7 +3,10 @@
 
 package types
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // Every criterion TS 33.128 table 6.2.3-7 requires must be a distinct type that
 // survives a round trip through a task, and must be distinguishable from the
@@ -80,25 +83,91 @@ func TestEverySubscriberIdentifierRenders(t *testing.T) {
 	}
 }
 
-func TestCriterionRoundTripsThroughATargetIdentifier(t *testing.T) {
+// TestTargetsAnyMatchesEachCriterionByValue: a task naming a criterion matches an entity
+// holding exactly that criterion and nothing else, so the comparison is by type and value.
+// The network instance is the schema's hexBinary — "internet" hex-encoded — not a name.
+func TestTargetsAnyMatchesEachCriterionByValue(t *testing.T) {
 	for _, tc := range []struct {
-		typ TargetIdentifierType
-		val string
+		typ        TargetIdentifierType
+		val, other string
 	}{
-		{TargetFTEID, "1234@192.0.2.1"},
-		{TargetUEIPv4, "192.0.2.50"},
-		{TargetUEIPv6, "2001:db8::1"},
-		{TargetTCPPort, "443"},
-		{TargetUDPPort, "2152"},
-		{TargetPDRID, "7"},
-		{TargetQERID, "3"},
-		{TargetNetworkInstance, "internet"},
-		{TargetGTPTunnelDirection, "Outbound"}, // the schema enumerates Outbound/Inbound, not uplink/downlink
-		{TargetPDR, "0a0b0c"},
+		{TargetFTEID, "1234@192.0.2.1", "1234@192.0.2.2"},
+		{TargetUEIPv4, "192.0.2.50", "192.0.2.51"},
+		{TargetUEIPv6, "2001:0db8:0000:0000:0000:0000:0000:0001", "2001:0db8:0000:0000:0000:0000:0000:0002"},
+		{TargetTCPPort, "443", "444"},
+		{TargetUDPPort, "2152", "2153"},
+		{TargetPDRID, "7", "8"},
+		{TargetQERID, "3", "4"},
+		{TargetNetworkInstance, "696e7465726e6574", "696d73"},
+		{TargetGTPTunnelDirection, "Outbound", "Inbound"},
+		{TargetPDR, "0a0b0c", "0a0b0d"},
 	} {
-		id := TargetIdentifier{Type: tc.typ, Value: tc.val}
-		if id.Type != tc.typ || id.Value != tc.val {
-			t.Errorf("%q did not round trip: got %+v", tc.typ, id)
+		task := InterceptTask{Targets: []TargetIdentifier{{Type: tc.typ, Value: tc.val}}}
+
+		if !task.TargetsAny([]TargetIdentifier{{Type: tc.typ, Value: tc.val}}) {
+			t.Errorf("%s %q does not match itself", tc.typ, tc.val)
 		}
+		if task.TargetsAny([]TargetIdentifier{{Type: tc.typ, Value: tc.other}}) {
+			t.Errorf("%s %q matched %q", tc.typ, tc.val, tc.other)
+		}
+		// The same value under another type is a different criterion.
+		if task.TargetsAny([]TargetIdentifier{{Type: TargetSUPI, Value: tc.val}}) {
+			t.Errorf("%s %q matched a SUPI with the same value", tc.typ, tc.val)
+		}
+	}
+}
+
+// TestNamesAnyTypeAsksAboutKindsNotValues: the question is whether a warrant is of a
+// shape the element could ever match, so only the identifier types count.
+func TestNamesAnyTypeAsksAboutKindsNotValues(t *testing.T) {
+	task := InterceptTask{Targets: []TargetIdentifier{
+		{Type: TargetSUPI, Value: "262019876543210"},
+		{Type: TargetFSEID, Value: "42"},
+	}}
+
+	for _, tc := range []struct {
+		kinds []TargetIdentifierType
+		want  bool
+	}{
+		{[]TargetIdentifierType{TargetSUPI}, true},
+		{[]TargetIdentifierType{TargetPEI, TargetFSEID}, true},
+		{[]TargetIdentifierType{TargetPEI, TargetGPSI}, false},
+		{nil, false},
+	} {
+		if got := task.NamesAnyType(tc.kinds...); got != tc.want {
+			t.Errorf("NamesAnyType(%v) = %v, want %v", tc.kinds, got, tc.want)
+		}
+	}
+
+	if (InterceptTask{}).NamesAnyType(TargetSUPI) {
+		t.Error("a task naming nothing names a SUPI")
+	}
+}
+
+// TestSplitTargetsReturnsEveryMatchAndOnlyTheSubjectsOwnRest: every held identity the
+// task names is a match, the rest of the subject's identities are "other", and an
+// identity appearing twice is reported where it falls each time.
+func TestSplitTargetsReturnsEveryMatchAndOnlyTheSubjectsOwnRest(t *testing.T) {
+	supi := TargetIdentifier{Type: TargetSUPI, Value: "262019876543210"}
+	pei := TargetIdentifier{Type: TargetPEI, Value: "35784005123456"}
+	gpsi := TargetIdentifier{Type: TargetGPSI, Value: "4915123456789"}
+	task := InterceptTask{Targets: []TargetIdentifier{supi, pei}}
+
+	matched, other := task.SplitTargets([]TargetIdentifier{supi, gpsi, pei})
+	if !slices.Equal(matched, []TargetIdentifier{supi, pei}) || !slices.Equal(other, []TargetIdentifier{gpsi}) {
+		t.Errorf("SplitTargets = %v, %v; want both named identities matched and the GPSI other", matched, other)
+	}
+
+	matched, other = task.SplitTargets([]TargetIdentifier{gpsi})
+	if matched != nil || !slices.Equal(other, []TargetIdentifier{gpsi}) {
+		t.Errorf("SplitTargets with no match = %v, %v", matched, other)
+	}
+
+	if matched, other = task.SplitTargets(nil); matched != nil || other != nil {
+		t.Errorf("SplitTargets(nil) = %v, %v; want nothing", matched, other)
+	}
+
+	if matched, _ = task.SplitTargets([]TargetIdentifier{supi, supi}); len(matched) != 2 {
+		t.Errorf("a repeated held identity was matched %d times, want each occurrence", len(matched))
 	}
 }

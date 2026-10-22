@@ -4,7 +4,7 @@
 // Package store maintains the set of active Lawful Interception tasks for a
 // network function, indexed by target identifier. It lets the NF match events
 // and traffic against tasked targets locally, with no external lookup at
-// interception time (per the li-provisioning capability).
+// interception time.
 package store
 
 import (
@@ -38,14 +38,10 @@ func (s *Store) Activate(task types.InterceptTask) bool {
 	if task.XID == "" {
 		return false
 	}
-	// Cloned on the way in as well as on the way out. The read path has cloned since
-	// it was written, for a reason its own comment gives — a caller mutating the
-	// store's backing arrays outside the lock is a data race and cross-warrant
-	// corruption — and storing the caller's slices makes the store share arrays with
-	// whoever handed the task over, which is the same hazard entered from the other
-	// side. Today's caller builds each task from a parsed request and drops it, so
-	// nothing is currently harmed; that is a property of the caller, not of the
-	// store, and it is not what the read path relies on.
+	// Cloned on the way in as well as on the way out: a store sharing backing arrays
+	// with whoever handed the task over lets that caller mutate a warrant's targets
+	// outside the lock, which is a data race and cross-warrant corruption. Whether a
+	// caller keeps a reference is not something the store can see.
 	task = cloneTask(task)
 
 	s.mu.Lock()
@@ -120,13 +116,10 @@ func (s *Store) Get(xid types.XID) (types.InterceptTask, bool) {
 	return cloneTask(t), ok
 }
 
-// cloneTask copies t's slice fields so a caller cannot mutate the store's backing
-// arrays (Targets/Products/Deliveries/DIDs) outside the lock — a data race and
-// cross-warrant corruption. The value fields are already copied by the return-by-value.
-//
-// Every slice field, and DIDs was missed when it was added: no caller mutated it, so
-// nothing broke, but "copies t's slice fields" has to mean all of them or it means
-// nothing the next time one arrives.
+// cloneTask copies every slice field of t (Targets, TargetElements, DIDs, Products,
+// Deliveries), so neither the store nor its caller shares backing arrays with the other.
+// The value fields are copied by the return-by-value. A slice field added to
+// InterceptTask has to be added here too; TestEverySliceFieldIsCloned enforces that.
 func cloneTask(t types.InterceptTask) types.InterceptTask {
 	if t.Products != nil {
 		t.Products = append([]types.ProductType(nil), t.Products...)
@@ -155,8 +148,8 @@ func (s *Store) Snapshot() []types.InterceptTask {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]types.InterceptTask, 0, len(s.byXID))
-	for xid := range s.byXID {
-		out = append(out, cloneTask(s.byXID[xid]))
+	for _, task := range s.byXID {
+		out = append(out, cloneTask(task))
 	}
 	sortByXID(out)
 	return out

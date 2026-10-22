@@ -51,16 +51,19 @@ const (
 	// select that subscriber's session rather than a rule within it. Value is the
 	// address in its textual form.
 	TargetUEIPv4 TargetIdentifierType = "UEIPv4"
+	// TargetUEIPv6 is TargetUEIPv4's IPv6 counterpart.
 	TargetUEIPv6 TargetIdentifierType = "UEIPv6"
 	// TargetTCPPort and TargetUDPPort narrow to a transport port. Value is the
 	// port in decimal. These are finer than a PDU session, so whether they can be
 	// applied by duplication alone depends on the rules the SMF installed.
 	TargetTCPPort TargetIdentifierType = "TCPPort"
+	// TargetUDPPort is TargetTCPPort's UDP counterpart.
 	TargetUDPPort TargetIdentifierType = "UDPPort"
 	// TargetPDRID and TargetQERID name a rule inside a session by its identifier.
 	// Value is the identifier in decimal. Both are scoped to a PFCP session, so a
 	// criterion using one is only unambiguous alongside the session it belongs to.
 	TargetPDRID TargetIdentifierType = "PDRID"
+	// TargetQERID names a QoS enforcement rule, as TargetPDRID names a detection rule.
 	TargetQERID TargetIdentifierType = "QERID"
 	// TargetNetworkInstance selects every session on a network instance (a DNN, in
 	// practice), so it is the one criterion broader than a session. The schema types
@@ -104,9 +107,8 @@ type XID string
 
 // Bytes converts the XID — a UUID string on X1 — to the 16-byte form carried in
 // the X2/X3 PDU header (TS 103 221-2 clause 5.2.7). An unparseable value yields
-// the zero XID, which is what an MDF treats as unattributable, so callers that
-// must not deliver unattributable product check the result rather than assuming
-// it.
+// the zero XID, which an MDF treats as unattributable, so a caller that must not
+// deliver unattributable product checks IsZero rather than assuming success.
 //
 // Only the canonical form converts: lowercase hexadecimal in 8-4-4-4-12 groups, the
 // form X1 admits. Tasks are keyed by the XID string, so a looser conversion would let
@@ -120,9 +122,10 @@ func (x XID) Bytes() [16]byte {
 		return out
 	}
 
-	b, err := hex.DecodeString(strings.ReplaceAll(string(x), "-", ""))
-	if err == nil && len(b) == len(out) {
-		copy(out[:], b)
+	// canonicalUUID has established 32 hexadecimal digits, so this cannot fail; the check
+	// keeps a change to canonicalUUID from ever yielding a partly filled XID.
+	if n, err := hex.Decode(out[:], []byte(strings.ReplaceAll(string(x), "-", ""))); err != nil || n != len(out) {
+		return [16]byte{}
 	}
 
 	return out
@@ -171,7 +174,9 @@ const (
 type DeliveryType string
 
 const (
+	// DeliveryX2 is the X2 interface, which carries IRI to an MDF2.
 	DeliveryX2 DeliveryType = "X2"
+	// DeliveryX3 is the X3 interface, which carries CC to an MDF3.
 	DeliveryX3 DeliveryType = "X3"
 )
 
@@ -186,14 +191,13 @@ type DeliveryEndpoint struct {
 	//
 	// It is carried rather than looked up when needed because the alternative is a
 	// second structure — an address-to-DID map — that has to agree with the
-	// destination store and is updated on a different path. Disagreement between two
-	// such structures is silent by nature and is the defect class this module has
-	// spent several changes closing.
+	// destination store and is updated on a different path, and disagreement between
+	// two such structures is silent by nature.
 	//
-	// **It is not part of delivery.** Endpoints are deduplicated by address, so two
+	// It is not part of delivery. Endpoints are deduplicated by address, so two
 	// DIDs naming one address deliver one copy, and a second copy of a subject's
 	// traffic is the failure that deduplication exists to prevent. What the DID is
-	// for is saying *which destination* when this element reports a fault about one:
+	// for is saying which destination when this element reports a fault about one:
 	// the provisioning function's unit of action is the destination it created, and
 	// ETSI TS 103 221-1 clause 6.5.3 scopes a report to it.
 	DID string
@@ -203,7 +207,9 @@ type DeliveryEndpoint struct {
 type TaskState string
 
 const (
-	TaskActive   TaskState = "active"
+	// TaskActive is the state of every task a Store holds; Store.Activate sets it.
+	TaskActive TaskState = "active"
+	// TaskInactive is the state of a task that is not, or no longer, active.
 	TaskInactive TaskState = "inactive"
 )
 
@@ -213,27 +219,26 @@ const (
 type InterceptTask struct {
 	XID XID
 	// Targets are the identifiers this task intercepts on, and they are
-	// *alternatives*: traffic or signalling matching any one of them belongs to the
+	// alternatives: traffic or signalling matching any one of them belongs to the
 	// task. That is the ETSI list semantics — each entry in a task's
 	// targetIdentifiers is another way to identify the same target — and it is why
 	// this is a list rather than one identifier even though an ADMF tasking an
 	// IRI-POI by subscriber identity supplies exactly one.
 	//
-	// A triggering function needing traffic that matches a *combination* of
+	// A triggering function needing traffic that matches a combination of
 	// properties cannot express it here; it must send a single criterion that
 	// already carries the combination.
 	Targets []TargetIdentifier
-	// DIDs are the destination identifiers the task named, kept as given. They were
-	// previously resolved to endpoints and then discarded, which lost two things the
-	// interface needs: the identifiers a reported task has to carry back, and the ability to
-	// answer whether a destination is still referenced — the guard the specification puts on
-	// removing destinations in bulk.
+	// DIDs are the destination identifiers the task named, kept as given alongside the
+	// endpoints they resolve to. The interface needs both: the identifiers a reported task
+	// carries back, and the ability to answer whether a destination is still referenced —
+	// the guard the specification puts on removing destinations in bulk.
 	DIDs       []string
 	Products   []ProductType      // IRI and/or CC
 	Deliveries []DeliveryEndpoint // X2 and/or X3 destinations
 	State      TaskState
 	// ProductID, when set, replaces XID in the X2/X3 PDU header. It is how a
-	// triggered POI labels its product with the *warrant* rather than with the
+	// triggered POI labels its product with the warrant rather than with the
 	// trigger task it was given: a Triggering Function allocates its own XID for
 	// the trigger and passes the warrant XID here (TS 103 221-1 clause 6.2.1.2;
 	// TS 33.128 table 6.2.3-6 makes it mandatory for LI_T3). Use DeliveryXID
@@ -266,7 +271,7 @@ type InterceptTask struct {
 // RecordScope is the per-task scoping TS 33.128 clause 6.2.2.2.1 puts on the AMF
 // IRI-POI's records: "The IRI-POI in the AMF shall only generate xIRI containing
 // AMFIdentifierAssociation and AMFIdentifierDeassociation records when the
-// IdentifierAssocationExtensions parameter has been received over LI_X1".
+// IdentifierAssocationExtensions [sic] parameter has been received over LI_X1".
 //
 // It is a property of the task rather than of the element, because two warrants on one
 // AMF may ask for different record sets.
@@ -280,7 +285,7 @@ const (
 	// RecordScopeIdentifierAssociation is EventsGenerated "IdentifierAssociation":
 	// "AMFIdentifierAssociation, AMFIdentifierDeassociation and AMFLocationUpdate
 	// records shall be generated. No other record types shall be generated for that
-	// target." It is the one scope that produces *less* than the default.
+	// target." It is the one scope that produces less than the default.
 	RecordScopeIdentifierAssociation RecordScope = "IdentifierAssociation"
 	// RecordScopeAll is EventsGenerated "All": "All AMF record types shall be
 	// generated."
@@ -346,10 +351,10 @@ func (t InterceptTask) NamesAnyType(kinds ...TargetIdentifierType) bool {
 // TS 103 221-2 clauses 5.3.18 and 5.3.19 draw between the Matched and Other Target
 // Identifier attributes an xIRI carries.
 //
-// It is TargetsAny's witness-returning sibling and lives beside it for the same
+// It is TargetsAny's witness-returning counterpart and lives beside it for the same
 // reason: the rule belongs in one place rather than being re-derived by each POI.
 // Every match is returned, not the first — where a task names both a SUPI and a PEI
-// that the network function holds, both did match, and picking one to report as *the*
+// that the network function holds, both did match, and picking one to report as the
 // match would be an arbitrary claim. Clause 5.3.18 permits multiple occurrences
 // precisely so it need not be made.
 //
@@ -414,8 +419,8 @@ func (t InterceptTask) DeliveryAddresses(dt DeliveryType) []string {
 //
 // It is the reporting counterpart of DeliveryAddresses and the two deduplicate on
 // purpose-built keys rather than on the same one. Delivery deduplicates by
-// *address*, because two identifiers naming one endpoint must yield one copy.
-// Reporting enumerates by *identifier*, because a provisioning function's unit of
+// address, because two identifiers naming one endpoint must yield one copy.
+// Reporting enumerates by identifier, because a provisioning function's unit of
 // action is the destination it created and telling it "the endpoint behind two of
 // your destinations is unreachable" would require it to know how this element
 // resolves them.

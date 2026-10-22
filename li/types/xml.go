@@ -8,25 +8,26 @@ import (
 	"encoding/xml"
 )
 
-// XMLElement gives the ETSI TS 103 221-1 element name for an identifier type that
+// xmlElement gives the ETSI TS 103 221-1 element name for an identifier type that
 // the schema carries as a plain `TargetIdentifier` arm. The names are the schema's,
-// which are lowercase-initial — table 6.2.1.2-2 names the *types* (IPv4Address,
+// which are lowercase-initial — table 6.2.1.2-2 names the types (IPv4Address,
 // TCPPort) and the elements are spelled differently, so the two are not
 // interchangeable.
 //
 // Where a type stands for several elements this names the commonest; TargetIdentifier's
-// Element chooses among them by the value, and is what a renderer should call.
+// Element chooses among them by the value, and is what a renderer calls.
 //
-// It reports false for the packet-detection criteria, which the schema carries in a
-// vendor extension rather than as a plain element: those reach a CC-POI over LI_T3
-// and belong to X3, where no target identifier is reported.
+// It reports false for the criteria with no plain schema element — FSEID, FTEID, PDRID,
+// QERID, NetworkInstance, GTPTunnelDirection and PDR — which the schema carries in the
+// 3GPP LI_T3 extension: those reach a CC-POI over LI_T3 and belong to X3, where no
+// target identifier is reported.
 //
-// This lives here, on the leaf package both interfaces already depend on, because two
-// interfaces now render these names: the X1 responses that tell an ADMF what tasking
-// an element holds, and the X2 conditional attribute that tells a mediation function
-// which identity matched. A second copy of the mapping would be free to disagree with
-// the first, and nothing would notice.
-func (t TargetIdentifierType) XMLElement() (string, bool) {
+// This lives on the leaf package both interfaces depend on, because two interfaces
+// render these names: the X1 responses that tell an ADMF what tasking an element
+// holds, and the X2 conditional attribute that tells a mediation function which
+// identity matched. A second copy of the mapping would be free to disagree with the
+// first, and nothing would notice.
+func (t TargetIdentifierType) xmlElement() (string, bool) {
 	switch t {
 	case TargetSUPI:
 		return "supiimsi", true
@@ -49,13 +50,13 @@ func (t TargetIdentifierType) XMLElement() (string, bool) {
 
 // XMLFragment renders this identifier in the form ETSI TS 103 221-2 clause 5.3.18
 // requires of the Matched and Other Target Identifier conditional attributes: the
-// contents of a TS 103 221-1 `TargetIdentifier` *without* the enclosing tag, encoded
+// contents of a TS 103 221-1 `TargetIdentifier` without the enclosing tag, encoded
 // in UTF-8. The clause's own example is `<imsi>204081234567890</imsi>`.
 //
 // Unprefixed, deliberately. Inside an X1 document the element names carry the
 // prefixes that document binds; lifted into a PDU header the fragment stands alone,
 // so a prefix here would be undeclared. The unprefixed form is what the clause
-// illustrates and what the sipgate reference accepted when asked directly.
+// illustrates.
 //
 // It reports false rather than guessing for an identifier with no plain element —
 // the same rule the X1 renderer follows, and for the same reason: an identifier
@@ -73,12 +74,16 @@ func (t TargetIdentifier) XMLFragment() (string, bool) {
 // Element gives the TS 103 221-1 element this identifier is rendered as, choosing among
 // the several elements its type folds together by the shape of the value.
 //
-// XMLElement answers per type, and three types stand for more than one element: a SUPI
-// is an IMSI or an NAI, a PEI an IMEI or an IMEISV, a GPSI an MSISDN or an NAI. Naming
-// one element for all of them put an NAI inside supiimsi and a sixteen-digit IMEISV
-// inside peiImei — both invalid against the schema, so a mediation function validating
-// the attribute would discard it. The value says which it is: the numeric elements are
-// all digits of a fixed length, and anything else is the NAI form.
+// Three types stand for more than one element: a SUPI is an IMSI or an NAI, a PEI an
+// IMEI or an IMEISV, a GPSI an MSISDN or an NAI. Naming one element for all of them
+// would put an NAI inside supiimsi and a sixteen-digit IMEISV inside peiImei — both
+// invalid against the schema, so a mediation function validating the attribute would
+// discard it. The value says which it is: the numeric elements are all digits within a
+// fixed length, and anything else is the NAI form.
+//
+// Values are the bare identifiers X1 tasking carries. A value still carrying a TS 29.571
+// prefix such as "imsi-" is not all digits, so it renders as the NAI form: the caller
+// strips the prefix before building the identifier.
 //
 // It reports false for a value that fits no element of its type — a PEI that is neither
 // fourteen nor sixteen digits, say — rather than rendering it into one it does not fit.
@@ -113,7 +118,7 @@ func (t TargetIdentifier) Element() (string, bool) {
 		return "", false
 	}
 
-	return t.Type.XMLElement()
+	return t.Type.xmlElement()
 }
 
 // digitsBetween reports whether s is all decimal digits, with a length in [lo, hi].

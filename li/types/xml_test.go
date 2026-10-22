@@ -3,13 +3,15 @@
 
 package types
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestXMLFragmentMatchesTheClausesForm pins the form ETSI TS 103 221-2
 // clause 5.3.18 requires: the contents of a TargetIdentifier without the enclosing
 // tag, UTF-8, unprefixed. The clause illustrates it with an IMSI, which is the first
-// case here — the same shape this project sent to the sipgate reference before
-// implementing the attribute.
+// case here.
 func TestXMLFragmentMatchesTheClausesForm(t *testing.T) {
 	for _, tc := range []struct {
 		id   TargetIdentifier
@@ -49,9 +51,6 @@ func TestXMLFragmentEscapes(t *testing.T) {
 // table 5.3.3-2 requires no target identifier at all. So no attribute ever needs
 // them, and rendering one as a plain element would tell a mediation function the
 // interception matched a subscriber identity when it matched a tunnel or a port.
-//
-// This is the same defect the X1 renderer already carries a comment about, where
-// unmapped criteria were reported as `supiimsi`.
 func TestPacketCriteriaHaveNoFragment(t *testing.T) {
 	for _, typ := range []TargetIdentifierType{
 		TargetFSEID, TargetFTEID, TargetPDRID, TargetQERID,
@@ -66,23 +65,45 @@ func TestPacketCriteriaHaveNoFragment(t *testing.T) {
 	}
 }
 
-// TestXMLElementCoversEveryPlainArm: the identifier types that reach an IRI-POI must
-// all render, because an xIRI carrying no matched identity is the defect this
-// attribute exists to fix. UEIPv4/UEIPv6 and the ports are plain arms in the schema
-// and render too, even though they arrive as packet criteria on LI_T3.
+// TestXMLElementCoversEveryPlainArm: every identifier type the schema carries as a plain
+// element has a name. The subscriber identities must, because an xIRI matched on one
+// would otherwise carry no matched identity; UEIPv4/UEIPv6 and the ports are plain arms
+// in the schema too, even though they arrive as packet criteria on LI_T3.
 func TestXMLElementCoversEveryPlainArm(t *testing.T) {
-	for _, typ := range []TargetIdentifierType{TargetSUPI, TargetPEI, TargetGPSI} {
-		if _, ok := typ.XMLElement(); !ok {
-			t.Errorf("%s has no element name, so an xIRI matched on it could carry no matched identity", typ)
+	for typ, want := range map[TargetIdentifierType]string{
+		TargetSUPI: "supiimsi", TargetPEI: "peiImei", TargetGPSI: "gpsiMsisdn",
+		TargetUEIPv4: "ipv4Address", TargetUEIPv6: "ipv6Address",
+		TargetTCPPort: "tcpPort", TargetUDPPort: "udpPort",
+	} {
+		if got, ok := typ.xmlElement(); !ok || got != want {
+			t.Errorf("%s has element %q (ok=%v), want %q", typ, got, ok, want)
 		}
+	}
+}
+
+// TestXMLFragmentsDropsWhatItCannotRender: a list renders each identifier that has an
+// element and drops the rest, rather than substituting something it is not.
+func TestXMLFragmentsDropsWhatItCannotRender(t *testing.T) {
+	got := XMLFragments([]TargetIdentifier{
+		{Type: TargetSUPI, Value: "262019876543210"},
+		{Type: TargetFSEID, Value: "42"},
+		{Type: TargetPEI, Value: "357840051234567"}, // fifteen digits: no element fits
+		{Type: TargetGPSI, Value: "4915123456789"},
+	})
+	want := []string{"<supiimsi>262019876543210</supiimsi>", "<gpsiMsisdn>4915123456789</gpsiMsisdn>"}
+	if !slices.Equal(got, want) {
+		t.Errorf("XMLFragments = %q, want %q", got, want)
+	}
+	if got := XMLFragments(nil); got != nil {
+		t.Errorf("XMLFragments(nil) = %q, want nil", got)
 	}
 }
 
 // TestFoldedIdentifierTypesRenderTheElementTheirValueFits: a SUPI, a PEI and a GPSI each
 // stand for more than one schema element, and the attribute must name the one the value
-// is. Naming one element per type put a sixteen-digit IMEISV inside peiImei, which the
-// schema limits to fourteen digits, and an NAI inside supiimsi, which is all digits — so
-// a mediation function validating the attribute discarded it.
+// is. Naming one element per type would put a sixteen-digit IMEISV inside peiImei, which
+// the schema limits to fourteen digits, and an NAI inside supiimsi, which is all digits —
+// so a mediation function validating the attribute would discard it.
 func TestFoldedIdentifierTypesRenderTheElementTheirValueFits(t *testing.T) {
 	for _, tc := range []struct {
 		id   TargetIdentifier

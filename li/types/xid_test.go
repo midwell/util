@@ -8,8 +8,8 @@ import "testing"
 // TestOnlyTheCanonicalXIDConvertsToHeaderBytes: tasks are keyed by the XID string, so
 // two identifiers differing only in case or hyphenation are two tasks. Converting both
 // to the same sixteen header bytes would label two warrants' product identically. Only
-// the canonical form — the one X1 admits — converts; any other is the zero XID, which
-// every caller already refuses to deliver under.
+// the canonical form — the one X1 admits — converts; any other is the zero XID, which a
+// caller checks for with IsZero before delivering.
 func TestOnlyTheCanonicalXIDConvertsToHeaderBytes(t *testing.T) {
 	const canonical = "abcdef01-2345-4678-9abc-def012345678"
 
