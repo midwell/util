@@ -11,8 +11,8 @@ a Communication Service Provider's Lawful Interception (LI) obligations. They ar
 imported by the AMF, SMF, and UPF.
 
 The Administration (ADMF/LIPF) and Mediation & Delivery (MDF2/MDF3) functions
-are **external, third-party systems** (e.g. the sipgate X1/X2/X3 simulator for
-testing) — SD-Core implements only the POIs and the interfaces toward them.
+are **external, third-party systems** (for testing, an ETSI TS 103 221 X1/X2/X3
+simulator) — SD-Core implements only the POIs and the interfaces toward them.
 
 LI is **opt-in and undetectable**: with no LI configuration a network function
 behaves and looks exactly as before, and even when active it emits nothing to
@@ -86,9 +86,8 @@ Three network functions act as POIs:
   false` turns it off. **That switch is for one situation:** a mediation function
   that does not implement the MDF half of the clause and therefore never
   acknowledges. This element would disconnect such a peer every TIME_P2 and lose
-  whatever was in flight. The sipgate reference simulator is one — probed
-  2026-08-14, it answers no Keepalive at all — so lab deployments pointed at it
-  set the switch false.
+  whatever was in flight. A test simulator that answers no Keepalive is such a
+  peer, and a deployment pointed at one sets the switch false.
 - **Security:** X1/X2/X3 all use mutual TLS with credentials from a dedicated LI
   PKI, kept separate from the SBI certificates. Verification is never skipped.
 
@@ -109,7 +108,7 @@ Each package is imported as `github.com/omec-project/util/li/<package>`.
 
 ## Feature support
 
-What this module and its network functions implement, and what they do not. The
+What these packages and the network functions using them implement, and what they do not. The
 gaps are listed as plainly as the capabilities: an operator planning an
 integration needs both, and a missing feature discovered during a deployment is
 more expensive than one read here.
@@ -122,14 +121,14 @@ more expensive than one read here.
 | | `Keepalive` and the fail-safe purge of all tasking | Purge is opt-in via a keepalive window; off by default |
 | | The whole interrogation set clause 6.4.1 makes mandatory: `GetTaskDetails`, `GetAllDetails`, `GetAllTaskDetails`, `GetDestinationDetails`, `GetAllDestinationDetails`, `GetNEStatus`, `ListAllDetails`, `GetAllGenericObjectDetails` | How an ADMF audits what an element actually holds — and how it reconciles after one restarts. Holding nothing is a successful empty answer, not an error. Every response is validated against the published XSD |
 | | `DeactivateAllTasks`, **enabled by default** | The specification's own default. One authenticated message stops every interception on the element — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* |
-| | `RemoveAllDestinations`, **disabled by default** | Answered with the specification's error when disabled (8020); when enabled, refused while any destination is referenced by a task (8010) |
+| | `RemoveAllDestinations`, **disabled by default** | A deliberate deviation: TS 103 221-1 clause 6.3.4 makes it enabled unless agreed otherwise — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)*. Answered with the specification's error when disabled (8020); when enabled, refused while any destination is referenced by a task (8010) |
 | | `CreateDestination` | DID → endpoint; the `dId` is validated as the UUID the schema defines, and re-creating one is refused with 2030 (clause 6.3.1.1) |
 | | Identifiers validated where they enter | `dId`, `xId` and `productID` are all `etsi103280:UUID` in the schema; a value outside that format is refused with 1010 rather than stored and acted on |
 | | **A target identifier populating more than one arm is refused** | `targetIdentifier` is an `xs:choice`, so two populated arms cannot occur and no reading of such a message is authoritative — 1010, as the schema error it is. Selecting one would mean this element deciding the scope of an interception your ADMF ordered. It does **not** restrict a task to one identifier: a `targetIdentifiers` *list* naming several is normal and they are combined as alternatives |
 | | Every criterion of a nested LI_T3 list is applied | `UPFLIT3TargetIdentifier` is a sequence of choices, so a list of several is what it is for; one that cannot be mapped refuses the whole task, naming which member of how many |
 | | An unparseable request is answered with `TopLevelError` | Clause 6.1's four-field response, at HTTP 200 — clause 7.2.2.2 reserves HTTP error codes for HTTP-level errors |
 | | **Every X1 response this element receives is bound to the request that produced it** | Response type, `x1TransactionId`, both element identities and the version. A well-formed acknowledgement from an endpoint naming a different NE is refused, and reported as `x1ResponseUnattributable` — distinct from the POI refusing, because the operator action is the opposite one. See *[Standards](#standards)* for what this does and does not defend against |
-| | `DeactivateTask` refuses what it cannot honour | Table 6.2.3-2: "it is an error if the XID is not already present at the NE" — 2020, where an unheld deactivation used to be acknowledged. See *[A deactivation is not always a success](#a-deactivation-is-not-always-a-success)* |
+| | `DeactivateTask` refuses what it cannot honour | Table 6.2.3-2: "it is an error if the XID is not already present at the NE" — 2020. See *[A deactivation is not always a success](#a-deactivation-is-not-always-a-success)* |
 | **Delivery destinations** | **A task's product goes to the destinations the task named** | `listOfDIDs`, for X2 as for X3. TS 33.128 marks it mandatory in every ActivateTask table it defines — see *[Where a task's product goes](#where-a-tasks-product-goes)* for the three sources and their precedence |
 | | Destinations **provisioned over X1** with `CreateDestination` | Source 1, and the one that wins |
 | | Destinations **declared in configuration** as a DID→endpoint mapping | Source 2. For endpoints an operator and an ADMF agreed out of band; resolves exactly as a provisioned one does |
@@ -186,6 +185,7 @@ more expensive than one read here.
 | | Any `taskDetailsExtensions` or `destinationDetailsExtensions` other than the one below | **Refused**. An extension exists in order to change the meaning of the message carrying it, so an unknown one cannot be ignored. This includes `TaskDetailsExtensions/HeaderReporting`, which TS 33.128 tables 6.2.3-0A and 6.2.3-9 mark C and M respectively — packet header information reporting is not implemented, so a task asking for it is refused rather than acknowledged and ignored |
 | | Mediation details (`listOfMediationDetails`) | **Accepted and disregarded**, deliberately — see *[Fields accepted and disregarded](#fields-accepted-and-disregarded)* |
 | | `implicitDeactivationAllowed` | **Accepted and disregarded**, likewise |
+| | A provisioned `correlationID` at the AMF or SMF (TS 103 221-1 clause 6.2.1.2) | **Refused** with 3000/3001 rather than accepted and disregarded. The UPF's CC-POI honours it — it stamps the value on every X3 PDU — but an IRI-POI's correlation is derived per session, one task covers many sessions, and a single provisioned value across them would join at the mediation function what the network keeps separate. See `CONFORMANCE.md` |
 | **CC (X3)** | Content for **more than one warrant covering the same session** | **Declared, not deferred.** Where several tasks' detection criteria cover one PFCP session, the CC-POI delivers that session's content under exactly one of them — the lowest XID, chosen stably so the session's packets are never divided among the covering warrants — and the others receive none of it. The element reports the overlap (`contentTaskOverlap`, network-element level, throttled to one report per 30 s), and **that report does not satisfy the unserved warrants**: it says an overlap exists, not which warrants it concerns, because which warrants overlap is the ADMF's to know and not this element's to say. Implementing it would need one logically identical X3 PDU per covering task, each with its own XID, correlation context, sequence numbering and destinations — per-packet fan-out proportional to the overlapping warrants, at the one point of interception whose cost is per packet rather than per event. Worth revisiting for a deployment that runs concurrent warrants from different agencies against one subscriber. IRI is unaffected: several tasks matching one subject each produce their own xIRI |
 | **Provisioning** | More than one ADMF per network element | One responsible ADMF; a second identity is refused |
 | **State** | Warrants persisted across a restart | Deliberate. Interception must not outlive contact with the function that authorised it, so the failure direction is "stopped" — which means a planned upgrade needs re-provisioning in the runbook. What the ADMF is told, and what it asks next, is in *[What happens after a restart](#what-happens-after-a-restart-and-what-the-admf-does-about-it)* |
@@ -199,16 +199,15 @@ more expensive than one read here.
 A task names its delivery endpoints in `listOfDIDs`, and the product of that task goes to
 those endpoints. 3GPP TS 33.128 marks the field **M** in every ActivateTask table it
 defines — the phrase "configured using the CreateDestination message" occurs 48 times in
-v18.16.0, once per table that names delivery endpoints — so this is not optional for a 5G
-POI, and an element that substituted its own configuration would be diverging from the
-warrant.
+v18.16.0 — so this is not optional for a 5G POI, and an element that substituted its own
+configuration would be diverging from the warrant.
 
-**Until this was fixed, the AMF and SMF IRI-POIs did exactly that.** A task's DIDs were
-parsed, resolved where known, and then ignored; every xIRI went to the `mdf2` address in
-the element's own configuration. With one agency configured that is invisible. With two
-warrants provisioned to two agencies' MDF2s, both agencies' product arrived at whichever
-address configuration happened to name — which is a disclosure to an agency holding no
-warrant for it. The CC-POI's X3 path was always correct; only the IRI path was not.
+**Ignoring the task's destinations would be a disclosure.** An element sending every xIRI to
+the `mdf2` address in its own configuration is indistinguishable from a correct one while one
+agency is configured; with two warrants provisioned to two agencies' MDF2s, both agencies'
+product would arrive at whichever address configuration names — a disclosure to an agency
+holding no warrant for it. So the AMF and SMF IRI-POIs deliver each task's product to the
+destinations it names.
 
 An element resolves a DID from three sources, in this order:
 
@@ -219,9 +218,9 @@ An element resolves a DID from three sources, in this order:
 | 3 | **The configured default endpoint** (`mdf2`) | Only for a task that names **no destination at all**. Naming none the element can resolve is a different fact, and is refused — see below |
 
 **A destination identifier this element cannot resolve is refused, not replaced.** Source 3
-serves a task that named *nothing* — a gap the provisioning function left, which the
-configured endpoint fills, and the case every deployment predating the destination
-requirement is in. A task that names identifiers and resolves none of them, or only some of
+serves a task that named nothing — a gap the provisioning function left, which the
+configured endpoint fills, and the case of a provisioning function that does not use
+destinations. A task that names identifiers and resolves none of them, or only some of
 them, is a different fact: it is an assertion the element cannot honour as stated, and
 substituting an endpoint of its own is the element deciding where a warrant's product goes.
 On an element serving several agencies the product then goes to whichever endpoint local
@@ -230,21 +229,19 @@ from the other direction. So such a task is refused with 2040 ("dId does not exi
 NE") before it is stored, before any callback and before any trigger, and the refusal names
 the identifier on the X1 answer.
 
-The migration cost is real and is stated rather than hidden: a deployment whose ADMF names
-DIDs it never provisioned here, and relied on `mdf2` to serve them, will start receiving
-refusals. The remedy is to declare those DIDs in the element's configuration — source 2,
-which is a supported arrangement and resolves.
+A deployment whose ADMF names DIDs it never provisioned at this element, expecting `mdf2` to
+serve them, receives refusals. The remedy is to declare those DIDs in the element's
+configuration — source 2, which is a supported arrangement and resolves.
 
 Configuration is a supported way of supplying a destination, not a degraded one. Nothing
 in either specification requires that a DID arrived over X1 rather than having been
 agreed; what TS 33.128 requires is that the task names its destinations and the element
-delivers to what it named. Source 3 exists because removing it would turn a conformance
-fix into an outage for every deployment whose ADMF names DIDs these elements were never
-given.
+delivers to what it named. Source 3 exists so that a provisioning function naming no
+destinations is still served.
 
 What is deliberately **not** offered is a switch making configuration override the task's
-destinations. That would reinstate the gap as a supported option, and an operator who set
-it would be non-conformant with no signal that they were.
+destinations. That would make ignoring the task's destinations a supported option, and an
+operator who set it would be non-conformant with no signal that they were.
 
 Where sources 1 and 2 declare the same DID, the provisioned one is used — and the element
 says so. `GetDestinationDetails`, `GetAllDestinationDetails` and `GetAllDetails` report
@@ -269,13 +266,7 @@ from an element still sending a live warrant's product to the old one. The refus
 6000 and names the DID. Creating under a configured DID nothing references still succeeds,
 which is how an operator's static declaration gets superseded before use.
 
-**If your ADMF provisions destinations and your product moves**, that is this change:
-before it, everything arrived at `mdf2`. Configuring a DID→endpoint mapping (source 2)
-that matches what the ADMF believes it provisioned reproduces the old behaviour for a DID
-that never arrived over X1; nothing reproduces the old behaviour for a DID that did,
-because that was the defect.
-
-##### The content path, which was fixed later
+##### The content path
 
 The three sources above govern X3 as they govern X2, but the element that resolves them
 is not the element that delivers. A UPF is a *triggered* point of interception and holds
@@ -283,28 +274,18 @@ no MDF3 of its own: the SMF's CC Triggering Function resolves the task's X3 dest
 provisions each one at that UPF with `CreateDestination`, and names them on the LI_T3
 trigger. Source 3 for X3 is therefore the SMF's `mdf3`, not anything the UPF holds.
 
-**Until 2026-08-17 the content path did not do this**, and the consequence was worse than
-on the IRI path it mirrors. A task's X3 destinations were parsed, resolved and then
-ignored; every trigger named the one endpoint in the SMF's `mdf3`. Two agencies' warrants
-therefore sent both agencies' **content** — the subscriber's own traffic, not metadata —
-to whichever address configuration happened to name. The same disclosure, on the interface
-where it costs the most, and it survived the X2 fix because that fix was made in the
-IRI-POI and the CC path resolves its destinations somewhere else entirely.
+Ignoring a task's X3 destinations here would cost more than on the IRI path it mirrors:
+two agencies' warrants would send both agencies' **content** — the subscriber's own
+traffic, not metadata — to whichever address configuration names. To serve a task's X3
+product from a fixed endpoint, declare its DID in `destinations` pointing at that endpoint,
+or have the task name no X3 destination so the SMF's `mdf3` serves it.
 
-The remedy for a deployment relying on the old behaviour is the same one: declare the DID
-in `destinations` pointing at the endpoint you want, or leave the task's X3 DIDs
-unresolvable so the `mdf3` fallback serves it.
-
-**The SMF and the UPF must be upgraded together.** The X1 destination address carries its
-port as the `TCPPort`/`UDPPort` child element the TS 103 280 schema defines, where it used
-to be a number in the element's text — a defect that went unnoticed because the only peer
-this code has ever spoken to is another copy of itself, sending the same wrong shape. The
-two forms do not interoperate in either direction: whichever side is older reads the port
-as `0` and refuses the destination. That fails **safe and loudly** — the CC Triggering
+**The X1 destination address carries its port as the `TCPPort`/`UDPPort` child element the
+TS 103 280 schema defines.** A peer sending the port as the element's text instead is read
+as port `0`, and its destination is refused. That fails safe and loudly: the CC Triggering
 Function's `CreateDestination` is refused, the trigger is never installed, and the LIPF
 receives a `ReportTaskIssue` with a terminating fault rather than an interception quietly
-producing nothing — but it does mean the SMF and UPF images are a matched pair for this
-release, with no rolling-upgrade path between them.
+producing nothing.
 
 #### A deactivation is not always a success
 
@@ -313,20 +294,19 @@ carrying an `xId` that is not a UUID with **1010**. TS 103 221-1 table 6.2.3-2 r
 first outright — "it is an error if the XID is not already present at the NE" — the mirror
 of the `CreateDestination` rule answered with 2030.
 
-**This changes what a deployed element answers.** It used to acknowledge every deactivation
-unconditionally. An ADMF that re-sends a deactivation for tasking this element no longer
-holds — after a keepalive purge, or after a restart, since tasking is deliberately not
-persisted — now receives 2020 where it received an acknowledgement before.
+An ADMF that re-sends a deactivation for tasking this element no longer holds — after a
+keepalive purge, or after a restart, since tasking is deliberately not persisted —
+receives 2020.
 
-That is the point rather than a side effect. An acknowledgement told the ADMF a warrant had
-been withdrawn whether or not anything was withdrawn, so a mistyped XID left the
-interception running and reported success; interception outliving its authority is the one
-direction this plane must never fail in. 2020 is also the only way the ADMF can learn the
-element was not holding what it thought it was withdrawing, which is exactly what it needs
-to know after a restart.
+That is the point rather than a side effect. Acknowledging every deactivation would tell the
+ADMF a warrant had been withdrawn whether or not anything was, so a mistyped XID would leave
+the interception running and report success; interception outliving its authority is the
+one direction this plane must never fail in. 2020 is also the only way the ADMF can learn
+the element was not holding what it thought it was withdrawing, which is exactly what it
+needs to know after a restart.
 
-An ADMF that treats "already gone" as success can map 2020 onto that itself. It cannot
-recover the information the acknowledgement threw away.
+An ADMF that treats "already gone" as success can map 2020 onto that itself. It could not
+recover the information an unconditional acknowledgement would discard.
 
 #### When a withdrawal cannot be delivered
 
@@ -399,8 +379,8 @@ addresses each of them to something this element is not.
 > delivery function). This shall be included between the ADMF and the MDF.
 
 The AMF, SMF and UPF host POIs, not an MDF, so the details are not addressed to them.
-Disregarding them is conformant; refusing them would refuse a legal task. If this project
-ever implements an MDF2, every field inside the structure — including the `StartTime` and
+Disregarding them is conformant; refusing them would refuse a legal task. An implementation
+of an MDF2, every field inside the structure — including the `StartTime` and
 `EndTime` of the authorisation — becomes mandatory work.
 
 **`implicitDeactivationAllowed`** —
@@ -424,8 +404,7 @@ task. It decides which records that task produces (clause 6.2.2.2.1):
 | `IdentifierAssociation` | **Only** `AMFIdentifierAssociation`, `AMFIdentifierDeassociation` and `AMFLocationUpdate` |
 | `All` | Every AMF record type |
 
-Before this, the identifier-association pair was produced for every task, including ones
-that had not asked for it. An ADMF that wants those records must now ask.
+An ADMF that wants the identifier-association pair asks for it with this extension.
 
 #### LI_T3 detection criteria
 
@@ -566,16 +545,17 @@ Two things follow for anyone who can reach an X1 endpoint:
 - **Reaching the endpoint is the control.** It is gated by clause 8.2.4 peer
   authentication — an LI-CA certificate whose bound identity is this element's responsible
   ADMF — and by whatever network controls stand in front of the port. See
-  *[Restricting who can reach X1](#restricting-who-can-reach-x1)*, which matters more once
-  this message is answered than it did when it was refused.
+  *[Restricting who can reach X1](#restricting-who-can-reach-x1)*, which matters more
+  because this message is answered.
 
-`RemoveAllDestinations` is the opposite way round: **disabled** unless enabled, answered
-with the specification's own error text when it is off. The asymmetry is deliberate and is
-the standard's, not ours. Deactivating everything fails safe — interception stops, which is
-the direction this whole capability fails in anyway. Removing every destination is not
-symmetric with that: it strands an element that is still tasked and now has nowhere to
-deliver, which is why the standard also guards it — an NE refuses the request while any
-destination is still referenced by a task.
+**`RemoveAllDestinations` is disabled unless enabled, which deviates from the standard.**
+TS 103 221-1 clause 6.3.4 makes it enabled when there has been no agreement in advance, as it
+does `DeactivateAllTasks`. It is disabled here because the two do not fail the same way:
+deactivating everything fails safe — interception stops, which is the direction this whole
+capability fails in anyway — while removing every destination strands an element that is
+still tasked and has nowhere to deliver. The standard guards it too: an NE refuses the
+request while any destination is still referenced by a task. While disabled it is answered
+with the specification's own error (8020).
 
 ##### Setting them
 
@@ -593,7 +573,7 @@ Each is a **tri-state**, and leaving it out is a meaningful answer rather than a
 
 | Value | Meaning |
 |---|---|
-| unset | "no agreement in advance" — the specification's own phrase, and its own defaults: bulk deactivation performed, bulk destination removal refused |
+| unset | "no agreement in advance", the specification's phrase. Bulk deactivation is performed, the specification's default; bulk destination removal is refused, the one deviation from it (see above) |
 | `false` | the operation is refused, with the error the specification defines for it (5010 / 8020) |
 | `true` | the operation is performed |
 
@@ -602,8 +582,8 @@ from starting; it is never read as unset, because unset is the permissive answer
 deactivation and a typo must not widen what an element will do.
 
 Setting `deactivateAllTasks: false` is **visible to your ADMF**: it starts receiving error
-5010 where it previously received an acknowledgement. That is the point of the switch, but
-it is a change to what a peer sees and is worth agreeing before it is deployed.
+5010 rather than an acknowledgement. That is the point of the switch, but it changes what a
+peer sees and is worth agreeing before it is deployed.
 
 `RequireResolvableDIDs` is deliberately *not* configuration, though it looks like a switch
 of the same kind. It follows from the role an element performs rather than from an
@@ -616,9 +596,9 @@ file, so it is not offered.
 ##### What to set
 
 **On the UPF, disabling both is recommended.** The UPF's X1 peer is not an agency's ADMF
-but this deployment's own SMF, acting as CC Triggering Function — and the triggering side
+but the deployment's own SMF, acting as CC Triggering Function — and the triggering side
 of this library (`x1.Requester`) implements `CreateDestination`, `ActivateTask`,
-`ModifyTask`, `DeactivateTask`, `TaskXIDs` and `Keepalive`, and **no bulk message at all**.
+`ModifyTask`, `DeactivateTask`, `TaskXIDs`, `ReportedTasks` and `Keepalive`, and **no bulk message at all**.
 Nothing in the AMF, SMF or UPF sends one. So on a UPF both operations are reachable only by
 a peer presenting a certificate bound to the SMF's identity, they are used by nothing, and
 turning them off cannot break content interception:
@@ -631,15 +611,13 @@ turning them off cannot break content interception:
 }
 ```
 
-**On the AMF and SMF this project recommends neither direction.** Their X1 peer is the
-agency's ADMF, the setting follows the agreement between you and that agency, and this
-project is not party to it. The defaults above are the specification's, and a deployment
-that sets nothing is conformant.
+**On the AMF and SMF neither direction is recommended.** Their X1 peer is the agency's ADMF,
+and the setting follows the agreement between you and that agency. The bulk-deactivation
+default is the specification's; the bulk-removal default is the one deviation, stated
+above.
 
-The defaults are not changed per element to match the UPF recommendation: deviating from
-the specification's defaults by role is a conformance argument nobody has made, and it
-would mean an element behaving differently from the standard with no configuration
-present.
+The defaults are not changed per element to match the UPF recommendation: an element would
+then behave differently from its peers with no configuration present.
 
 #### What happens after a restart, and what the ADMF does about it
 
@@ -725,8 +703,8 @@ established, never a dial made to answer the question, so an element that has ha
 send answers `OK` because it has not looked. An element that is producing product answers
 from real attempts.
 
-**Why a pushed report can name something the status answer does not.** The push reporting is
-unchanged by any of this, and the two mechanisms carry different kinds of condition:
+**Why a pushed report can name something the status answer does not.** The two mechanisms
+carry different kinds of condition:
 
 - a **state** can be re-observed, so it belongs in the status answer — the mediation function
   is reachable or it is not.
@@ -742,13 +720,6 @@ bad second — and either way the field stops being read. The full classificatio
 condition and which mechanism carries it, is in `x1/report.go` beside the constants, which is
 where somebody adding one will be looking.
 
-- **A provisioned `correlationID` at the AMF or SMF** (TS 103 221-1 clause 6.2.1.2).
-  Refused with error 3000/3001 rather than accepted and disregarded. The UPF's CC-POI
-  honours it — it stamps the value on every X3 PDU — but an IRI-POI's correlation is
-  derived per session, one task covers many sessions, and a single provisioned value
-  across them would join at the mediation function what the network keeps separate. An
-  ADMF provisioning this field for an AMF or SMF task must stop; see `CONFORMANCE.md`.
-
 ## Which xIRI records this produces
 
 Every record type TS 33.128 defines for an AMF or SMF IRI-POI is listed here — produced,
@@ -756,10 +727,9 @@ or out of scope with the reason. The set is the `AMF*` and `SMF*` alternatives o
 `XIRIEvent` in `TS33128Payloads.asn`: **14 for the AMF, 11 for the SMF**. Sixteen are
 produced.
 
-This is a list rather than a count because a count reads as coverage. The previous
-"11 record types in total" was accurate and still misleading — it was true of an
-implementation that emitted none of the six records the specification mandates for
-procedures these functions perform.
+This is a list rather than a count because a count reads as coverage: "11 record types"
+can be accurate of an implementation that emits none of the records the specification
+mandates for procedures these functions perform.
 
 ### AMF (11 of 14)
 
@@ -767,13 +737,13 @@ procedures these functions perform.
 |---|---|
 | `AMFRegistration` | Produced |
 | `AMFDeregistration` | Produced |
-| `AMFLocationUpdate` | Produced — on a mobility registration update. Note the `Location` subtree is still the minimal `currentLocation` form; cell and TAI detail is deferred |
+| `AMFLocationUpdate` | Produced — on a mobility registration update. The `Location` subtree is the minimal `currentLocation` form; cell and TAI detail is deferred |
 | `AMFStartOfInterceptionWithRegisteredUE` | Produced |
 | `AMFUnsuccessfulProcedure` | Produced — on a registration reject |
 | `AMFIdentifierAssociation` | Produced |
 | `AMFIdentifierDeassociation` | Produced |
 | `AMFUEServiceAccept` | Produced. TS 33.128 also names a SERVICE ACCEPT answering a CONTROL PLANE SERVICE REQUEST; this AMF does not implement that message, so only the plain event occurs |
-| `AMFUEPolicyTransfer` | Produced — the policy container is copied, never parsed — **but not for containers shorter than 16 octets, which the specification's own `UEPolicy ::= OCTET STRING (SIZE(16..65540))` forbids while its prose mandates the record.** The shortest real containers are three octets (`MANAGE UE POLICY COMPLETE`), so the short half of a policy exchange is refused by the encoder and reported as a task-scoped `recordNotEncoded` against the warrant, rather than delivered to a mediation function that would discard it. See CONFORMANCE finding 6 |
+| `AMFUEPolicyTransfer` | Produced — the policy container is copied, never parsed — **but not for containers shorter than 16 octets, which the specification's own `UEPolicy ::= OCTET STRING (SIZE(16..65540))` forbids while its prose mandates the record.** The shortest real containers are three octets (`MANAGE UE POLICY COMPLETE`), so the short half of a policy exchange is refused by the encoder and reported as a task-scoped `recordNotEncoded` against the warrant, rather than delivered to a mediation function that would discard it. See `iri/CONFORMANCE.md` |
 | `AMFRANHandoverCommand` | Produced — **not exercised end to end**, see *What has not been observed on a live network* below |
 | `AMFRANHandoverRequest` | Produced — **not exercised end to end**, as above. Despite the name, clause 6.2.2.2.9.3 triggers it on the AMF *receiving* the HANDOVER REQUEST ACKNOWLEDGE |
 | `AMFRANTraceReport` | **Out of scope — the AMF is never a trace collection NE.** It does handle CELL TRAFFIC TRACE, one of the record's four trigger events, so this is not "trace is ignored". What cannot be populated is the mandatory `aMFTraceData`: the TS 32.423 XML an AMF sends to a trace collection entity when it *is* that entity. This AMF originates no trace session and delivers no trace data, so there is no value for the field, and a record with an empty one would encode cleanly and assert something false. In scope the day trace activation is wired up |
@@ -798,29 +768,25 @@ procedures these functions perform.
 
 ### Conditional identity fields these records carry
 
-Every record above carries the conditional identities its emitter holds, as of 2026-08-26.
-Before that date a set of them was held by the AMF or SMF and reported by nobody — 26
-record-field sites across eight fields — and none of it was visible from outside: **a record
-that omits a conditional field is perfectly well formed**, so no decoder, no interoperability
-test and no mediation function could detect the omission.
+Every record above carries the conditional identities its emitter holds. The table names
+them because their absence would be invisible from outside: **a record that omits a
+conditional field is perfectly well formed**, so no decoder, no interoperability test and no
+mediation function could detect the omission.
 
-| Field | Where it now appears |
+| Field | Where it appears |
 |---|---|
 | `sUCI` | the 8 AMF records the AMF emits that define it. Present only when the UE registered *by* SUCI; a registration by 5G-GUTI reports it absent, which is correct and is the common case |
-| `pEI`, `gPSI` | `AMFIdentifierDeassociation`, which previously named fewer identifiers for a subject than every other record about that subject |
+| `pEI`, `gPSI` | `AMFIdentifierDeassociation`, so it names as many identifiers for a subject as every other record about that subject |
 | `fiveGSTAIList` | `AMFRegistration`, `AMFIdentifierAssociation`, `AMFStartOfInterceptionWithRegisteredUE`. The **registration area**, per the tables, not the serving TAI |
-| `rATType` | `AMFRegistration` and the 4 SMF session records. The NR satellite arms are mapped, since this deployment serves non-terrestrial access |
+| `rATType` | `AMFRegistration` and the 4 SMF session records. The NR satellite arms are mapped, for deployments serving non-terrestrial access |
 | `servingNetwork` | `SMFPDUSessionEstablishment`, `SMFPDUSessionModification`, `SMFStartOfInterceptionWithEstablishedPDUSession` |
 | `aMFID` | `SMFPDUSessionEstablishment`, `SMFStartOfInterceptionWithEstablishedPDUSession`, `SMFUnsuccessfulProcedure`. Decomposed from the GUAMI the AMF sends on N11 — **not** from `ServingNfId`, which is an NF instance UUID and carries no AMF identifier |
-| `uEEndpoint` | `SMFPDUSessionModification`, which was the one session record missing it |
+| `uEEndpoint` | `SMFPDUSessionModification`, as in the other session records |
 | `sUPIUnauthenticated` | the 4 SMF records that define it. `false` where the SUPI was authenticated, `true` where it was not, absent where the record carries no SUPI |
 
-The last of those needed a codec change: the ASN.1 codec then in use omitted any optional field
-equal to its type's zero value, so an optional BOOLEAN could encode `true` and never `false` —
-and `false` is the ordinary value here. Optional fields may now be declared as pointers, which
-distinguishes "absent" from "present and zero" without changing how any other field encodes. The
-encoder has since been replaced by explicit emitters, in which a pointer member is present exactly
-when it is non-nil.
+The last of those is a pointer in `li/iri`, present exactly when it is non-nil: an optional
+field omitted whenever it equals its type's zero could encode `true` and never `false`, and
+`false` is the ordinary value here.
 
 `AMFPositioningInfoTransfer` models `sUCI` and populates it from nowhere, because no point of
 interception emits that record at all. See the out-of-scope note above.
@@ -829,10 +795,10 @@ interception emits that record at all. See the out-of-scope note above.
 
 **The two handover records have never been produced by a real handover.**
 
-Everything else in the tables above is exercised end to end by the e2e suite against a
-live cluster: a record is generated, delivered over X2, and decoded at the receiving end
+Everything else in the tables above has been exercised end to end against a live
+cluster: a record is generated, delivered over X2, and decoded at the receiving end
 against the published ASN.1 module. `AMFRANHandoverCommand` and `AMFRANHandoverRequest`
-are not, because an N2 handover needs two RAN nodes and the development lab has one.
+have not, because an N2 handover needs two RAN nodes and the test deployment had one.
 
 What *is* established for them:
 
@@ -844,8 +810,8 @@ What *is* established for them:
 - the carried state is released on every handover outcome — success, failure, cancel, and
   the preparation-failure exits — so it cannot outlive its handover or be reused by a
   later one;
-- the whole e2e suite passes against an AMF carrying these hooks, so they do not disturb
-  the paths the lab can exercise.
+- the end-to-end tests pass against an AMF carrying these hooks, so they do not disturb
+  the paths a single-RAN deployment can exercise.
 
 What is not: nobody has watched a handover complete with the hook present. These are also
 the only two hooks this POI has in NGAP handling, which runs for every UE on every
@@ -855,7 +821,7 @@ handover, so they carry more risk than the rest.
 confirm both records arrive before relying on them.** Report anything that does not
 match the tables above.
 
-### Functions this project does not host
+### Functions SD-Core does not host
 
 TS 33.128 clause 7 defines IRI-POIs for the UDM, SMSF, MDF and others. No equivalent
 audit has been done for those, because SD-Core hosts none of them. Anyone adding one of
@@ -873,7 +839,11 @@ no block present, LI is inactive. Before enabling, you need:
    access-restricted `Secret` mounted at those paths. Use a PKI **separate**
    from the SBI certificates. **The certificates must carry their owner's X1
    identifier** — see [Certificate requirements](#certificate-requirements)
-   below; X1 requests from a certificate that does not are refused.
+   below; X1 requests from a certificate that does not are refused. The CA file
+   must hold at least one CA certificate (`basicConstraints` CA:TRUE) within its
+   validity period — other entries are not trusted — and the element's own
+   certificate must be within its validity period too, or LI does not start. The
+   files are read once, at startup: rotating them takes effect on restart.
 2. An external **ADMF** (to task the NFs over X1) and **MDF2**/**MDF3** (to
    receive xIRI/xCC). Note their addresses.
 3. The **LI-enabled NF images** deployed.
@@ -886,17 +856,10 @@ goes](#where-a-tasks-product-goes)* for the three sources and their precedence.
 
 The difference between the two interfaces is only *who* provisions the destination
 at the element that delivers. The AMF and SMF resolve their own X2 destinations. The
-UPF holds no MDF3 of its own and never has: it is a triggered point of interception,
+UPF holds no MDF3 of its own: it is a triggered point of interception,
 so the SMF's triggering function resolves the task's X3 destinations, provisions each
 one at that UPF with `CreateDestination`, and names them on the trigger — falling
 back to its configured `mdf3` only for a task that named nothing resolvable.
-
-> **This paragraph said the opposite until 2026-08-17**, and the code agreed with it
-> on the content path: every warrant's content went to the configured `mdf3`
-> whatever `listOfDIDs` said. With one agency that is invisible; with two, both
-> agencies' content arrived at one endpoint. If your ADMF provisions X3 destinations
-> and your content moves, that is this fix — see the same note under *Where a task's
-> product goes*, which describes the identical change made earlier on the X2 path.
 
 ### AMF and SMF
 
@@ -977,6 +940,11 @@ The UPF also requires the **content-egress datapath** to be active:
   run by default — and `conf/closed_loop.bess` carry it. A pipeline **without** the
   tee drops a tasked subscriber's traffic outright, because the PFCP agent marks it
   with a forwarding action that such a pipeline has no gate for.
+- Set the BESS container's `LI_X3_SOCKET_PATH` environment variable to the **same
+  path** as `li.x3_sockaddr` (both default to `/tmp/li_x3`).
+- The BESS and pfcpiface containers must **share** that socket path (e.g. an
+  `emptyDir` volume mounted at its directory in both containers), so the datapath
+  can tee copies to the socket the pfcpiface agent reads.
 
 > **Upgrade the BESS pipeline before, or with, the PFCP agent — never after.**
 > This applies to **every** UPF, including ones with no `li` block at all, and it
@@ -992,11 +960,6 @@ The UPF also requires the **content-egress datapath** to be active:
 >
 > The failure is loud (no user-plane forwarding) rather than silent, but it is a
 > full data-plane outage and it looks nothing like a lawful-interception problem.
-- Set the BESS container's `LI_X3_SOCKET_PATH` environment variable to the **same
-  path** as `li.x3_sockaddr` (both default to `/tmp/li_x3`).
-- The BESS and pfcpiface containers must **share** that socket path (e.g. an
-  `emptyDir` volume mounted at its directory in both containers), so the datapath
-  can tee copies to the socket the pfcpiface agent reads.
 
 ### Deploying with Helm or OnRamp
 
@@ -1008,11 +971,11 @@ The blocks above are what LI reads on disk; deployment tooling sets them for you
   address, the externally-reachable X1 `Service` (a NodePort for the ADMF to reach),
   and the LI PKI `Secret` mount — from the same values, so they cannot drift apart.
   With `enabled: false` (the default) the render is byte-identical to a non-LI deploy.
-- **Aether OnRamp** wraps that in the `main-li.yml` blueprint: a single
-  `lawful_intercept:` block (ADMF/MDF endpoints + the two X1 NodePorts) flips the
-  chart's `config.<nf>.li` values. Its header lists the deployment prerequisites,
-  including the out-of-band LI PKI `Secret` and firewalling the X1 NodePorts to the
-  ADMF (see [Restricting who can reach X1](#restricting-who-can-reach-x1)).
+- **Aether OnRamp** can wrap that in an LI blueprint: a single `lawful_intercept:`
+  block (ADMF/MDF endpoints and the two X1 NodePorts) sets the chart's
+  `config.<nf>.li` values. Its prerequisites are the out-of-band LI PKI `Secret` and
+  firewalling the X1 NodePorts to the ADMF (see
+  [Restricting who can reach X1](#restricting-who-can-reach-x1)).
 
 ### Configuration reference
 
@@ -1031,7 +994,10 @@ The blocks above are what LI reads on disk; deployment tooling sets them for you
 | `admfId` | `admf_id` | Responsible ADMF identifier — on the AMF/SMF it also restricts who may task the NF (recommended). **Unset, any peer the LI CA certified may act as the ADMF**, including another network element's certificate, since the identity binding carries no role — see *[Restricting who can reach X1](#restricting-who-can-reach-x1)* | optional |
 | `keepaliveTimeout` | — | Purge-all-tasking window (Go duration, e.g. `30s`). The fail-safe is **off unless set**; leave it unset until you know the ADMF's keepalive cadence, since a window shorter than that purges live warrants | AMF/SMF: optional |
 | `deactivateAllTasks` | `deactivate_all_tasks` | Whether this element performs a bulk deactivation of all its tasking. Boolean; **unset means "no agreement in advance"**, which is the specification's default of *enabled*. Recommended `false` on the UPF — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
-| `removeAllDestinations` | `remove_all_destinations` | Whether this element performs a bulk removal of all its destinations. Boolean; unset is the specification's default of *disabled* | optional |
+| `removeAllDestinations` | `remove_all_destinations` | Whether this element performs a bulk removal of all its destinations. Boolean; unset means *disabled*, a deliberate deviation from the specification's default of enabled (TS 103 221-1 clause 6.3.4) — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
+| `x2x3KeepaliveEnabled` | `x2x3_keepalive_enabled` | Whether the TS 103 221-2 clause 6.2.4 keepalive runs on X2/X3 delivery connections. Boolean; unset means enabled. `false` is for a mediation function that never acknowledges a keepalive | optional |
+| `x2x3KeepaliveTimeP1` / `x2x3KeepaliveTimeP2` | `x2x3_keepalive_time_p1` / `x2x3_keepalive_time_p2` | The keepalive's TIME_P1 and TIME_P2 (Go durations; defaults `60s` and `180s`). TIME_P2 must exceed TIME_P1 | optional |
+| — | `trigger_keepalive` | How long the UPF keeps its tasking after the last message from its triggering function (Go duration, e.g. `5m`). The fail-safe is **off unless set** — see *[When a withdrawal cannot be delivered](#when-a-withdrawal-cannot-be-delivered)* | UPF: optional |
 | — | `x3_sockaddr` | Datapath X3 tee socket (match `LI_X3_SOCKET_PATH`) | UPF: yes |
 
 ### What only the deployment can guarantee
@@ -1047,8 +1013,7 @@ matching product identifier: that value is what each element stamps on the produ
 delivers, and it is the only thing tying one element's signalling to another's. Each
 element sees only its own task, so neither can notice a mismatch — the records stay
 well-formed, separately deliverable, and unjoinable. If the ADMF allocates a distinct XID
-per element (which is normal, and which this project's own test suite now exercises), it
-must set one shared `productID` on all of them.
+per element (which is normal), it must set one shared `productID` on all of them.
 
 **Node clocks must be synchronised.** Record ordering *across* elements rests entirely on
 their clocks agreeing: the timestamp on each record is the time the event occurred by the
@@ -1128,8 +1093,7 @@ Configure `admfId` on every element whose responsible ADMF is known; on the UPF,
 **Do not do this with a NetworkPolicy.** A policy that selects a network
 function's pod isolates it for every listed `policyType`, so an Ingress policy
 admitting only X1 also denies SBI from the other network functions and NGAP from
-the RAN, taking the core down. The `bess-upf` chart offered such a knob once and
-it would have severed N4; it now refuses to render instead.
+the RAN, taking the core down — on the UPF it would sever N4.
 
 Restrict the node port at the node instead, where the rule concerns one port and
 cannot silently cut anything else. Note that kube-proxy DNATs NodePort traffic in
@@ -1229,15 +1193,16 @@ lists the open gaps across all three in one place — start there.**
   the Interception Point ID (`AMF-IRI-POI`, `SMF-IRI-POI`, `UPF-CC-POI`) on both interfaces; a
   Timestamp and a Sequence Number on both; and, on X2 only, one Matched Target Identifier per
   identity of the task the subject presents plus one Other Target Identifier per remaining
-  identity of that subject. The header is therefore no longer a fixed 40 bytes — which is what
-  the header length field is for, and what an MDF has to read it for. The timestamp is the
+  identity of that subject. The header is therefore longer than the fixed 40 bytes — which is
+  what the header length field is for, and what an MDF has to read it for. The timestamp is the
   event's time on X2 and the xCC's generation time on X3, as TS 33.128 tables 5.3.2-2 and
   5.3.3-2 respectively define them. The sequence number is numbered per
   `(XID, Correlation ID)` context and not per connection, so one record delivered to two of a
   task's destinations carries one number, and product dropped under sustained MDF slowness
   leaves a visible gap rather than being renumbered over.
-- `iri/CONFORMANCE.md` — the TS 33.128 records, bounded to those this project emits, with the
-  M/C/O verdict for every field the published ASN.1 module defines and we do not populate.
+- `iri/CONFORMANCE.md` — the TS 33.128 records, bounded to those these packages encode, with
+  the M/C/O verdict for every field the published ASN.1 module defines and they do not
+  populate.
 
 All three are readings rather than checks where the specification is prose, and each says
 which it is. Two mechanical checks sit beside them: `iri/asn1_drift_test.go` fails when the
@@ -1265,25 +1230,21 @@ Not "up to six". So this package renders them through one helper with the layout
 `2006-01-02T15:04:05.000000Z07:00` — zeros, which pad and keep trailing zeros — rather than
 `time.RFC3339Nano`, whose nines emit whatever the clock offers and strip trailing zeros.
 
-Every one of these sites used `RFC3339Nano` until 2026-08-12: the responses this element
-answers with, the LI_T3 triggers a CC-TF sends, and the fault reports by which an element
-tells a provisioning function something is wrong. **Every X1 message they emitted on a Linux
-deployment was malformed**, and a validating peer is entitled to discard all of them.
+That is worth stating plainly because it reads as a style choice and is not one. Linux
+gives Go nanosecond resolution, so `RFC3339Nano` renders nine digits about 90% of the
+time, eight about 9%, seven about 0.9% — and six only when the nanosecond value lands on
+an exact microsecond, one time in a thousand. Every X1 message rendered that way on a
+Linux deployment would be malformed, and a validating peer is entitled to discard all of
+them. On a microsecond-resolution clock — a developer workstation — the same format fails
+only the ~10% of instants whose value ends in a zero, which makes it easy to miss in
+testing.
 
-That is worth stating plainly because the fix reads as a style change and is not one. Linux
-gives Go nanosecond resolution, so `RFC3339Nano` rendered *nine* digits about 90% of the
-time, eight about 9%, seven about 0.9% — and six only when the nanosecond value happened to
-land on an exact microsecond, one time in a thousand. Measured against a deployment's own
-traffic: of 306 fault reports captured from pre-fix elements **none** validated, against 153
-captured from the same elements after, of which all did — alongside 160 responses, also all
-valid. On a microsecond-resolution clock — a developer workstation — the
-same code fails only the ~10% of instants whose value ends in a zero, which is why it
-survived review and manual testing for as long as it did.
-
-The failure was the worst available shape. It was silent, because nothing validated our own
-output until the X1 schemas were vendored. It hit the **fault reports**, so the messages
-that say something is wrong were themselves the ones thrown away. And it hit the
-**triggers**, so a strict UPF would refuse interception with nothing to point at.
+The failure would be the worst available shape: silent, because a peer discarding a
+malformed message says nothing; in the **fault reports**, so the messages that say something
+is wrong would be the ones thrown away; and in the **triggers**, so a strict UPF would refuse
+interception with nothing to point at. The helper covers every site: the responses this
+element answers with, the LI_T3 triggers a CC-TF sends, and the fault reports by which an
+element tells a provisioning function something is wrong.
 
 `x1/schema_validation_test.go` pins it with a clock whose fractional part ends in zeros, and
 asserts the boundary values directly, so a return to a stripping format fails every case

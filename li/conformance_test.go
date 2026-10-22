@@ -1,25 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Forsway Scandinavia AB
 // SPDX-License-Identifier: Apache-2.0
 
-// Package li holds no code. It exists so that the conformance index at the module
-// root can be checked by a test rather than by a convention.
 package li
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// dispositions are the per-interface conformance documents. Every interface for
-// which this project claims conformance has one, and the public compliance claim
-// links to the index that names them — so a disposition added, renamed or moved
-// without the index following orphans that link silently.
-//
-// This is the same reflex the schema-drift check applies to the X1 structs, aimed
-// at documentation structure instead: the failure mode being guarded is not that
-// somebody writes the wrong thing, it is that somebody moves a file and nothing
-// says so.
+// dispositions are the per-interface conformance documents. Every interface these
+// packages claim conformance for has one, and the index names them all — so a
+// disposition added, renamed or moved without the index following leaves the index
+// pointing at nothing, and these tests say so.
 var dispositions = []string{
 	"x1/CONFORMANCE.md",
 	"x2x3/CONFORMANCE.md",
@@ -31,37 +25,63 @@ const index = "CONFORMANCE.md"
 func TestEveryDispositionExistsAndIsIndexed(t *testing.T) {
 	body, err := os.ReadFile(index)
 	if err != nil {
-		t.Fatalf("reading %s: %v — the public compliance claim links here", index, err)
+		t.Fatalf("reading %s: %v", index, err)
 	}
 	text := string(body)
 
 	for _, path := range dispositions {
 		if _, err := os.Stat(path); err != nil {
-			t.Errorf("%s: %v — an interface this project claims conformance for has no disposition distributed with the code", path, err)
+			t.Errorf("%s: %v — an interface these packages claim conformance for has no disposition", path, err)
 
 			continue
 		}
 		if !strings.Contains(text, path) {
-			t.Errorf("%s exists but %s does not reference it; a reader arriving from the compliance page cannot reach it", path, index)
+			t.Errorf("%s exists but %s does not reference it, so a reader of the index cannot reach it", path, index)
 		}
 	}
 }
 
+// conformancePath matches a path ending in CONFORMANCE.md wherever it appears: in a link
+// target, in backticks, followed by an anchor or by punctuation.
+var conformancePath = regexp.MustCompile(`[\w./-]*CONFORMANCE\.md`)
+
+// referencedDispositions returns every CONFORMANCE.md path text names, other than the
+// index itself.
+func referencedDispositions(text string) []string {
+	var out []string
+	for _, path := range conformancePath.FindAllString(text, -1) {
+		if path != index {
+			out = append(out, path)
+		}
+	}
+
+	return out
+}
+
 // TestTheIndexReferencesNothingMissing is the other direction, and the one that
-// catches a rename: the index naming a document that is not there is a broken link
-// on the page a prospective operator is sent to.
+// catches a rename: the index naming a document that is not there is a broken link.
 func TestTheIndexReferencesNothingMissing(t *testing.T) {
 	body, err := os.ReadFile(index)
 	if err != nil {
 		t.Fatalf("reading %s: %v", index, err)
 	}
 
-	for _, field := range strings.Fields(strings.NewReplacer("(", " ", ")", " ", "`", " ", "[", " ", "]", " ").Replace(string(body))) {
-		if !strings.HasSuffix(field, "CONFORMANCE.md") || field == index {
-			continue
+	for _, path := range referencedDispositions(string(body)) {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s names %q, which is not there: %v", index, path, err)
 		}
-		if _, err := os.Stat(field); err != nil {
-			t.Errorf("%s names %q, which is not there: %v", index, field, err)
-		}
+	}
+}
+
+// TestReferencesAreFoundWhateverFollowsThem: a path followed by an anchor, by
+// punctuation or by Markdown emphasis is still a reference to that file.
+func TestReferencesAreFoundWhateverFollowsThem(t *testing.T) {
+	text := "see [x](gone1/CONFORMANCE.md), gone2/CONFORMANCE.md, " +
+		"[y](gone3/CONFORMANCE.md#top) and **gone4/CONFORMANCE.md**. Also CONFORMANCE.md."
+
+	got := referencedDispositions(text)
+	want := []string{"gone1/CONFORMANCE.md", "gone2/CONFORMANCE.md", "gone3/CONFORMANCE.md", "gone4/CONFORMANCE.md"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("found %q, want %q", got, want)
 	}
 }
