@@ -68,6 +68,14 @@ func TestADestinationFaultIsRetractedWhenItsDestinationLeavesTheHealthSet(t *tes
 	if n := admf.counting(TaskReportAllClear)[TaskReportAllClear]; n != 1 {
 		t.Errorf("the retraction was sent %d times in all, want 1", n)
 	}
+
+	// The watcher forgets a fault once its retraction arrived, or its record would grow with
+	// every destination that ever failed.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if n := len(w.raised); n != 0 {
+		t.Errorf("the watcher still records %d raised destinations after the retraction", n)
+	}
 }
 
 // TestTheElementFaultIsRetractedWhenItsLastUnnamedDestinationGoes: the same at element scope.
@@ -92,6 +100,38 @@ func TestTheElementFaultIsRetractedWhenItsLastUnnamedDestinationGoes(t *testing.
 
 	if n := admf.counting("FaultCleared")["FaultCleared"]; n != 1 {
 		t.Errorf("sent %d retractions after the last un-identified destination went, want 1", n)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.elementRaised {
+		t.Error("the watcher still records the element fault after its retraction arrived")
+	}
+}
+
+// TestARecoveryInsideTheHoldRetractsNothing: a destination healthy for less than an interval is
+// still held, however many samples see it healthy; the retraction waits for the interval.
+func TestARecoveryInsideTheHoldRetractsNothing(t *testing.T) {
+	admf := newCollectingADMF(t)
+	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)
+
+	health := []DestinationHealth{{DID: didAgencyA, Address: endpointA, Unreachable: true}}
+	w := NewDestinationWatcher(func() []DestinationHealth { return health }, r, time.Minute)
+	clock := holdClockOn(w)
+
+	w.sample()
+	health[0].Unreachable = false
+	w.sample() // healthy from here
+	clock.at = clock.at.Add(w.interval / 2)
+	w.sample()
+	if n := admf.counting(TaskReportAllClear)[TaskReportAllClear]; n != 0 {
+		t.Fatalf("a destination healthy for half an interval was retracted %d times", n)
+	}
+
+	clock.at = clock.at.Add(w.interval / 2)
+	w.sample()
+	if n := admf.counting(TaskReportAllClear)[TaskReportAllClear]; n != 1 {
+		t.Errorf("a destination healthy for a full interval was retracted %d times, want 1", n)
 	}
 }
 
@@ -131,8 +171,8 @@ func TestAFlappingDestinationIsReportedOncePerHold(t *testing.T) {
 }
 
 // TestTheReportRecordStaysBoundedUnderTaskReports: a triggering function reports per XID, and
-// a task-scoped report has no retraction. Neither of the reporter's records may keep an entry
-// for every XID that ever had a fault — reported forever, or lastSent long past the window in
+// a task-scoped event has no retraction. Neither of the reporter's records may keep an entry
+// for every XID that ever had one — reported forever, or lastSent long past the window in
 // which it could suppress anything.
 func TestTheReportRecordStaysBoundedUnderTaskReports(t *testing.T) {
 	r := NewReporter("https://admf.invalid", "admfID", "neID", nil)
@@ -158,4 +198,10 @@ func TestTheReportRecordStaysBoundedUnderTaskReports(t *testing.T) {
 	if n := len(r.lastSent); n > 1 {
 		t.Errorf("the throttle holds %d entries after 100 reports a window apart, want at most 1", n)
 	}
+}
+
+// sample reports the transitions since the last look: sampleUntil with no stop, for the tests
+// that drive the watcher one sample at a time.
+func (w *DestinationWatcher) sample() {
+	w.sampleUntil(nil)
 }

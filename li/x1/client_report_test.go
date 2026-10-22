@@ -286,3 +286,15 @@ func TestTheConditionsTableNamesEveryCondition(t *testing.T) {
 		}
 	}
 }
+
+// TestAnElementFaultMustNameADeclaredCondition: a probe's condition leads the description an
+// ADMF correlates with pushed reports, so one outside the declared vocabulary is refused rather
+// than invented.
+func TestAnElementFaultMustNameADeclaredCondition(t *testing.T) {
+	if got := NEFault(NEIssueMDFUnreachable, "1 of 2"); got.ErrorDescription != NEIssueMDFUnreachable+": 1 of 2" {
+		t.Errorf("a declared condition rendered as %q", got.ErrorDescription)
+	}
+	if got := NEFault("somethingInvented", "detail"); strings.Contains(got.ErrorDescription, "somethingInvented") {
+		t.Errorf("an undeclared condition was carried as %q", got.ErrorDescription)
+	}
+}

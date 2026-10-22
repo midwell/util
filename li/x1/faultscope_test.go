@@ -260,8 +260,8 @@ func TestRecoveryIsNotThrottledAgainstTheFailure(t *testing.T) {
 	}
 }
 
-// TestAPersistingFaultIsReportedOncePerWindow: the throttle still does its job for
-// a condition that simply continues, which is what it was for.
+// TestAPersistingFaultIsReportedOncePerWindow: the throttle suppresses repeats of
+// a condition that simply continues, which is what it is for.
 func TestAPersistingFaultIsReportedOncePerWindow(t *testing.T) {
 	admf := newCollectingADMF(t)
 	r := NewReporter(admf.srv.URL, "admfID", "neID", nil)

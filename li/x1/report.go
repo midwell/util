@@ -48,7 +48,8 @@ const reportThrottle = 30 * time.Second
 //	duplicationRefused         event  push        a rule the datapath refused or did not confirm
 //	recordValueSubstituted     event  push        a record field carrying the nearest permitted value
 //	triggerFaulty              event  push        a POI reporting a trigger as not running
-//	taskingPurged              event  push        tasking the fail-safe removed, once
+//	keepalivesMissing          state  push        the ADMF has not been heard from within TIME_P2
+//	taskingPurged              event  push        tasking the keepalive procedure removed, once
 //	reconcileFailed            event  push        a restart this element could not reconcile
 //	taskingWithdrawalFailed    event  push        a withdrawal a POI did not acknowledge
 //	taskingWithdrawalStuck     event  push        a withdrawal outstanding long enough to matter
@@ -64,8 +65,12 @@ const reportThrottle = 30 * time.Second
 // also indicate that a fault has been cleared". So the probe answers it when asked, and
 // DestinationWatcher pushes each transition, naming the destination the transition
 // concerns (clause 6.5.3). The two carry the same fact to different questions: "how much
-// is wrong" and "what just changed". Nothing else here has an ending anybody could
-// observe, which is why nothing else is in both columns.
+// is wrong" and "what just changed".
+//
+// keepalivesMissing has both edges too, pushed by the keepalive procedure of clause 6.6.2:
+// the FaultReport when timer P2 expires and the FaultCleared when the ADMF is heard again.
+// It is not a probe, because the only party that can ask is the ADMF whose silence it
+// reports, and its next request ends the condition.
 //
 // The last three are re-observable and still do not belong in a status answer, which is
 // the part of this that cannot be recovered from the code:
@@ -128,10 +133,15 @@ const (
 	// not reported at all, which is why the pool's drop hook is the only site that
 	// can raise it.
 	NEIssueX2DeliveryLost = "x2DeliveryLost"
-	// NEIssueTaskingPurged: the keepalive fail-safe removed all tasking because the
+	// NEIssueKeepalivesMissing: no X1 request has arrived from the ADMF within TIME_P2,
+	// which TS 103 221-1 clause 6.6.2 reports as a FaultReport with status/fault code 9050
+	// "Keepalives not received". The next X1 request clears it.
+	NEIssueKeepalivesMissing = "keepalivesMissing"
+	// NEIssueTaskingPurged: the keepalive procedure deactivated all tasking because the
 	// party responsible for it went quiet. Interception has stopped — which is the
 	// safe direction, since tasking must not outlive the authority for it — but the
 	// ADMF has to know it happened rather than infer it from an absence of product.
+	// Clause 6.6.2 sends it as an Alert with issue code 10000 "Database cleared".
 	NEIssueTaskingPurged = "taskingPurged"
 	// NEIssueReconcileFailed: this element could not establish what tasking a POI
 	// still holds from before its restart, so it may have left interception running
@@ -243,9 +253,10 @@ const (
 	neIssueAlert        = "Alert"
 )
 
-// Status/fault and issue codes from TS 103 221-1 table 6.7-3, which the same table
-// instructs implementers to use as specifically as they can. IssueCode is required
-// when the code belongs to the section matching the message type.
+// Status/fault and issue codes from TS 103 221-1 table 6.7-3. Table 6.5.4-1 makes IssueCode
+// conditional: it carries a code from the issue-code section of table 6.7-3 on an "Alert",
+// and one from the status/fault section on a "FaultReport", "FaultCleared" or "Warning", and
+// its use is mandatory where a clause requires it — as clause 6.6.2 does for 9050 and 10000.
 const (
 	issueCodeNonTerminatingFault = 9020
 	issueCodeTerminatingFault    = 9030
@@ -263,10 +274,10 @@ type neIssueEncoding struct {
 }
 
 // neIssueEncodings maps each condition onto conformant fields. Where the registry
-// has a code that names the condition exactly, it is used: a purge follows
-// keepalives that stopped arriving (9050), and an element that has come up holding
-// nothing is the "database cleared" the specification lists among the reasons to
-// send this message at all (10000).
+// has a code that names the condition exactly, it is used: keepalives that stopped
+// arriving (9050), and tasking that is gone — deactivated by the keepalive procedure, or
+// lost by an element that has come up holding nothing — is the "Database cleared" (10000)
+// clause 6.6.2 sends after the purge.
 var neIssueEncodings = map[string]neIssueEncoding{
 	NEIssueX1ListenFailed:         {neIssueFaultReport, issueCodeTerminatingFault},
 	NEIssueX3EgressDown:           {neIssueFaultReport, issueCodeNonTerminatingFault},
@@ -298,7 +309,8 @@ var neIssueEncodings = map[string]neIssueEncoding{
 	// a Warning rather than a FaultReport. What it warns of is that one warrant's
 	// product is complete at the cost of another's being empty.
 	NEIssueContentTaskOverlap: {neIssueWarning, issueCodeNonTerminatingFault},
-	NEIssueTaskingPurged:      {neIssueFaultReport, issueCodeKeepalivesNotRcvd},
+	NEIssueKeepalivesMissing:  {neIssueFaultReport, issueCodeKeepalivesNotRcvd},
+	NEIssueTaskingPurged:      {neIssueAlert, issueCodeDatabaseCleared},
 	NEIssueTaskingAbsent:      {neIssueAlert, issueCodeDatabaseCleared},
 	// A rejected provisioning attempt is not a fault — nothing has broken and
 	// interception is unaffected — so it is an Alert rather than a FaultReport, the
@@ -433,12 +445,13 @@ func (r *Reporter) commit(k reportKey) {
 	delete(r.sending, k)
 	r.lastSent[k] = now
 
-	// Task-scoped reports are not recorded as standing: nothing retracts one, and a
-	// triggering function reports per XID, so the record would grow with every
-	// interception that ever had a fault. Element- and destination-scoped reports are
-	// recorded. An element-scoped *event* (Notify) is never retracted either, but its entry
-	// is keyed by condition alone, so there is at most one per condition.
-	if k.scope != scopeTask {
+	// A task-scoped report is recorded only for a condition that is a state, which the task
+	// watcher retracts; an event at task scope has no ending, and the record would grow with
+	// every interception that ever had one. The task watcher forgets the record of a task
+	// that is no longer held, so this one is bounded by the tasking. An element-scoped
+	// *event* (Notify) is never retracted either, but its entry is keyed by condition alone,
+	// so there is at most one per condition.
+	if k.scope != scopeTask || taskStates[k.condition] {
 		r.reported[k] = true
 	}
 
@@ -637,6 +650,15 @@ const (
 	TaskIssueRecordNotEncoded = "recordNotEncoded"
 )
 
+// taskStates is the task-scoped conditions that are states: re-observable, so they have an
+// ending, and the task watcher reports both edges of each (see WatchTaskFaults). The rest
+// are events, pushed when they happen and never retracted.
+var taskStates = map[string]bool{
+	TaskIssueDuplicationNotProgrammed: true,
+	TaskIssueNoTrafficSelected:        true,
+	TaskIssueTriggerNotRunning:        true,
+}
+
 // taskScoped is the set of conditions that concern one task rather than the element.
 //
 // It exists so the choice is made once. TestConditionScopesAreDisjoint asserts that no
@@ -659,9 +681,11 @@ const (
 	// The counterpart of FaultCleared, which is the network-element one, at the two
 	// scopes whose report type is this enumeration. Clause 5.3 requires both — "The NE
 	// shall also indicate that a fault has been cleared (see clauses 6.5.2 and 6.5.3)
-	// unless otherwise configured". This element sends it at destination scope
-	// (NotifyDestinationClear); its task-scoped reports are events, which have no ending
-	// to report.
+	// unless otherwise configured" — and clause 6.5.2.1 says it of a task: "If a
+	// non-terminating fault is cleared, the NE shall send another ReportTaskIssue
+	// indicating the fault is cleared." This element sends it at destination scope
+	// (NotifyDestinationClear) and at task scope (NotifyTaskClear), for the conditions
+	// that are states; a task-scoped event has no ending to report.
 	TaskReportAllClear = "AllClear"
 	// TaskReportWarning: something is wrong but the interception continues.
 	TaskReportWarning = "Warning"
@@ -697,9 +721,9 @@ var reportTaskTemplate = template.Must(template.New("x1taskissue").Funcs(x1Templ
 // must not surface faults through anything but this channel, so a failed report has
 // nowhere general to go — and expressing that as a void call keeps every call site
 // from blank-assigning an error the linter then flags. A nil Reporter is a no-op, so a
-// network function with no ADMF configured need not guard every call — though existing
-// callers may still, and must when they hold the Reporter behind an interface (a nil
-// interface value cannot be called at all).
+// network function with no ADMF configured need not guard every call. A caller holding the
+// Reporter behind an interface must still guard: a nil interface value cannot be called at
+// all.
 //
 // **The outcome is not lost, only not returned.** The caller has nowhere to put the error;
 // the reporter does, and settles it before this returns. A report that did not arrive
@@ -832,6 +856,73 @@ func (r *Reporter) ReportTaskIssue(xid, reportType, details string) error {
 	return r.readReportResponse("ReportTaskIssueRequest", txID, resp)
 }
 
+// NotifyTaskFault reports a task-scoped condition that is a state, once per throttle window
+// per (xid, condition), and records it so NotifyTaskClear can later retract it.
+//
+// It is the task-scoped NotifyDestinationFault: synchronous, for the task watcher, which is
+// the one owner of both edges. NotifyTaskAsync remains the form for an event.
+func (r *Reporter) NotifyTaskFault(xid, condition, details string) {
+	if r == nil || xid == "" {
+		return
+	}
+	k := reportKey{scope: scopeTask, id: xid, condition: condition}
+	if !r.reserve(k) {
+		return
+	}
+	r.settle(k, r.ReportTaskIssue(xid, TaskReportNonTerminatingFault, condition+": "+details))
+}
+
+// NotifyTaskClear retracts a task-scoped fault previously reported, with an AllClear, and
+// does nothing if none was. Like NotifyDestinationClear it is not throttled against the
+// report it retracts: the two are a state change and not a repetition.
+func (r *Reporter) NotifyTaskClear(xid, condition string) {
+	if r == nil || xid == "" {
+		return
+	}
+	k := reportKey{scope: scopeTask, id: xid, condition: condition}
+	if !r.clearing(k) {
+		return
+	}
+	r.settleClear(k, r.ReportTaskIssue(xid, TaskReportAllClear, condition+": resolved"))
+}
+
+// standingTaskFaults returns the task-scoped faults reported and not yet retracted.
+func (r *Reporter) standingTaskFaults() []reportKey {
+	if r == nil {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []reportKey
+	for k := range r.reported {
+		if k.scope == scopeTask {
+			out = append(out, k)
+		}
+	}
+
+	return out
+}
+
+// forget drops the record of a fault without retracting it. The task watcher uses it for a
+// task no longer held: the task's end ends its faults, and the ADMF has deactivated the XID
+// an AllClear would name.
+func (r *Reporter) forget(k reportKey) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.sending[k] {
+		return
+	}
+	delete(r.reported, k)
+	delete(r.lastSent, k)
+}
+
 // reportDestinationTemplate emits an X1Request carrying a
 // ReportDestinationIssueRequest. Element order follows its xs:sequence: dId,
 // destinationReportType, then the optional error code and details.
@@ -913,7 +1004,9 @@ func (r *Reporter) NotifyElementFault(condition, description string) {
 // and does nothing if none was.
 //
 // Clause 5.3 again, at the third scope: FaultCleared is the TypeOfNeIssueMessage
-// for it, as AllClear is the TaskReportType at the other two.
+// for it, as AllClear is the TaskReportType at the other two. It carries the
+// status/fault code of the fault it clears, which table 6.5.4-1 requires of a
+// FaultCleared whose code is in that section.
 func (r *Reporter) NotifyElementClear(condition string) {
 	if r == nil {
 		return
@@ -922,7 +1015,39 @@ func (r *Reporter) NotifyElementClear(condition string) {
 	if !r.clearing(k) {
 		return
 	}
-	r.settleClear(k, r.reportNEIssueAs(condition, neIssueFaultCleared, 0, condition+": resolved"))
+	code := 0
+	if encoding := encodeNEIssue(condition); encoding.kind == neIssueFaultReport {
+		code = encoding.code
+	}
+	r.settleClear(k, r.reportNEIssueAs(condition, neIssueFaultCleared, code, "resolved"))
+}
+
+// raise reports a network-element fault and returns the ADMF's answer, recording the fault
+// so that NotifyElementClear can later retract it.
+//
+// It is for a procedure that acts on the answer — the keepalive procedure starts timer P3
+// only on an OK — so it is not throttled: the procedure's own timers space its reports. It
+// does not send while a report or retraction of the same condition is still in flight.
+func (r *Reporter) raise(condition, description string) error {
+	if r == nil {
+		return errNoKeepaliveReporter
+	}
+	k := reportKey{scope: scopeElement, condition: condition}
+
+	r.mu.Lock()
+	if r.sending[k] {
+		r.mu.Unlock()
+
+		return fmt.Errorf("x1: a %s report is already in flight", condition)
+	}
+	r.sending[k] = true
+	r.mu.Unlock()
+
+	encoding := encodeNEIssue(condition)
+	err := r.reportNEIssueAs(condition, encoding.kind, encoding.code, description)
+	r.settle(k, err)
+
+	return err
 }
 
 // NotifyDestinationClear retracts a fault previously reported for a destination,

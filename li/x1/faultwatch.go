@@ -40,12 +40,12 @@ type DestinationHealth struct {
 // function argument.
 //
 // destinations SHALL be the same resolution the element's delivery path uses, and
-// is passed in rather than taken as t.DeliveryAddresses(dt) for a reason that cost a
-// lost fault report to learn. An IRI-POI delivers a task naming no DID to its own
-// configured endpoint, which provisioning never resolved — so the task carries no
-// delivery record at all, and a join reading the task alone sees nothing to watch
-// and reports nothing about the commonest configuration there is. Asking the caller
-// for the addresses it actually delivers to makes the two impossible to disagree.
+// is passed in rather than taken as t.DeliveryAddresses(dt). An IRI-POI delivers a
+// task naming no DID to its own configured endpoint, which provisioning never
+// resolved — so the task carries no delivery record at all, and a join reading the
+// task alone would see nothing to watch and report nothing about the commonest
+// configuration there is. Asking the caller for the addresses it actually delivers to
+// makes the two impossible to disagree.
 //
 // Deduplicated by (identifier, address): a destination named by several tasks is one
 // destination, and reporting it once per task would tell the provisioning function
@@ -204,20 +204,38 @@ func (w *DestinationWatcher) Watch(stop <-chan struct{}) {
 
 	var (
 		last     time.Time
-		deferred <-chan time.Time
+		deferred *time.Timer
 	)
+	// deferredC is the deferred nudge's channel, nil while none is pending.
+	deferredC := func() <-chan time.Time {
+		if deferred == nil {
+			return nil
+		}
+
+		return deferred.C
+	}
+	// sample takes a sample, which answers any deferred nudge too: one pending past a
+	// sample would sample again sooner than the gap allows.
 	sample := func() {
-		last = time.Now()
+		if deferred != nil {
+			deferred.Stop()
+			deferred = nil
+		}
+		last = w.now()
 		w.sampleUntil(stop)
 	}
 
 	for {
 		select {
 		case <-stop:
+			if deferred != nil {
+				deferred.Stop()
+			}
+
 			return
 		case <-ticker.C:
 			sample()
-		case <-deferred:
+		case <-deferredC():
 			deferred = nil
 			sample()
 		case <-w.nudge:
@@ -225,9 +243,9 @@ func (w *DestinationWatcher) Watch(stop <-chan struct{}) {
 			// prompt; the decision about whether this is a transition still belongs here.
 			// A nudge inside the gap is deferred to its end rather than dropped, so the
 			// failure that prompted it is still looked at.
-			if wait := w.nudgeGap - time.Since(last); wait > 0 {
+			if wait := w.nudgeGap - w.now().Sub(last); wait > 0 {
 				if deferred == nil {
-					deferred = time.After(wait)
+					deferred = time.NewTimer(wait)
 				}
 
 				continue
@@ -250,11 +268,6 @@ const (
 	reportClear                          // ask for a retraction the reporter answers only if one is owed
 	reportRetract                        // retract a fault this watcher raised, and forget it once retracted
 )
-
-// sample reports the transitions since the last look. It is sampleUntil with no stop.
-func (w *DestinationWatcher) sample() {
-	w.sampleUntil(nil)
-}
 
 // sampleUntil reports the transitions since the last look, making no further report once
 // stop is closed.

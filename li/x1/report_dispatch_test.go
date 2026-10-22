@@ -280,7 +280,46 @@ func TestAFailedRetractionLeavesTheFaultRetractable(t *testing.T) {
 // refuses it as unattributable: an element that read a bare 200 as acceptance would record a
 // fault as reported, stop re-reporting it, and later retract a fault the ADMF never had. A
 // stub that is not conformant tests this element against a fiction.
+//
+// It runs on the stub's HTTP handler goroutine, where t.FailNow is not permitted, so a request
+// it cannot parse fails the test with Errorf and is answered with nothing.
 func admfResponse(t *testing.T, request []byte) string {
+	t.Helper()
+
+	m, ok := parseReportRequest(t, request)
+	if !ok {
+		return ""
+	}
+
+	return admfEnvelope(m, strings.TrimSuffix(m.local, "Request")+"Response", "")
+}
+
+// admfErrorResponse is the same envelope carrying an X1-level refusal, which clause 7.2.2.2
+// requires to be returned inside a HTTP 200: an ErrorResponse naming the request type it
+// refuses, as the schema requires of one, and the error information.
+func admfErrorResponse(t *testing.T, request []byte, code int, description string) string {
+	t.Helper()
+
+	m, ok := parseReportRequest(t, request)
+	if !ok {
+		return ""
+	}
+
+	return admfEnvelope(m, "ErrorResponse",
+		`<x1:requestMessageType>`+strings.TrimSuffix(m.local, "Request")+`</x1:requestMessageType>`+
+			`<x1:errorInformation><x1:errorCode>`+strconv.Itoa(code)+`</x1:errorCode>`+
+			`<x1:errorDescription>`+description+`</x1:errorDescription></x1:errorInformation>`)
+}
+
+// reportRequest is the part of a report an ADMF stub echoes back.
+type reportRequest struct {
+	local                                     string // the request type, without its prefix
+	admf, ne, timestamp, version, transaction string
+}
+
+// parseReportRequest reads the one request message a report carries. It reports a failure
+// with Errorf, for the handler goroutines it runs on.
+func parseReportRequest(t *testing.T, request []byte) (reportRequest, bool) {
 	t.Helper()
 
 	var in struct {
@@ -294,10 +333,14 @@ func admfResponse(t *testing.T, request []byte) string {
 		} `xml:"x1RequestMessage"`
 	}
 	if err := xml.Unmarshal(request, &in); err != nil {
-		t.Fatalf("ADMF stub could not parse the report it is answering: %v", err)
+		t.Errorf("ADMF stub could not parse the report it is answering: %v", err)
+
+		return reportRequest{}, false
 	}
 	if len(in.Messages) != 1 {
-		t.Fatalf("ADMF stub received %d request messages, want 1", len(in.Messages))
+		t.Errorf("ADMF stub received %d request messages, want 1", len(in.Messages))
+
+		return reportRequest{}, false
 	}
 	m := in.Messages[0]
 
@@ -306,31 +349,22 @@ func admfResponse(t *testing.T, request []byte) string {
 		local = local[i+1:]
 	}
 
-	return `<?xml version="1.0"?><x1:X1Response xmlns:x1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
-		`<x1:x1ResponseMessage xsi:type="x1:` + strings.TrimSuffix(local, "Request") + `Response">` +
-		`<x1:admfIdentifier>` + m.AdmfIdentifier + `</x1:admfIdentifier>` +
-		`<x1:neIdentifier>` + m.NeIdentifier + `</x1:neIdentifier>` +
-		`<x1:messageTimestamp>` + m.Timestamp + `</x1:messageTimestamp>` +
-		`<x1:version>` + m.Version + `</x1:version>` +
-		`<x1:x1TransactionId>` + m.X1TransactionID + `</x1:x1TransactionId>` +
-		`</x1:x1ResponseMessage></x1:X1Response>`
+	return reportRequest{
+		local: local, admf: m.AdmfIdentifier, ne: m.NeIdentifier,
+		timestamp: m.Timestamp, version: m.Version, transaction: m.X1TransactionID,
+	}, true
 }
 
-// admfErrorResponse is the same envelope carrying an X1-level refusal, which clause 7.2.2.2
-// requires to be returned inside a HTTP 200.
-func admfErrorResponse(t *testing.T, request []byte, code int, description string) string {
-	t.Helper()
-
-	ok := admfResponse(t, request)
-	// The response type becomes ErrorResponse and the error information is carried inside
-	// it, which is the shape the schema defines and the one this element must not read as
-	// an acknowledgement.
-	ok = strings.Replace(ok, `Response">`, `Response">`, 1)
-	i := strings.Index(ok, `xsi:type="x1:`)
-	j := strings.Index(ok[i:], `">`) + i
-
-	return ok[:i] + `xsi:type="x1:ErrorResponse` + ok[j:len(ok)-len(`</x1:x1ResponseMessage></x1:X1Response>`)] +
-		`<x1:errorInformation><x1:errorCode>` + strconv.Itoa(code) + `</x1:errorCode>` +
-		`<x1:errorDescription>` + description + `</x1:errorDescription></x1:errorInformation>` +
+// admfEnvelope renders a response message of the given type answering m, with body after the
+// base fields.
+func admfEnvelope(m reportRequest, responseType, body string) string {
+	return `<?xml version="1.0"?><x1:X1Response xmlns:x1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
+		`<x1:x1ResponseMessage xsi:type="x1:` + responseType + `">` +
+		`<x1:admfIdentifier>` + m.admf + `</x1:admfIdentifier>` +
+		`<x1:neIdentifier>` + m.ne + `</x1:neIdentifier>` +
+		`<x1:messageTimestamp>` + m.timestamp + `</x1:messageTimestamp>` +
+		`<x1:version>` + m.version + `</x1:version>` +
+		`<x1:x1TransactionId>` + m.transaction + `</x1:x1TransactionId>` +
+		body +
 		`</x1:x1ResponseMessage></x1:X1Response>`
 }

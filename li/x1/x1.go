@@ -186,6 +186,11 @@ type Server struct {
 
 	mu       sync.Mutex
 	lastSeen time.Time // time of the last X1 message from the ADMF (keepalive watchdog)
+	// keepalive is the TS 103 221-1 clause 6.6.2 procedure's state, guarded by mu. See
+	// WatchKeepalive.
+	keepalive keepaliveState
+	// keepaliveReporter carries the procedure's reports to the ADMF. See KeepaliveReporter.
+	keepaliveReporter *Reporter
 	// requireDIDs refuses a CC task whose destinations are unknown, rather than
 	// accepting it and delivering nothing.
 	requireDIDs bool
@@ -208,7 +213,7 @@ type Server struct {
 	// nil otherwise. afterPurgeSnapshot runs between reading the tasks a purge tears down
 	// and emptying the store; afterDestinationGuard inside createDestination, after its
 	// refusals are decided and before the destination is stored; afterLapseDecision
-	// inside purgeIfLapsed, after it concludes the ADMF has gone quiet and before it acts.
+	// inside a keepalive purge, after it concludes the ADMF has gone quiet and before it acts.
 	afterPurgeSnapshot    func()
 	afterDestinationGuard func()
 	afterLapseDecision    func()
@@ -355,7 +360,19 @@ type FaultProbe func() *X1Error
 // The error code is the registry's generic one. TS 103 221-1's codes name failures of a
 // *request*, and none of them names a condition of the element, so what an ADMF can act on
 // here is the condition rather than a number picked to look specific.
+//
+// The condition must be one report.go declares at element scope. One that is not is replaced
+// by a description saying so, as TaskFault does at task scope: a condition outside the shared
+// vocabulary is one an ADMF cannot correlate with any report.
 func NEFault(condition, detail string) *X1Error {
+	if _, declared := neIssueEncodings[condition]; !declared {
+		return &X1Error{
+			ErrorCode: errCodeGeneric,
+			ErrorDescription: "this element reported a condition it does not declare at " +
+				"element scope, which is a defect in the element",
+		}
+	}
+
 	return &X1Error{
 		ErrorCode:        errCodeGeneric,
 		ErrorDescription: condition + ": " + detail,
@@ -930,102 +947,6 @@ func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) 
 	}
 
 	return s.apply(m)
-}
-
-func (s *Server) recordActivity() {
-	s.mu.Lock()
-	s.lastSeen = s.now()
-	s.mu.Unlock()
-}
-
-// MinKeepaliveWindow is the shortest fail-safe window WatchKeepalive will run.
-//
-// It exists because the window is halved to produce the tick interval, and integer
-// division reaches zero: a window under two nanoseconds would panic time.NewTicker, on a
-// goroutine, taking the network function down. A second is far below any window a
-// deployment would choose and far above the arithmetic's floor, which is what a guard
-// against a configuration mistake should be.
-const MinKeepaliveWindow = time.Second
-
-// WatchKeepalive enforces the TS 103 221-1 keepalive fail-safe: if no X1 message
-// arrives from the ADMF within timeout, all tasking is purged (the controlling
-// ADMF is presumed gone, so warrants must not persist). It blocks — run it in a
-// goroutine.
-//
-// The watchdog samples every timeout/2, so the purge lands between timeout and
-// 1.5 × timeout after the last authenticated message: the window is a lower bound on how
-// long tasking outlives a silent ADMF, not an exact one.
-//
-// A timeout below MinKeepaliveWindow is refused: the watchdog does not start, and this
-// returns rather than running with a window it cannot measure. The callers check their
-// configured value first and report an unusable one to the ADMF, which is where an
-// operator's mistake is caught; this guard keeps a caller that skips that check from
-// panicking the process.
-//
-// It returns when stop is closed. A network function passes nil, since the
-// fail-safe must run for as long as the element can hold tasking; a nil channel
-// never becomes ready, so the watchdog simply never stops. Tests pass a real
-// channel so each one does not leave a ticker and a goroutine behind.
-func (s *Server) WatchKeepalive(timeout time.Duration, stop <-chan struct{}) {
-	if timeout < MinKeepaliveWindow {
-		return
-	}
-	s.recordActivity() // seed, so a freshly-started NE does not purge immediately
-	ticker := time.NewTicker(timeout / 2)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			s.purgeIfLapsed(timeout)
-		case <-stop:
-			return
-		}
-	}
-}
-
-// purgeIfLapsed clears all tasking when no X1 message has arrived within timeout.
-// It clears the store first, then runs the deactivation hook over the tasks that
-// were present, so a POI re-evaluating against the (now empty) task set actually
-// tears its product down — e.g. the SMF clearing UPF CC duplication. Clearing the
-// store alone is not a complete purge. After the first purge the snapshot is
-// empty, so subsequent lapsed ticks are no-ops.
-func (s *Server) purgeIfLapsed(timeout time.Duration) {
-	if !s.lapsed(timeout) {
-		return
-	}
-
-	// nil in production. The window between deciding the ADMF has gone quiet and acting
-	// on it is where a returning ADMF's recovery activation lands — see
-	// TestAnActivationInTheLapseWindowSurvives.
-	if s.afterLapseDecision != nil {
-		s.afterLapseDecision()
-	}
-
-	// **Re-checked under the transition lock, and that is not belt-and-braces.** The read
-	// above and the purge below are separate steps, and an X1 request arriving between
-	// them is the recovery case: a returning ADMF's ActivateTask takes the transition
-	// lock, records activity, stores the task and acknowledges it — and this tick, already
-	// past its own test, then purges the tasking it has just acknowledged. The ADMF holds
-	// an acknowledgement for an interception that no longer exists, and the report it gets
-	// says the ADMF went quiet, which is true of the window and false of the ADMF.
-	//
-	// So the decision and the purge are one hold of the transition lock: re-checking and
-	// then re-acquiring would leave the same window a few instructions narrower.
-	s.transitionMu.Lock()
-	defer s.transitionMu.Unlock()
-
-	if !s.lapsed(timeout) {
-		return
-	}
-	s.purgeAllTaskingLocked(PurgeKeepaliveLapse)
-}
-
-// lapsed reports whether no X1 message has arrived within timeout.
-func (s *Server) lapsed(timeout time.Duration) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.now().Sub(s.lastSeen) > timeout
 }
 
 // purgeAllTasking removes every task and runs the per-task teardown over what was there.

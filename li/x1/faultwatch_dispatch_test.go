@@ -5,6 +5,7 @@ package x1
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -162,5 +163,51 @@ func TestAFailedRetractionIsAskedAgain(t *testing.T) {
 	w.sample()
 	if n := admf.total.Load() - before; n != 0 {
 		t.Errorf("a retraction the ADMF accepted was sent again (%d more)", n)
+	}
+}
+
+// TestTheNudgeGapIsMeasuredOnTheWatchersClock: the gap between nudge-driven samples is read on
+// the same clock as the recovery hold. A nudge after that clock has passed the gap samples at
+// once rather than waiting on a second, real clock.
+func TestTheNudgeGapIsMeasuredOnTheWatchersClock(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		samples int
+		at      = zeroTailInstant
+	)
+	w := NewDestinationWatcher(func() []DestinationHealth {
+		mu.Lock()
+		defer mu.Unlock()
+		samples++
+
+		return nil
+	}, nil, time.Hour)
+	w.nudgeGap = time.Second
+	w.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return at
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return samples
+	}
+	watching(t, w)
+
+	w.Nudge()
+	within(t, "the first nudged sample", func() bool { return count() == 1 })
+
+	mu.Lock()
+	at = at.Add(2 * time.Second)
+	mu.Unlock()
+
+	start := time.Now()
+	w.Nudge()
+	within(t, "the second nudged sample", func() bool { return count() == 2 })
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Errorf("the second nudge waited %s on a gap its clock had already passed", waited)
 	}
 }
