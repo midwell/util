@@ -185,9 +185,11 @@ const maxInboundPDU = 4096
 // flag is a smell, and a zero value that silently omits a mandatory mechanism is a
 // worse one. A caller with no opinion gets what the specification requires.
 type KeepaliveConfig struct {
-	// Disabled turns the mechanism off: no keepalives are sent, nothing is read from
-	// the connection, and no TIME_P2 disconnect can occur — which is exactly the
-	// behaviour this package had before the mechanism existed.
+	// Disabled turns the mechanism off: no keepalives are sent, nothing read from the
+	// connection is acted on, and no TIME_P2 disconnect can occur. The connection is
+	// still watched for the mediation function closing it (see watchClose), because that
+	// is not part of the mechanism: it is what stops the next delivery being written into
+	// a socket the peer has already shut.
 	//
 	// It exists because a mediation function that does not implement the MDF half of
 	// clause 6.2.4 will never acknowledge, and an element pointed at one would
@@ -307,8 +309,13 @@ type connState struct {
 // caller holds mu.
 func (c *Client) startKeepaliveLocked(st *connState) {
 	if c.keepalive.Disabled {
+		st.wg.Add(1)
+
+		go c.watchClose(st)
+
 		return
 	}
+
 
 	st.acks = make(chan struct{}, 1)
 	st.wg.Add(2)
@@ -438,6 +445,8 @@ func (c *Client) readLoop(st *connState) {
 			// Includes the close this element performed itself, which is routine —
 			// every redial does it — so nothing is reported from here. The only
 			// thing that reports is the TIME_P2 deadline.
+			c.peerClosed(st)
+
 			return
 		}
 
@@ -470,6 +479,51 @@ func (c *Client) readLoop(st *connState) {
 				return
 			}
 		}
+	}
+}
+
+// watchClose is the read path for a connection the keepalive mechanism does not run on: it
+// reads only to learn that the peer has closed the connection, and discards what it reads.
+// A mediation function that does not implement clause 6.2.4 — the reason the mechanism can
+// be disabled — still closes idle connections, and without a reader nothing noticed.
+func (c *Client) watchClose(st *connState) {
+	defer st.wg.Done()
+
+	tmp := make([]byte, 512)
+	for {
+		if _, err := st.conn.Read(tmp); err != nil {
+			c.peerClosed(st)
+
+			return
+		}
+	}
+}
+
+// peerClosed drops st once its read side has failed, if it is still the connection this
+// client holds, so the next delivery dials a fresh one instead of writing into it.
+//
+// **A connection the mediation function has closed is not one a write can be trusted on.**
+// The kernel accepts the next write into a socket whose peer has gone, the peer answers it
+// with a reset, and only the write after that fails and redials — so the first delivery after
+// an idle close was lost with a nil error: no drop, no error, no fault, and a gap in the
+// sequence the mediation function could see and this element could not account for. The
+// reader already knew; it now says so.
+//
+// Not a fault, and the destination is not marked unreachable: a mediation function closing an
+// idle connection — a restart, a load balancer's idle timeout — is ordinary, and the next
+// delivery's dial establishes whether it can be reached. A read failure this element caused
+// by closing the connection itself finds st already replaced and does nothing.
+//
+// **A window remains**, between the peer's close arriving and this goroutine observing it and
+// taking the lock: a delivery in that interval is written into the closed socket as before.
+// It is the time a read takes to return, rather than the time until the next delivery happens
+// to fail.
+func (c *Client) peerClosed(st *connState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.live == st {
+		c.dropLocked()
 	}
 }
 
