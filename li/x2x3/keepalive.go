@@ -512,10 +512,19 @@ func (c *Client) watchClose(st *connState) {
 // sequence the mediation function could see and this element could not account for. The
 // reader already knew; it now says so.
 //
-// Not a fault, and the destination is not marked unreachable: a mediation function closing an
-// idle connection — a restart, a load balancer's idle timeout — is ordinary, and the next
-// delivery's dial establishes whether it can be reached. A read failure this element caused
-// by closing the connection itself finds st already replaced and does nothing.
+// **Dropping the connection also stops its keepalive timer, which is what used to find a dead
+// mediation function while nothing was being delivered.** Left at that, a mediation function
+// that crashed while idle would be reported reachable until the next delivery failed — and by
+// then a unit is already lost. So where the keepalive mechanism runs, the close is followed by
+// one redial (probeAfterPeerClose): a mediation function that answers gets a fresh connection
+// with its own keepalives, and one that does not is marked unreachable and reported, as a
+// failed keepalive would have been.
+//
+// The close itself is not a fault, and the destination is not marked unreachable over it: a
+// mediation function closing an idle connection — a restart, a load balancer's idle timeout —
+// is ordinary. With the mechanism disabled nothing probes an idle connection, as before, and the
+// next delivery's dial establishes whether it can be reached. A read failure this element
+// caused by closing the connection itself finds st already replaced and does nothing.
 //
 // **A window remains**, between the peer's close arriving and this goroutine observing it and
 // taking the lock: a delivery in that interval is written into the closed socket as before.
@@ -525,9 +534,102 @@ func (c *Client) peerClosed(st *connState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.live == st {
-		c.dropLocked()
+	if c.live != st {
+		return
 	}
+
+	c.dropLocked()
+
+	// Added under mu, where closed is read: Close sets closed under mu before it waits, so
+	// no probe can be added once that wait has begun.
+	if !c.keepalive.Disabled && !c.closed {
+		c.probes.Add(1)
+
+		go c.probeAfterPeerClose()
+	}
+}
+
+// probeAfterPeerClose redials a mediation function that closed an idle connection, to find
+// out whether it can still be reached without waiting for the next delivery.
+//
+// **One dial per redialInterval, at most.** It waits out the backoff a failed dial imposes,
+// and it spaces itself from the previous probe by the same interval: a peer that accepts and
+// immediately closes would otherwise be redialled as fast as the handshake completes.
+//
+// The dial happens without mu, so deliveries are not held behind it, and its outcome is
+// installed only if nothing else connected in the meantime: a delivery that dialled first
+// already holds the connection, and this one is closed unused. Close cancels the wait and the
+// dial, and waits for this goroutine.
+func (c *Client) probeAfterPeerClose() {
+	defer c.probes.Done()
+
+	c.mu.Lock()
+	wait := c.probeWaitLocked()
+	c.mu.Unlock()
+
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		select {
+		case <-c.lifetime.Done():
+			t.Stop()
+
+			return
+		case <-t.C:
+		}
+	}
+
+	c.mu.Lock()
+	if c.closed || c.live != nil {
+		c.mu.Unlock()
+
+		return
+	}
+	c.lastProbe = time.Now()
+	c.mu.Unlock()
+
+	conn, err := c.dial()
+
+	c.mu.Lock()
+	if c.closed || c.live != nil {
+		c.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+
+		return
+	}
+	if err != nil {
+		c.lastDialFailure, c.lastDialErr = time.Now(), err
+		// Set before the fault is reported, so a status request racing this cannot be
+		// answered "reachable" by an element that has just concluded otherwise — the rule
+		// expire follows.
+		c.unreachable.Store(true)
+		c.mu.Unlock()
+
+		c.fault(fmt.Errorf("x2x3: %s closed the connection and could not be reached again: %w", c.addr, err))
+
+		return
+	}
+	c.installLocked(conn)
+	c.mu.Unlock()
+}
+
+// probeWaitLocked is how long a post-close probe must wait before dialling: the remainder of
+// a failed dial's backoff, or of the spacing from the previous probe, whichever is longer.
+// The caller holds mu.
+func (c *Client) probeWaitLocked() time.Duration {
+	var wait time.Duration
+
+	if c.lastDialErr != nil {
+		wait = c.redialInterval - time.Since(c.lastDialFailure)
+	}
+	if !c.lastProbe.IsZero() {
+		if since := c.redialInterval - time.Since(c.lastProbe); since > wait {
+			wait = since
+		}
+	}
+
+	return wait
 }
 
 // handleInbound acts on one decoded PDU, reporting whether the reader continues.

@@ -58,6 +58,18 @@ type Client struct {
 	lastDialErr     error
 	// redialInterval is minRedialInterval, held per client so a test can shorten it.
 	redialInterval time.Duration
+	// lastProbe is when the most recent redial after a peer's close was started — see
+	// probeAfterPeerClose. Guarded by mu.
+	lastProbe time.Time
+
+	// lifetime is cancelled by Close. It bounds the dials this client makes, so a Close
+	// does not wait out a dial's timeout, and it is what a probe waiting out its backoff
+	// watches for.
+	lifetime context.Context
+	cancel   context.CancelFunc
+	// probes counts the post-close probes in flight, which belong to no connection and so
+	// are not covered by a connection's own wait group. Close waits for them.
+	probes sync.WaitGroup
 
 	// unreachable is what the most recent exchange with this destination established,
 	// kept outside mu because a fault probe reads it on the X1 request goroutine: mu is
@@ -145,6 +157,8 @@ func moreLost(err error, n int) error {
 // specification's own timers — so a caller that has no opinion gets the behaviour the
 // specification requires rather than none of it.
 func NewClient(addr string, tlsConfig *tls.Config, keepalive KeepaliveConfig) *Client {
+	lifetime, cancel := context.WithCancel(context.Background())
+
 	return &Client{
 		addr:         addr,
 		tlsConfig:    tlsConfig,
@@ -153,6 +167,8 @@ func NewClient(addr string, tlsConfig *tls.Config, keepalive KeepaliveConfig) *C
 		keepalive:    keepalive.withDefaults(),
 
 		redialInterval: minRedialInterval,
+		lifetime:       lifetime,
+		cancel:         cancel,
 	}
 }
 
@@ -204,8 +220,10 @@ func (c *Client) sendBytes(b []byte, boundaries []int) error {
 //
 // "Exchange" rather than "delivery attempt", since the keepalive mechanism: a connection
 // whose mediation function stops acknowledging is reported within TIME_P2 even though
-// nothing has been delivered over it. That is the improvement keepalive hands this probe —
-// a destination that dies while idle used to be invisible until the next send.
+// nothing has been delivered over it, and one whose mediation function closes it is redialled
+// at once and reported if that dial fails (see peerClosed). That is the improvement keepalive
+// hands this probe — a destination that dies while idle used to be invisible until the next
+// send. With the mechanism disabled it still is.
 //
 // It is still false before anything has been sent, deliberately, and the mechanism does not
 // change that: an element with nothing to deliver has not found its mediation function
@@ -378,17 +396,36 @@ func resumeAt(b []byte, boundaries []int, written int) (rest []byte, resuming bo
 }
 
 func (c *Client) dialLocked() error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.dialTimeout)
+	conn, err := c.dial()
+	if err != nil {
+		c.lastDialFailure, c.lastDialErr = time.Now(), err
+
+		return err
+	}
+	c.installLocked(conn)
+
+	return nil
+}
+
+// dial opens a connection to the mediation function without touching the client's state,
+// so a caller that must not hold mu across it — the post-close probe — can dial and decide
+// under the lock afterwards whether the connection is still wanted.
+func (c *Client) dial() (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(c.lifetime, c.dialTimeout)
 	defer cancel()
 
 	d := tls.Dialer{NetDialer: &net.Dialer{}, Config: c.tlsConfig}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		err = fmt.Errorf("x2x3: dial %s: %w", c.addr, err)
-		c.lastDialFailure, c.lastDialErr = time.Now(), err
-
-		return err
+		return nil, fmt.Errorf("x2x3: dial %s: %w", c.addr, err)
 	}
+
+	return conn, nil
+}
+
+// installLocked makes conn the held connection and starts what runs on its behalf. The
+// caller holds mu and has established that no connection is held.
+func (c *Client) installLocked(conn net.Conn) {
 	c.lastDialFailure, c.lastDialErr = time.Time{}, nil
 	c.live = &connState{conn: conn, stop: make(chan struct{})}
 
@@ -396,8 +433,6 @@ func (c *Client) dialLocked() error {
 	// other: they start here and stop in dropLocked, which is what makes a stale
 	// reader impossible and a keepalive on a connection nobody holds impossible.
 	c.startKeepaliveLocked(c.live)
-
-	return nil
 }
 
 func (c *Client) writeLocked(b []byte) (int, error) {
@@ -435,23 +470,27 @@ func (c *Client) dropLocked() {
 }
 
 // Close closes the underlying connection, if any, and waits for its keepalive timer
-// and reader to exit — so a caller that has closed a client is not left with
-// goroutines it cannot see. The wait happens after mu is released, for the reason
-// dropLocked gives.
+// and reader to exit, and for a post-close probe — so a caller that has closed a client
+// is not left with goroutines it cannot see. A probe mid-dial is cancelled rather than
+// waited out. The wait happens after mu is released, for the reason dropLocked gives.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
+	c.cancel()
 	live := c.live
-	if live == nil {
-		c.mu.Unlock()
-		return nil
-	}
-	err := live.conn.Close()
-	close(live.stop)
 	c.live = nil
+
+	var err error
+	if live != nil {
+		err = live.conn.Close()
+		close(live.stop)
+	}
 	c.mu.Unlock()
 
-	live.wg.Wait()
+	if live != nil {
+		live.wg.Wait()
+	}
+	c.probes.Wait()
 
 	return err
 }
