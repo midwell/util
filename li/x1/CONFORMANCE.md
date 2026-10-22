@@ -74,7 +74,7 @@ check:
 | ADMF Identifier | M | Emitted on every message. On inbound, bound per message to the configured responsible ADMF **and** to the peer's X.509 certificate (clause 8.2.4) — 1030 on a certificate mismatch, 1040 on an unexpected ADMF |
 | NE Identifier | M | Emitted from configuration. On inbound, a message naming a different NE is refused with 1060 |
 | MessageTimestamp | M | Emitted as the TS 103 280 Qualified Microsecond Date Time, rendered to a fixed six digits — see `li/README.md`, *X1 timestamps are rendered to a fixed six digits*, for why that is a conformance decision and not a formatting one |
-| Version | M | Emitted as `v1.6.1` on every message this element encodes, responses included: table 6.1-1 defines it as the version used to encode the message, not an echo of the request's. Read below |
+| Version | M | Emitted as `v1.6.1` on every message this element encodes, responses included: table 6.1-1 defines it as the version used to encode the message, not an echo of the request's. On inbound, a version other than `v1.x.y` is refused with 1020. Read below |
 | X1TransactionID | C | Echoed on every response. Generated per request when this element is the requester. Substituted when a peer's value is outside the TS 103 280 UUID format — see *Echo substitution* |
 
 **The Version this element originates is `v1.6.1`, and the behaviour is built against v1.21.1.** This is a
@@ -82,10 +82,8 @@ knowing understatement rather than a claim: clause 4.5 makes minor increments ba
 compatible, so declaring an older revision than you implement is the direction that cannot
 mislead a peer into expecting a message you do not answer. The reverse would be. It is
 recorded because "the version field says 1.6.1" is otherwise indistinguishable from an
-element that was built against v1.6.1, and this one was built against v1.21.1.
-
-As a requester, this element accepts an answer in any `v1.x.y`: the peer encodes its answer in
-its own version.
+element that was built against v1.6.1, and this one was built against v1.21.1. How the
+version of an answer this element receives is checked is under *This element as an X1 client*.
 
 **Echo substitution.** Every response echoes the request's `x1TransactionId`, and the schema
 restricts it to a UUID. A peer sending a value outside the restriction would otherwise make
@@ -418,6 +416,7 @@ does. The codes it emits, and what each means here:
 |---|---|---|
 | 1000 | Generic error | The fallback for a refusal no more specific code fits. Every path this element knows names a specific one |
 | 1010 | Syntax/schema error | A message violating its own schema: a missing mandatory element (`xId`, `dId`, `taskDetails`, `destinationDetails`); an identifier or target value outside the format the schema defines; a `deliveryType` outside its enumeration; an IPv6 destination address with a zone or in IPv4-mapped form; a `targetIdentifier` populating more than one arm of the schema's choice; a request carrying no message (answered as a `TopLevelError`) |
+| 1020 | Unsupported version | A message whose version is not a `v1.x.y`: another major version, or a value outside the schema's pattern. The description names the version this element supports |
 | 1030 | ADMF Identifier does not match certificate details | Clause 8.2.4 binding, and any message arriving without a client certificate |
 | 1040 | Unexpected ADMF Identifier | A peer in the LI domain that is not this element's responsible ADMF |
 | 1060 | Unexpected NE Identifier | A message addressed to a different element |
@@ -428,7 +427,7 @@ does. The codes it emits, and what each means here:
 | 3000 / 3001 | Generic ActivateTask / ModifyTask failure | Task details this element cannot honour and has no more specific code for, including an IMEI whose check digit does not match |
 | 3050 | Unsupported ServiceType | `listOfServiceTypes` |
 | 5010 | DeactivateAllTasks not enabled | `DeactivateAllTasks` on an element configured without it |
-| 6000 | Generic CreateDestination failure | A destination this element declines to create with no more specific code: an unrecognised destination extension, or a DID declared in configuration and referenced by an active task |
+| 6000 | Generic CreateDestination failure | A destination this element declines to create with no more specific code: an unrecognised destination extension, a DID declared in configuration and referenced by an active task, or a `UDPPort` of 0 (inside its type, but naming no endpoint) |
 | 6020 | Unsupported DeliveryAddress type | A URI, E.164 number or email address |
 | 8010 | Destinations in use | `RemoveAllDestinations` while a task still references one |
 | 8020 | RemoveAllDestinations not enabled | `RemoveAllDestinations` on an element that has not enabled it, the default |
@@ -499,10 +498,6 @@ through. Refused unless all of the following hold:
 | `admfIdentifier` is this element | The client-side form of the binding the server already performs |
 | The version is a v1.x.y | Table 6.1-1 defines Version as the version the sender used to encode the message, so a peer answers in its own version rather than echoing the request's, and clause 4.5 keeps minor increments compatible. A major version this element does not speak is refused |
 
-Outbound requests and reports accept an answer in any v1.x.y version: table 6.1-1 defines
-Version as the version the sender used to encode the message, so a peer answers in its own
-version rather than echoing the request's (clause 4.5).
-
 Outbound X1 requests do not follow HTTP redirects; a redirect is a failed request. An answer to
 an outbound request is read up to 16 MiB; a larger one is refused.
 
@@ -543,15 +538,11 @@ not got:
   inside the LI domain by a certificate holder — a threat this element does not otherwise
   address. Recorded so the omission reads as a decision.
 
-**Issue reports read only the transport status of the ADMF's answer**, and that is a
-considered non-change rather than an oversight. `ReportNEIssue` and `ReportTaskIssue` are
-fire-and-forget by design — the LI plane must not surface faults through any channel but this
-one, so a report that cannot be delivered has nowhere to go — and both callers discard the
-result. Binding those responses would produce an error nobody reads. What it would establish
-is that the *fault channel itself* can be misrouted: an endpoint that is not the ADMF can
-acknowledge a fault report, and this element would believe the ADMF had been told. It is
-recorded here because that is true and unaddressed, not because a validator with no reader
-would address it.
+**An issue report counts as delivered only on the responsible ADMF's word.** The answer to a
+`ReportNEIssue`, `ReportTaskIssue` or `ReportDestinationIssue` is bound like the answer to any
+other request this element sends — the peer's certificate, both identifiers, the transaction
+identifier and the response type — so an endpoint that is not the ADMF cannot acknowledge a
+fault report, and a refusal inside an HTTP 200 is not recorded as delivered.
 
 **The peer that answers is this package's own `Server`.** Worth stating, because it bounds
 both the risk and the evidence. In SD-Core the `Requester` is used by the SMF's CC triggering
@@ -576,10 +567,9 @@ plainly, so nobody mistakes its scope for a clean bill of health:
 - **Nothing here was verified against a strict third-party ADMF.** The interoperability
   evidence is against the reference simulator and against these packages' own endpoints. A gap
   that only a strict validator would reject has not been exercised.
-- **The client direction has the least evidence.** The suite's negative cases are all
-  absences — a path removed, a withdrawal watched to fail — and there is no fixture that
-  *answers* X1 on the SMF's behalf, so no test has yet observed this element reading a
-  well-formed answer it should have refused.
+- **The client direction is tested against this package's own `Server` and against stubs.**
+  The stubs answer from the wrong element, in the wrong version or with the wrong response
+  type, and each is refused; no third-party responder exists to test against.
 
 ## A held task's own faults
 
@@ -592,8 +582,9 @@ the warrant, rather than at element scope where the attribution would be lost.
 
 ## Known gaps
 
-No gap is known against the clauses this element implements. Closed gaps are not listed: the
-dispositions above describe the behaviour as it stands.
+None against the clauses this element implements, once the items under *Deliberate
+deviations* are read as decisions. The dispositions above describe the behaviour as it
+stands.
 
 **Deliberate divergences, which are not gaps**, are recorded above with their reasoning rather
 than repeated here: those under *Deliberate deviations*, the echo substitutions, the timestamp
