@@ -59,9 +59,12 @@ These follow the specification and are recorded here because each is a choice a 
 check:
 
 - **A task's target identifiers must all match** (table 6.2.1.2-1: "Where multiple criteria
-  are present, all criteria are required to be matched"). A task naming an identifier the
-  element does not evaluate, or a combination no subject or packet satisfies — two SUPIs, two
-  sessions, two directions, two port criteria — is refused (3000/3001) rather than narrowed.
+  are present, all criteria are required to be matched"). A combination no subject or packet
+  satisfies — two SUPIs, two sessions, two directions, two port criteria — is refused
+  (3000/3001) by these packages for every element; a task naming an identifier an element does
+  not evaluate is refused by that element's CanApply. Clause 5.1.1 says "A Task relates to a
+  single target identifier", while table 6.2.1.2-1 defines a list of criteria that must all
+  match; this element follows the table, which is the normative definition of the field.
 - **An ActivateTask for an XID already held** is acknowledged when it is identical to the held
   task, so a retried activation stays idempotent, and refused with 2010 when it differs:
   clause 6.2.1 makes a held XID an error, and a change goes through ModifyTask.
@@ -165,8 +168,9 @@ criteria.
 **This does not forbid a task from carrying several target identifiers.** A task's
 `targetIdentifiers` list may name several, and they are conjunctive: TS 103 221-1 table
 6.2.1.2-1, "Where multiple criteria are present, all criteria are required to be matched." An
-element refuses (3000/3001) a task naming an identifier it does not evaluate, or a combination
-no subject or packet satisfies — two SUPIs, two sessions, two directions, two port criteria.
+element refuses (3000/3001) a combination no subject or packet satisfies — two SUPIs, two
+sessions, two directions, two port criteria — and, through its CanApply, a task naming an
+identifier it does not evaluate.
 What is refused as a schema error (1010) is two arms inside *one* identifier. The two rules are
 about different levels of the structure.
 
@@ -417,9 +421,16 @@ the element sends a ReportNEIssue `FaultReport` with code 9050 and starts TIME_P
 1 min). An OK answer within TIME_P1 starts TIME_P3 (default 2 h); when TIME_P3 expires, or
 TIME_P1 expires with no OK answer, the element deactivates all tasks and sends an `Alert` with
 code 10000. Any X1 request ends the procedure, with a `FaultCleared` carrying 9050 when the
-`FaultReport` was delivered. An element configured to retain tasking restarts TIME_P2 instead.
-The procedure is enabled by default; a network function disables it only by configuration, and
-timers outside what the procedure allows are refused rather than silently ignored.
+`FaultReport` was delivered. An element configured to retain tasking restarts TIME_P2 instead,
+and reports 9050 again each time TIME_P2 expires while the ADMF stays silent. The procedure is
+enabled by default; a network function disables it only by configuration, and timers outside
+what the procedure allows are refused rather than silently ignored.
+
+An error answer to the `FaultReport` is not acted on until TIME_P1 expires: the clause
+conditions deactivation on an error answer "and no X1 request was received while timer P1 was
+running", which is known only once P1 has run. An element with no reporter to the ADMF runs the
+same procedure; its report cannot be answered, so it deactivates when TIME_P1 expires, and the
+`Alert` has nowhere to go.
 
 **Only an authenticated message resets TIME_P2 or ends the procedure.** Unauthenticated traffic must not, or
 anyone able to reach the X1 port could hold the fail-safe open indefinitely while the real

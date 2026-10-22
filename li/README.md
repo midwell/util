@@ -441,7 +441,9 @@ A task's criteria are a list, and they are **conjunctive**: traffic is intercept
 where every one of them matches (TS 103 221-1 table 6.2.1.2-1), so a list narrows — a
 session's F-SEID with a tunnel direction is that session's traffic in one direction. A
 combination no packet satisfies (two sessions, two directions, two ports) is refused at
-activation, as the same table requires.
+activation, as the same table requires, by these packages for every element. Clause 5.1.1
+says "A Task relates to a single target identifier"; the element follows table 6.2.1.2-1,
+which defines the field as a list of criteria that must all match.
 
 What is left is the two rule identifiers and the IPv6 form of UE IP Address.
 
@@ -1019,7 +1021,7 @@ The blocks above are what LI reads on disk; deployment tooling sets them for you
 | `keepaliveTimeout` | `keepalive_timeout` | TIME_P2 of the TS 103 221-1 clause 6.6.2 keepalive procedure: how long without an X1 request before fault 9050 is reported (Go duration; default `1h`). Set it longer than the ADMF's keepalive cadence, since the procedure ends in deactivating all tasks. The UPF also accepts the deprecated `trigger_keepalive`; setting both to different values is refused | optional |
 | `keepaliveTimeP1` | `keepalive_time_p1` | TIME_P1: how long to wait for the ADMF's answer to fault 9050 before deactivating all tasks (Go duration; default `1m`) | optional |
 | `keepaliveTimeP3` | `keepalive_time_p3` | TIME_P3: how long after an OK answer before all tasks are deactivated (Go duration; default `2h`) | optional |
-| `keepaliveRetainTasking` | `keepalive_retain_tasking` | `true` keeps all tasking when the procedure would deactivate it, restarting TIME_P2 instead. Boolean; default `false` | optional |
+| `keepaliveRetainTasking` | `keepalive_retain_tasking` | `true` keeps all tasking when the procedure would deactivate it, restarting TIME_P2 instead; the 9050 fault is then reported again each time TIME_P2 expires while the ADMF stays silent. Boolean; default `false` | optional |
 | `keepaliveDisabled` | `keepalive_disabled` | `true` runs no keepalive procedure at all, so tasking outlives a silent ADMF or triggering function. Boolean; default `false`, the specification's default of enabled | optional |
 | `deactivateAllTasks` | `deactivate_all_tasks` | Whether this element performs a bulk deactivation of all its tasking. Boolean; **unset means "no agreement in advance"**, which is the specification's default of *enabled*. Recommended `false` on the UPF — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
 | `removeAllDestinations` | `remove_all_destinations` | Whether this element performs a bulk removal of all its destinations. Boolean; unset means *disabled*, a deliberate deviation from the specification's default of enabled (TS 103 221-1 clause 6.3.4) — see *[Bulk deactivation is enabled by default](#bulk-deactivation-is-enabled-by-default)* | optional |
@@ -1165,6 +1167,9 @@ the rest of that host's firewall is persisted.
 - Removing the `li` block (or deactivating a warrant) stops all product for it;
   and the clause 6.6.2 keepalive procedure, enabled by default, deactivates all
   tasking if the ADMF falls silent, unless the element is configured otherwise.
+  An element with no `admfUrl`/`admf_url` runs the procedure too: its fault
+  report cannot be answered, so it deactivates when TIME_P1 expires, and the
+  Alert that follows has nowhere to go.
 - **One edge worth knowing when restarting the SMF under load.** A PDU session
   established while an SMF instance is *shutting down* takes its duplication rule
   from a process that is about to exit. The replacement SMF never knew that

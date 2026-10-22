@@ -319,13 +319,6 @@ func (s *Server) keepaliveDeactivate(faultAt time.Time) {
 		"all tasking was deactivated: no X1 request was received from the ADMF")
 }
 
-// purgeIfLapsed clears all tasking when no X1 request has arrived within timeout. It is the
-// purge the procedure performs, with the decision expressed as a window rather than as the
-// instant of a fault report.
-func (s *Server) purgeIfLapsed(timeout time.Duration) {
-	s.purgeIfSilent(func(lastSeen, now time.Time) bool { return now.Sub(lastSeen) > timeout })
-}
-
 // purgeIfSilentSince clears all tasking when no X1 request has arrived since t, and moves the
 // procedure to keepalivePurged.
 func (s *Server) purgeIfSilentSince(t time.Time) bool {

@@ -2257,8 +2257,10 @@ var armTypes = map[string]types.TargetIdentifierType{
 // leading zeros ("+80", "0080"), so one value has several valid spellings -- and a task
 // stored in one of them would never equal the identifier a consumer built in another. The
 // IPv6 type admits only the expanded lowercase form, so the parseable compressed forms a
-// peer may send are stored expanded, which is also the form the answers must use. No
-// consumer compares a stored IPv6 criterion as text, so the spelling costs no match.
+// peer may send are stored expanded, which is also the form the answers must use. Matching
+// compares the stored text (types.InterceptTask.MatchedBy), so a consumer presenting a UE
+// IPv6 address must present it expanded too; SD-Core's CC-POI refuses a UE IPv6 criterion
+// outright, so no deployed consumer compares one today.
 //
 // The value is not quoted in the refusal: for the subscriber identifiers it is a
 // subscriber's identity (see refuse).
