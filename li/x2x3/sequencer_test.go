@@ -157,7 +157,7 @@ func TestForgetContextLeavesSiblingContextsNumbering(t *testing.T) {
 }
 
 // TestForgetStillDropsEveryContextUnderTheXID pins the other primitive, because the two
-// are now easy to confuse and the failure directions are not symmetric: a Forget where a
+// are easy to confuse and the failure directions are not symmetric: a Forget where a
 // ForgetContext was needed corrupts live product, and a ForgetContext where a Forget was
 // needed leaks entries bounded by live tasking.
 func TestForgetStillDropsEveryContextUnderTheXID(t *testing.T) {
@@ -205,30 +205,24 @@ func TestForgetContextIsForwardedByIdentity(t *testing.T) {
 // needs the write lock, is either wholly before the lookup or wholly after the increment.
 //
 // Checked at the instant it matters rather than by racing two goroutines and hoping: inside that
-// window a writer must not be able to take the lock. When it could, a Next racing a deactivation
-// numbered its PDU from a counter Forget had just dropped, and the reactivated context then handed
-// the same numbers out again from zero.
+// window a writer must not be able to take the lock. If it could, a Next racing a deactivation
+// would number its PDU from a counter Forget had just dropped, and the reactivated context would
+// then hand the same numbers out again from zero.
 func TestAForgetCannotFallBetweenFindingACounterAndAdvancingIt(t *testing.T) {
 	s := NewSequencer()
 	s.Next(sampleXID, sampleCID) // creates the counter, so the next call takes the lookup path
 
 	reached := false
-	afterSequencerLookup = func(seq *Sequencer) {
-		if seq != s {
-			return
-		}
-
+	s.afterLookup = func() {
 		reached = true
 
-		if seq.mu.TryLock() {
-			seq.mu.Unlock()
+		if s.mu.TryLock() {
+			s.mu.Unlock()
 			t.Error("a writer could take the lock between Next finding the counter and advancing " +
 				"it, so Forget can drop the counter in that window and the number is handed out " +
 				"from a context that no longer exists")
 		}
 	}
-	t.Cleanup(func() { afterSequencerLookup = nil })
-
 	if got := s.Next(sampleXID, sampleCID); got != 1 {
 		t.Errorf("Next() = %d, want 1", got)
 	}

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,8 +123,8 @@ func (f *faultLog) count() int {
 // TestAMediationFunctionThatDiesWhileIdleIsFound: the mediation function closes the connection
 // and stops listening — it crashed, or its pod went — while nothing was being delivered. The
 // element must find that out from the close, not from the next delivery failing: dropping the
-// connection also stops its keepalive timer, which was what used to notice, and without a
-// redial the destination stayed "reachable" until a unit had already been lost.
+// connection also stops its keepalive timer, which is what would otherwise notice, and without
+// a redial the destination would stay "reachable" until a unit had already been lost.
 func TestAMediationFunctionThatDiesWhileIdleIsFound(t *testing.T) {
 	m := newProbeMDF(t, false, true)
 
@@ -210,8 +211,6 @@ func TestAPeerThatHangsUpAtOnceIsNotRedialledInALoop(t *testing.T) {
 // connection's wait group does not cover it. Close must stop it rather than wait for the
 // interval, and leave no goroutine behind.
 func TestCloseDoesNotWaitOutAProbe(t *testing.T) {
-	before := runtime.NumGoroutine()
-
 	m := newProbeMDF(t, true, false)
 
 	c := NewClient(m.addr, &tls.Config{InsecureSkipVerify: true}, KeepaliveConfig{}) //nolint:gosec // test transport
@@ -235,17 +234,33 @@ func TestCloseDoesNotWaitOutAProbe(t *testing.T) {
 		t.Errorf("Close took %s: it waited out a probe's spacing instead of stopping it", took)
 	}
 
-	_ = m.ln.Close()
-	eventually(t, "goroutines to return to the baseline", func() bool {
-		return runtime.NumGoroutine() <= before+4
-	})
+	// Counted by what they run rather than against a baseline: the mediation function's own
+	// goroutines come and go on their own schedule, and a count would have to allow for them.
+	eventually(t, "the client's goroutines to exit", func() bool { return clientGoroutines() == 0 })
+}
+
+// clientGoroutines counts the goroutines running a Client's own background work: keepalive
+// timers, readers and post-close probes.
+func clientGoroutines() int {
+	buf := make([]byte, 1<<20)
+	stacks := string(buf[:runtime.Stack(buf, true)])
+
+	n := 0
+	for _, fn := range []string{
+		"(*Client).probeAfterPeerClose", "(*Client).keepaliveLoop",
+		"(*Client).readLoop", "(*Client).watchClose",
+	} {
+		n += strings.Count(stacks, "x2x3."+fn+"(")
+	}
+
+	return n
 }
 
 // TestDeliveriesBetweenProbesDoNotMultiplyThem: every connection the peer closes asks for a
 // probe, and deliveries reconnect between them, so closes can arrive while a probe is still
-// waiting out its spacing. Each used to start a probe of its own; they woke together and all
-// dialled, so the spacing held per probe but not per destination. One probe at a time answers
-// for every close that arrives while it is in flight.
+// waiting out its spacing. A probe per close would wake beside the others and dial too, so the
+// spacing would hold per probe but not per destination. One probe at a time answers for every
+// close that arrives while it is in flight.
 func TestDeliveriesBetweenProbesDoNotMultiplyThem(t *testing.T) {
 	m := newProbeMDF(t, true, false)
 
@@ -273,7 +288,7 @@ func TestDeliveriesBetweenProbesDoNotMultiplyThem(t *testing.T) {
 
 // TestAProbeThatReconnectsMarksTheDestinationReachable: a successful probe is the element
 // finding the mediation function reachable, as a successful delivery would. Left unmarked, a
-// fault raised for an earlier outage stayed standing until traffic happened to flow.
+// fault raised for an earlier outage would stay standing until traffic happened to flow.
 func TestAProbeThatReconnectsMarksTheDestinationReachable(t *testing.T) {
 	m := newProbeMDF(t, false, false)
 

@@ -29,8 +29,8 @@ func TestAStaleExpiryReportsNothing(t *testing.T) {
 	c.expire(stale)
 
 	if c.Unreachable() {
-		t.Error("a deadline on a replaced connection marked a destination reachable over its live " +
-			"connection as unreachable")
+		t.Error("a deadline on a replaced connection marked the destination unreachable, " +
+			"although its live connection is answering")
 	}
 	if n := faults.Load(); n != 0 {
 		t.Errorf("a deadline on a replaced connection reported %d fault(s) about a mediation "+

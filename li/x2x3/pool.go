@@ -51,10 +51,11 @@ type Pool struct {
 // One condition, one report, whichever of the two mechanisms noticed it.
 //
 // **onError is therefore called from more than one goroutine at once**: each destination's
-// delivery worker, and each connection's keepalive and read goroutines. It must be safe for
-// concurrent use and must not block — Close waits for those goroutines, so a callback blocked
-// on something the closing goroutine holds would stall the close (bounded here by
-// closeTimeout, and unbounded for a caller closing a sender directly).
+// delivery worker, each connection's keepalive and read goroutines, and the probe that
+// follows a peer's close. It must be safe for concurrent use, must not block and must not
+// close the pool — Close waits for those goroutines, so a callback blocked on something the
+// closing goroutine holds would stall the close (bounded here by closeTimeout, and unbounded
+// for a caller closing a sender directly).
 func NewPool(tlsConfig *tls.Config, keepalive KeepaliveConfig, onError func(error), onDrop func()) *Pool {
 	if keepalive.OnFault == nil {
 		keepalive.OnFault = onError
@@ -202,7 +203,7 @@ func (p *Pool) UnreachableAmong(addrs []string) (unreachable, inUse int) {
 //
 // **A blackholed mediation function must not decide how long this element takes to stop.**
 // Closing a sender waits for its worker to finish the queue, and each unit is bounded only
-// by the client's own 5s write deadline — so one destination that accepts a connection and
+// by the client's own write deadline (defaultWriteTimeout) — so one destination that accepts a connection and
 // then reads nothing costs (queue depth × write timeout), which is minutes. A network
 // function shutting down inside a container's grace period is SIGKILLed part-way through its
 // LI teardown instead, and what a SIGKILL leaves is a POI whose X1 tasking was never

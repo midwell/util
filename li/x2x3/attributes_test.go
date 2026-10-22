@@ -6,6 +6,7 @@ package x2x3
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 )
@@ -77,6 +78,29 @@ func TestTimestampKeepsClockResolution(t *testing.T) {
 	got := Timestamp(time.Unix(1_767_225_600, nanos))
 	if n := binary.BigEndian.Uint32(got.Value[4:8]); n != nanos {
 		t.Errorf("nanoseconds = %d, want %d — the value was rounded", n, nanos)
+	}
+}
+
+// TestATimestampOutsideTheFieldIsClamped: the field carries 1970 to 2106. An instant outside
+// it is clamped to the nearest end rather than wrapped, so a zero time.Time does not encode as
+// an unrelated instant somewhere in the window.
+func TestATimestampOutsideTheFieldIsClamped(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		at          time.Time
+		secs, nanos uint32
+	}{
+		{"zero time", time.Time{}, 0, 0},
+		{"before 1970", time.Unix(-1, 500), 0, 0},
+		{"after 2106", time.Unix(math.MaxUint32+10, 7), math.MaxUint32, 999_999_999},
+	} {
+		got := Timestamp(tc.at)
+		if s := binary.BigEndian.Uint32(got.Value[0:4]); s != tc.secs {
+			t.Errorf("%s: seconds = %d, want %d", tc.name, s, tc.secs)
+		}
+		if n := binary.BigEndian.Uint32(got.Value[4:8]); n != tc.nanos {
+			t.Errorf("%s: nanoseconds = %d, want %d", tc.name, n, tc.nanos)
+		}
 	}
 }
 

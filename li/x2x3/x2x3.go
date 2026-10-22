@@ -21,14 +21,11 @@
 // (2026-03) field by field; CONFORMANCE.md in this directory records the
 // disposition of every header field, PDU type, conditional attribute and payload
 // format the specification defines, including what this package does not
-// implement. Read it before assuming a field is handled — that document, and
-// this comment, are claims rather than evidence, and the gaps it lists were
-// invisible for as long as the comment here asserted conformance without naming
-// a revision.
+// implement. Read it before assuming a field is handled.
 //
-// Interoperability against the independent sipgate li-lib implementation
-// exercises the parts both sides emit, which is why the gaps are all in fields
-// neither implementation ever sends.
+// Interoperability testing against an independent implementation exercises the
+// parts both sides emit; the gaps CONFORMANCE.md lists are in fields neither
+// implementation sends.
 package x2x3
 
 import (
@@ -43,25 +40,26 @@ import (
 // a build stamp. Value 5 is what V1.6.1 through V1.9.1 define; V1.10.1 raised it
 // to 6.
 //
-// It stays at 5, and the reason changed on 2026-08-14. It used to be that
-// keepalive was unimplemented, so claiming V1.10.1 would have hidden a gap; that
-// gap is now closed. What holds the bump back is the peer: probing the reference
-// implementation this project interoperates with found that it **refuses** a 0.6
-// PDU — it closes the connection and stores nothing — which is the same
-// exact-minor-version defect this package's own decoder had until the audit fixed
-// it, facing the other way. Clause 5.2.1 defines a minor increment as
-// backwards-compatible, so a conformant peer has to keep decoding; this one does
-// not, and raising the field would stop all delivery to it rather than degrade it.
-//
-// Evidence: tests/e2e-li/evidence-260814/x2-probe-keepalive.json. What would
-// unblock it is a mediation function that accepts 0.6, not work in this
-// repository.
+// It stays at 5 because of the peer, not this package: the reference
+// implementation of the mediation side that this package interoperates with
+// **refuses** a 0.6 PDU — it closes the connection and stores nothing. Clause
+// 5.2.1 defines a minor increment as backwards-compatible, so a conformant peer
+// has to keep decoding; this one does not, and raising the field would stop all
+// delivery to it rather than degrade it. What would unblock it is a mediation
+// function that accepts 0.6, not work in this package.
 const (
 	MajorVersion          = 0
 	MinorVersion          = 5
 	MandatoryHeaderLength = 40
 	CorrelationIDLength   = 8
 	xidLength             = 16
+
+	// sizePrefixLength is how much of a PDU states its full size: version (2), PDU type
+	// (2), header length (4) and payload length (4).
+	sizePrefixLength = 12
+	// maxTLVValueLength is the largest value a conditional attribute's 16-bit length
+	// field can state.
+	maxTLVValueLength = math.MaxUint16
 )
 
 // ErrIncomplete is returned by Unmarshal when the buffer does not yet hold a
@@ -192,38 +190,52 @@ func (p *PDU) validate() error {
 // entry point leaves the others faulting. What faults is the network function carrying the
 // delivery — an AMF's signalling goroutine or a UPF's framing worker — over invalid input,
 // which takes the element down rather than the mediation function it was delivering to.
-// SendBatch already guarded its own slice; Send and AsyncSender.Send did not, so behaviour
-// depended on whether a caller delivered one unit alone or through a batch.
+// Send, SendBatch and AsyncSender.Send refuse a nil unit at their own entry too, so the
+// error a caller gets does not depend on which of them it used.
 func (p *PDU) Marshal() ([]byte, error) {
 	if p == nil {
 		return nil, ErrNilPDU
 	}
+
+	return p.appendTo(nil)
+}
+
+// appendTo appends p's wire form to dst and returns the extended slice. On error dst is
+// returned unchanged: every check runs before anything is written.
+//
+// It is what lets a batch be built in one buffer — Client.SendBatch appends each PDU straight
+// into the write it will make — instead of marshalling each PDU and copying it in again.
+func (p *PDU) appendTo(dst []byte) ([]byte, error) {
 	if err := p.validate(); err != nil {
-		return nil, err
+		return dst, err
 	}
 
-	// Size the attribute region before allocating, so the header is written once
-	// into a buffer of its final length. Building the TLVs into a separate slice
-	// first would cost an allocation per PDU, which on X3 is an allocation per
-	// duplicated packet.
-	attrsLen := 0
+	// Size the attribute region before writing, so the header is written once into a
+	// buffer of its final length. Building the TLVs into a separate slice first would
+	// cost an allocation per PDU, which on X3 is an allocation per duplicated packet.
+	//
+	// Summed in int64, so the check below sees the true length even where int is 32 bits.
+	var attrsLen int64
 	for _, t := range p.Attributes {
-		if len(t.Value) > 0xFFFF {
-			return nil, fmt.Errorf("x2x3: TLV type %d value too long (%d bytes)", t.Type, len(t.Value))
+		if len(t.Value) > maxTLVValueLength {
+			return dst, fmt.Errorf("x2x3: TLV type %d value too long (%d bytes)", t.Type, len(t.Value))
 		}
-		attrsLen += 4 + len(t.Value)
+		attrsLen += 4 + int64(len(t.Value))
 	}
 
-	headerLen := MandatoryHeaderLength + attrsLen
-	if err := lengthsFit(int64(headerLen), int64(len(p.Payload))); err != nil {
-		return nil, err
+	if err := lengthsFit(MandatoryHeaderLength+attrsLen, int64(len(p.Payload))); err != nil {
+		return dst, err
 	}
-	out := make([]byte, headerLen, headerLen+len(p.Payload))
+	headerLen := MandatoryHeaderLength + int(attrsLen) // guarded by lengthsFit
+
+	start := len(dst)
+	dst = grow(dst, headerLen+len(p.Payload))[:start+headerLen]
+	out := dst[start:]
 	out[0] = MajorVersion
 	out[1] = MinorVersion
 	binary.BigEndian.PutUint16(out[2:4], uint16(p.Type))
-	binary.BigEndian.PutUint32(out[4:8], uint32(headerLen))
-	binary.BigEndian.PutUint32(out[8:12], uint32(len(p.Payload)))
+	binary.BigEndian.PutUint32(out[4:8], uint32(headerLen))       // guarded by lengthsFit
+	binary.BigEndian.PutUint32(out[8:12], uint32(len(p.Payload))) // guarded by lengthsFit
 	binary.BigEndian.PutUint16(out[12:14], uint16(p.PayloadFormat))
 	binary.BigEndian.PutUint16(out[14:16], uint16(p.Direction))
 	copy(out[16:32], p.XID[:])
@@ -232,24 +244,44 @@ func (p *PDU) Marshal() ([]byte, error) {
 	off := MandatoryHeaderLength
 	for _, t := range p.Attributes {
 		binary.BigEndian.PutUint16(out[off:off+2], t.Type)
-		binary.BigEndian.PutUint16(out[off+2:off+4], uint16(len(t.Value)))
+		binary.BigEndian.PutUint16(out[off+2:off+4], uint16(len(t.Value))) // checked above
 		off += 4
 		off += copy(out[off:], t.Value)
 	}
 
-	out = append(out, p.Payload...)
-	return out, nil
+	return append(dst, p.Payload...), nil
+}
+
+// grow returns b with room for n more bytes. A buffer with no room is replaced by one sized
+// exactly for a lone PDU and doubled for a batch, so marshalling one PDU allocates once and a
+// batch is not copied once per PDU.
+func grow(b []byte, n int) []byte {
+	if cap(b)-len(b) >= n {
+		return b
+	}
+
+	c := max(2*cap(b), len(b)+n)
+	nb := make([]byte, len(b), c)
+	copy(nb, b)
+
+	return nb
 }
 
 // lengthsFit refuses a header or payload too long for the 32-bit length field that states it.
 // Writing the truncated length would produce a PDU whose own framing is wrong, which a
 // receiver reading a stream of them cannot recover from — every PDU after it is misframed.
+//
+// It also refuses a PDU whose total length is not an int, which is reachable only where int
+// is 32 bits: the buffer that would hold it cannot be allocated.
 func lengthsFit(headerLen, payloadLen int64) error {
 	if headerLen > math.MaxUint32 {
 		return fmt.Errorf("x2x3: header of %d bytes does not fit its 32-bit length field", headerLen)
 	}
 	if payloadLen > math.MaxUint32 {
 		return fmt.Errorf("x2x3: payload of %d bytes does not fit its 32-bit length field", payloadLen)
+	}
+	if headerLen+payloadLen > math.MaxInt {
+		return fmt.Errorf("x2x3: a PDU of %d bytes is too large to build", headerLen+payloadLen)
 	}
 
 	return nil
@@ -259,8 +291,7 @@ func lengthsFit(headerLen, payloadLen int64) error {
 // number of bytes it consumed (so callers can frame a stream). It returns
 // ErrIncomplete if b does not yet hold a complete PDU.
 func Unmarshal(b []byte) (*PDU, int, error) {
-	// Need at least version(2)+type(2)+headerLen(4)+payloadLen(4) to size the PDU.
-	if len(b) < 12 {
+	if len(b) < sizePrefixLength {
 		return nil, 0, ErrIncomplete
 	}
 	headerLen := binary.BigEndian.Uint32(b[4:8])
@@ -277,8 +308,8 @@ func Unmarshal(b []byte) (*PDU, int, error) {
 	// addition, so a peer ahead of us on the minor number is required to remain
 	// decodable: it can only have added a PDU type, direction, conditional
 	// attribute or payload format, none of which changes the layout parsed here.
-	// Rejecting that peer outright — which this did — would refuse a conformant
-	// MDF running a newer revision than ours.
+	// Rejecting that peer outright would refuse a conformant MDF running a newer
+	// revision than ours.
 	// A differing minor in either direction stays decodable: a lower one uses a
 	// subset of what we know, a higher one adds values that do not move any field.
 	if b[0] != MajorVersion {

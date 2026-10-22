@@ -5,6 +5,7 @@ package x2x3
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 )
 
@@ -72,8 +73,9 @@ func SequenceNumber(n uint32) TLV {
 // Unsigned is what the clause says, so these eight octets carry every instant from
 // 1970 to 2106. The clause's own NOTE — that timestamps after 2038 cannot be
 // encoded — reads the field as signed, which it is not, so there is nothing here to
-// design around. An instant outside that window (a zero time.Time, say) encodes to
-// a wrong one rather than to an error; the caller passes a clock reading.
+// design around. An instant outside that window (a zero time.Time, say) is clamped to
+// the nearest end of it rather than wrapped into an unrelated instant; the caller
+// passes a clock reading, so that is not a value it should meet.
 //
 // This function timestamps nothing itself, deliberately. What belongs here is the
 // time the *event* occurred on X2 (TS 33.128 table 5.3.2-2) and the time the xCC was
@@ -85,9 +87,17 @@ func SequenceNumber(n uint32) TLV {
 // six-digit rule that governs X1's textual timestamps is a rendering rule for a
 // different interface; applying it here would discard precision for nothing.
 func Timestamp(t time.Time) TLV {
+	secs, nanos := t.Unix(), uint32(t.Nanosecond()) // Nanosecond is in [0, 1e9)
+	switch {
+	case secs < 0:
+		secs, nanos = 0, 0
+	case secs > math.MaxUint32:
+		secs, nanos = math.MaxUint32, 999_999_999
+	}
+
 	var v [8]byte
-	binary.BigEndian.PutUint32(v[0:4], uint32(t.Unix()))
-	binary.BigEndian.PutUint32(v[4:8], uint32(t.Nanosecond()))
+	binary.BigEndian.PutUint32(v[0:4], uint32(secs)) // clamped above
+	binary.BigEndian.PutUint32(v[4:8], nanos)
 
 	return TLV{Type: AttrTimestamp, Value: v[:]}
 }

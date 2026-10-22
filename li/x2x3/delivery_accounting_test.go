@@ -18,9 +18,9 @@ func (failingBatchSender) SendBatch([]*PDU) error { return errors.New("refused")
 func (failingBatchSender) Close() error           { return nil }
 
 // TestAFailedDeliveryCountsEveryUnitItLost: a failed delivery is accounted per product unit,
-// not per call. The delivery worker writes up to maxDeliveryBatch units at once, and a batch
-// that failed used to reach the network function as one error — a thousand units lost to a
-// refusing destination read as a few dozen failures, and nothing could recover the number.
+// not per call. The delivery worker writes up to maxDeliveryBatch units at once, so one error
+// covers many units; counted per error, a thousand units lost to a refusing destination would
+// read as a few dozen failures, and nothing could recover the number.
 func TestAFailedDeliveryCountsEveryUnitItLost(t *testing.T) {
 	free, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

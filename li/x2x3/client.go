@@ -45,10 +45,10 @@ type Client struct {
 	// see connState.
 	live *connState
 	// closed records that Close was called, which deliver has to know: it treats a nil
-	// live as "not connected yet" and dials. Without this a Send after Close delivered
-	// product over a *new* connection to a destination this element had finished with —
-	// AsyncSender guards that for every pooled caller today, and a client should not
-	// depend on its wrapper for a property of its own lifecycle.
+	// live as "not connected yet" and dials, so without this a Send after Close would
+	// deliver product over a *new* connection to a destination this element has finished
+	// with. AsyncSender guards that for pooled callers too, but a client should not depend
+	// on its wrapper for a property of its own lifecycle.
 	closed bool
 
 	// lastDialFailure and lastDialErr record the most recent dial that failed, and are
@@ -89,13 +89,13 @@ type Client struct {
 // accounted as lost like any other failed delivery.
 //
 // **Without it an unreachable mediation function costs a dial per batch.** A refusing
-// destination fails each dial in microseconds, so the delivery worker dialled — TCP and a TLS
-// handshake attempt — as fast as product arrived, and reported an error for each: the rate of
-// both tracked the offered load, which on X3 is the subject's packet rate, not any retry
-// schedule.
+// destination fails each dial in microseconds, so the delivery worker would dial — TCP and a
+// TLS handshake attempt — as fast as product arrived, and report an error for each: the rate
+// of both would track the offered load, which on X3 is the subject's packet rate, not any
+// retry schedule.
 //
 // One second bounds that to one dial per destination per second. It is the resolution TS 103
-// 221-2 clause 6.2.4 expresses its own connection timers in, and it is short against how long
+// 221-2 table C.4-1 gives the keepalive timers in, and it is short against how long
 // an outage that refuses connections lasts. What it costs is product offered in the second
 // after a failed dial, which is refused without an attempt — product a dial would almost
 // certainly have lost as well, since the last one a moment ago failed.
@@ -108,11 +108,11 @@ const minRedialInterval = time.Second
 // DeliveryError is a delivery failure together with how many product units it cost.
 //
 // **A failed delivery is counted in units, not in calls.** The delivery worker writes up to
-// maxDeliveryBatch units at once, and a batch that fails used to reach the network function
-// as one error, so an element whose mediation function was refusing connections reported a
-// few dozen errors while losing a thousand units — and nothing in its own account could
-// recover the number the mediation function would see missing from its sequence. Every error
-// the delivery worker reports carries the count; LostUnits reads it.
+// maxDeliveryBatch units at once, so a batch that fails is one error for many units. Counted
+// per error, an element whose mediation function refuses connections would report a few
+// dozen errors while losing a thousand units, and nothing in its own account could recover
+// the number the mediation function sees missing from its sequence. Every error the delivery
+// worker reports carries the count; LostUnits reads it.
 //
 // It wraps the failure, so errors.Is still finds ErrUnitDropped and ErrNilPDU through it.
 type DeliveryError struct {
@@ -157,6 +157,14 @@ func moreLost(err error, n int) error {
 	return lostUnits(n, err)
 }
 
+// defaultDialTimeout bounds a connection attempt, TCP and TLS handshake together. A dial runs
+// under the client's lock, so this is also the longest a delivery can wait behind one.
+const defaultDialTimeout = 10 * time.Second
+
+// defaultWriteTimeout bounds one write, so a mediation function that accepts a connection and
+// stops reading cannot hold delivery, and every Send behind the lock, indefinitely.
+const defaultWriteTimeout = 5 * time.Second
+
 // NewClient returns a delivery client for the MDF at addr ("host:port").
 //
 // The zero KeepaliveConfig is the conformant one — the clause 6.2.4 mechanism, at the
@@ -168,8 +176,8 @@ func NewClient(addr string, tlsConfig *tls.Config, keepalive KeepaliveConfig) *C
 	return &Client{
 		addr:         addr,
 		tlsConfig:    tlsConfig,
-		dialTimeout:  10 * time.Second,
-		writeTimeout: 5 * time.Second,
+		dialTimeout:  defaultDialTimeout,
+		writeTimeout: defaultWriteTimeout,
 		keepalive:    keepalive.withDefaults(),
 
 		redialInterval: minRedialInterval,
@@ -202,6 +210,7 @@ func (c *Client) Send(pdu *PDU) error {
 // sendBytes writes already-marshalled PDU bytes and records what the attempt established
 // about the destination. One place records it, so the answer Unreachable gives cannot
 // disagree with the outcome the caller saw.
+//
 // boundaries are the offsets at which each product unit in b ends, so a retry after a
 // partial write can resume at one. Nil means b is a single unit.
 func (c *Client) sendBytes(b []byte, boundaries []int) error {
@@ -224,12 +233,12 @@ func (c *Client) sendBytes(b []byte, boundaries []int) error {
 // would hold up a provisioning function's answer and — with a short enough timeout at the
 // other end — could make a working element look dead while it asked itself a slow question.
 //
-// "Exchange" rather than "delivery attempt", since the keepalive mechanism: a connection
+// "Exchange" rather than "delivery attempt", because of the keepalive mechanism: a connection
 // whose mediation function stops acknowledging is reported within TIME_P2 even though
 // nothing has been delivered over it, and one whose mediation function closes it is redialled
-// at once and reported if that dial fails (see peerClosed). That is the improvement keepalive
-// hands this probe — a destination that dies while idle used to be invisible until the next
-// send. With the mechanism disabled it still is.
+// — once any redial backoff and the spacing between probes have passed (see
+// probeAfterPeerClose) — and reported if that dial fails. So a destination that dies while
+// idle is found without waiting for the next send. With the mechanism disabled it is not.
 //
 // It is still false before anything has been sent, deliberately, and the mechanism does not
 // change that: an element with nothing to deliver has not found its mediation function
@@ -281,17 +290,16 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 	// outcome deduplicating destinations by address exists to prevent, arrived at from
 	// the delivery mechanism instead of the destination list.
 	//
-	// **A unit the write stopped inside is resumed from its own start, not skipped.** It
-	// used to be dropped, on the reasoning that a receiver reading the head of a stream
-	// would take the tail of a unit as the start of one. That is true of resuming mid-unit
-	// on the *same* stream, and false of the fresh connection the retry actually goes out
-	// on: a TCP connection is its own stream and this one begins at a frame boundary, so a
-	// whole unit sent on it cannot be read as anybody's tail. Nor can it duplicate: a unit
-	// the kernel did not accept in full is one the peer cannot have received in full,
-	// because a write reports what it took and never more.
+	// **A unit the write stopped inside is resumed from its own start, not skipped.**
+	// Skipping it would be right when resuming mid-unit on the *same* stream, where a
+	// receiver reading on would take the tail of a unit as the start of one. The retry goes
+	// out on a fresh connection instead: a TCP connection is its own stream and this one
+	// begins at a frame boundary, so a whole unit sent on it cannot be read as anybody's
+	// tail. Nor can it duplicate: a unit the kernel did not accept in full is one the peer
+	// cannot have received in full, because a write reports what it took and never more.
 	//
-	// So the loss the drop represented is recovered where the retry lands, and the leading
-	// complete units are still not resent.
+	// So the unit is recovered where the retry lands, and the leading complete units are
+	// still not resent.
 	rest, resuming := resumeAt(b, boundaries, n)
 	// Whether anything reached the old connection whole, which is what makes a later
 	// failure a partial success rather than a total one.
@@ -354,11 +362,10 @@ func unitsIn(boundaries []int, total, restLen int) int {
 //
 // It is a distinct error because the two outcomes call for different reports and this
 // element must not conflate them. A destination that took the rest of the batch is
-// *reachable*; what happened is that product was lost. Returning an ordinary error here
-// made sendBytes mark the destination unreachable, which is the same mistake the drop
-// hooks exist to avoid — mdfUnreachable and the delivery-lost conditions are deliberately
-// separate, because a reachability probe answers "can this element deliver at all" and a
-// loss answers "something did not arrive". A watcher told the destination is down would
+// *reachable*; what happened is that product was lost. An ordinary error here would make
+// sendBytes mark the destination unreachable. Reachability and loss are reported
+// separately, because a reachability probe answers "can this element deliver at all" and a
+// loss answers "something did not arrive": a watcher told the destination is down would
 // report a fault about a mediation function that is working, and retract it on the next
 // successful send.
 var ErrUnitDropped = errors.New("x2x3: the tail of a partially written batch could not be resent and was dropped")
@@ -392,7 +399,7 @@ func resumeAt(b []byte, boundaries []int, written int) (rest []byte, resuming bo
 		if end > written {
 			// The write stopped inside this unit. Everything before it was accepted whole
 			// and is not resent; this one was not, so it goes out again from its own
-			// start — where the old code skipped to b[end:] and lost it.
+			// start rather than being skipped.
 			return b[start:], true
 		}
 		start = end
@@ -455,9 +462,7 @@ func (c *Client) writeLocked(b []byte) (int, error) {
 	}
 	// n is returned rather than discarded: it is what the peer actually received, and
 	// therefore what a retry must not send again.
-	n, err := c.conn().Write(b)
-
-	return n, err
+	return c.conn().Write(b)
 }
 
 // conn is the held connection. Callers hold mu, and every one of them has already
@@ -474,15 +479,24 @@ func (c *Client) dropLocked() {
 	if c.live == nil {
 		return
 	}
+	// The connection is being abandoned; its close error describes a connection this
+	// element has already decided not to use, and the caller acts on its own error.
 	_ = c.live.conn.Close()
 	close(c.live.stop)
 	c.live = nil
 }
 
-// Close closes the underlying connection, if any, and waits for its keepalive timer
-// and reader to exit, and for a post-close probe — so a caller that has closed a client
-// is not left with goroutines it cannot see. A probe mid-dial is cancelled rather than
-// waited out. The wait happens after mu is released, for the reason dropLocked gives.
+// Close closes the held connection, if any, and waits for its keepalive timer and reader
+// to exit, and for a post-close probe — so a caller that has closed a client is not left
+// with goroutines it cannot see. A probe mid-dial is cancelled rather than waited out. The
+// wait happens after mu is released, for the reason dropLocked gives.
+//
+// The goroutines of a connection dropped earlier are not waited for: dropLocked does not
+// wait for them, and they exit on their own as soon as they observe the closed connection,
+// without touching the client (see dropLocked).
+//
+// Close waits for the goroutines that call OnFault, so calling Close from OnFault
+// deadlocks.
 func (c *Client) Close() error {
 	// Cancelled before mu is taken: a delivery dialling under mu would otherwise hold Close
 	// behind its dial timeout, which is what lifetime exists to prevent.
@@ -508,7 +522,7 @@ func (c *Client) Close() error {
 	return err
 }
 
-// SendBatch marshals several PDUs and writes them with a single call. PDUs are
+// SendBatch marshals several PDUs into one buffer and writes them with a single call. PDUs are
 // self-delimiting, so concatenating them needs no additional framing, and the
 // receiver reads them exactly as it would separate writes. Fewer syscalls and
 // fuller TLS records matter when a heavy target's content is the thing being
@@ -550,7 +564,7 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 			continue
 		}
 
-		b, err := pdu.Marshal()
+		next, err := pdu.appendTo(buf)
 		if err != nil {
 			if marshalErr == nil {
 				marshalErr = err
@@ -560,7 +574,7 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 			continue
 		}
 
-		buf = append(buf, b...)
+		buf = next
 		ends = append(ends, len(buf))
 	}
 

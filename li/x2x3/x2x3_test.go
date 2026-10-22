@@ -16,7 +16,7 @@ var (
 )
 
 // TestMarshalGolden pins the exact byte layout against a hand-derived vector so
-// any drift from the TS 103 221-2 / sipgate wire format is caught.
+// any drift from the TS 103 221-2 wire format is caught.
 func TestMarshalGolden(t *testing.T) {
 	p := &PDU{
 		Type:          PDUTypeX2,

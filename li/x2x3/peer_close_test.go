@@ -73,8 +73,8 @@ func newClosingMDF(t *testing.T) *closingMDF {
 // TestAConnectionThePeerClosedIsNotWrittenInto: a mediation function closes an idle
 // connection, and the next deliveries must arrive or fail — never be written into the closed
 // socket and reported delivered. The kernel accepts that write, the peer answers it with a
-// reset, and only the write after it used to fail, so the first delivery after an idle close
-// vanished with a nil error.
+// reset, and only the write after it fails, so without the reader dropping the connection the
+// first delivery after an idle close would vanish with a nil error.
 //
 // With the keepalive mechanism and without it: a mediation function that does not implement
 // clause 6.2.4 is the reason the mechanism can be disabled, and it closes idle connections too.

@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// TestForAfterCloseBuildsNothing: Close empties the sender map rather than marking
-// the pool, so a delivery arriving after it used to miss the cache and construct a
-// fresh sender — with a worker goroutine behind it — into a pool nobody will close
-// again. A worker outliving the shutdown meant to end it, still holding a
-// connection to a mediation function this element no longer answers for.
+// TestForAfterCloseBuildsNothing: Close empties the sender map, so without the closed
+// flag a delivery arriving after it would miss the cache and construct a fresh sender —
+// with a worker goroutine behind it — into a pool nobody will close again: a worker
+// outliving the shutdown meant to end it, still holding a connection to a mediation
+// function this element no longer answers for.
 //
 // What a closed pool hands back is a sender that discards, not nil. The assertion
 // is on the *type* rather than on nil-ness, because "builds nothing" is the property
@@ -87,13 +87,11 @@ func TestClosedPoolReportsNoFault(t *testing.T) {
 // TestAClosedPoolReportsItsLateProduct: product offered to a closed pool is dropped, and
 // the drop is reported through the POI's own hook.
 //
-// It used to be silent, on the reasoning that a closed pool belongs to an element shutting
-// down, so there is no ADMF exchange left to carry a report and no operator action it would
-// prompt. Half of that holds; the other half does not. A pool is also closed by a
-// reconfiguration, where the ADMF is reachable and this is simply product the element
-// produced and did not deliver — and deciding on the caller's behalf that nobody wants to be
-// told is the shape of mistake this whole plane keeps making. What a POI does with the hook
-// during its own teardown is the POI's business.
+// A closed pool usually belongs to an element shutting down, where a report may not arrive;
+// but a pool is also closed by a reconfiguration, where the ADMF is reachable and this is
+// simply product the element produced and did not deliver. Staying silent would decide on
+// the caller's behalf that nobody wants to be told. What a POI does with the hook during its
+// own teardown is the POI's business.
 func TestAClosedPoolReportsItsLateProduct(t *testing.T) {
 	drops := 0
 	p := NewPool(nil, KeepaliveConfig{}, nil, func() { drops++ })

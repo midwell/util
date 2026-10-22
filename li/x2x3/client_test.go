@@ -120,13 +120,11 @@ func TestClientSendAndRedial(t *testing.T) {
 	// Close is terminal: a Send after it is refused rather than delivered over a fresh
 	// connection.
 	//
-	// This assertion used to be the opposite — that the client redialled — and the old
-	// contract is what the change corrects. A closed client is one whose caller has
-	// finished with the destination: a purge, a reconfiguration, an element shutting
-	// down. Delivering product to it afterwards, on a connection opened *after* the
-	// decision to stop, is the delivery mechanism outliving the authority for it.
-	// AsyncSender guards this for every pooled caller today, and the client should not
-	// depend on its wrapper for a property of its own lifecycle.
+	// A closed client is one whose caller has finished with the destination: a purge, a
+	// reconfiguration, an element shutting down. Delivering product to it afterwards, on a
+	// connection opened *after* the decision to stop, is the delivery mechanism outliving
+	// the authority for it. AsyncSender guards this for pooled callers too, but the client
+	// should not depend on its wrapper for a property of its own lifecycle.
 	client.Close()
 	if err := client.Send(pdu); err == nil {
 		t.Error("a Send after Close delivered product on a new connection")
@@ -203,8 +201,8 @@ func TestSendBatchReportsMarshalFailure(t *testing.T) {
 
 // TestSendBatchReportsANilPDU: a nil entry is treated as the loss it is, not as a
 // reason to fault the network function. SendBatch is exported and dereferences a
-// slice its caller owns, so this is the defence in depth behind the AsyncSender fix
-// that stopped a nil being put there in the first place.
+// slice its caller owns, so this is the defence in depth behind AsyncSender.Send, which
+// refuses a nil before it can be queued.
 func TestSendBatchReportsANilPDU(t *testing.T) {
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{selfSignedServer(t)}})
 	if err != nil {

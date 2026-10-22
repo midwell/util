@@ -10,10 +10,6 @@ refers to that revision. When a newer revision is published, this document is wh
 whether the code disagrees with the specification or merely predates it — that distinction
 is the reason the version is stated at the top rather than left implied.
 
-**This disposition was last reviewed 2026-08-15.** The revision above says what was read;
-this says when, so that a statement quoted from here can be checked against the revision of
-this document it was taken from.
-
 ## What this is, and what it is not
 
 This is a **reading**, not a check. ETSI publishes no machine-readable definition of the
@@ -21,19 +17,17 @@ X2/X3 framing: the sole attachment to part 2 is `TS_103_221_02_Configuration.xsd
 describes how an X2/X3 interface is *configured* over **X0** — annex C.1 opens "this annex
 is only applicable when the X0 interface (see ETSI TS 104 000) is used", and the schema
 extends `etsi104000:ConfigurationDetails` in namespace `urn:etsi:li:104000:xsdns:v2` — and
-says nothing about the PDU layout. (It said "over X1" here until 2026-08-14. TS 103 221-1
-defines no message carrying these fields, so there was never an X1 route to support or to
-decline; the element implements no X0 interface and the timers are deployment
-configuration.) The X1 side of this project can and does verify
-itself against a published XSD on every build; nothing equivalent is possible here, so this
-document is a per-field disposition maintained by hand and is only as current as its version
-stamp.
+says nothing about the PDU layout. TS 103 221-1 defines no message carrying these fields
+either; this element implements no X0 interface, and the timers are deployment
+configuration. The X1 side verifies itself against a published XSD on every build; nothing
+equivalent is possible here, so this document is a per-field disposition maintained by hand
+and is only as current as the revision it names.
 
 Two things do provide external validation, and it is worth being precise about what each
 covers:
 
-- **Interoperability testing against the independent sipgate li-lib implementation.** This
-  catches anything that breaks decode — a wrong offset, a bad length, a mis-ordered field.
+- **Interoperability testing against an independent reference implementation of the
+  mediation side.** This catches anything that breaks decode — a wrong offset, a bad length, a mis-ordered field.
   It cannot catch a field or PDU type that *neither* implementation emits, because nothing
   ever exercises it. Every gap recorded below is of that second kind.
 - **A table-driven test over the payload format table** (`x2x3_test.go`), which asserts the
@@ -60,30 +54,24 @@ attribute or payload format).
 | V1.9.1 (2025-08) | 5 |
 | V1.10.1 (2026-03) | **6** (major 0, minor 6) |
 
-This table was compiled by reading clause 5.2.1 of each revision, because the change-history
-annex flattens ambiguously and invites the conclusion that the value had been static since
-2019. It had not; it changed once, in V1.10.1.
+The table is compiled from clause 5.2.1 of each revision rather than from the change-history
+annex, which flattens ambiguously. The value changes once, in V1.10.1.
 
-**This package emits 5**, which was correct for every revision through V1.9.1.
+**This package emits 5**, the value for every revision through V1.9.1.
 
-The reason it is not 6 changed on 2026-08-14. It used to be that keepalive was
-unimplemented, so the field would have asserted conformance to a revision this element did
-not meet. Keepalive is now implemented — see the PDU type table below — and the bump is
-held back by the peer instead: the reference implementation this project interoperates with
-**refuses a 0.6 PDU**, closing the connection and storing nothing
-(`tests/e2e-li/evidence-260814/x2-probe-keepalive.json`). Confirmed from that peer's own
-source, which it ships with its classes: `li-lib-x1x2x3` 1.0.3 holds `MINOR_VERSION = 5` and
-throws on anything else. Clause 5.2.1 makes a minor
-increment backwards-compatible, so that is a defect in the peer — and one that would cost
-all delivery to it, not part of it, if this element raised the field.
+It is not 6 because of the peer. Keepalive, the mechanism V1.10.1 conformance depends on, is
+implemented — see the PDU type table below — but the reference implementation this package
+interoperates with **refuses a 0.6 PDU**, closing the connection and storing nothing. Its own
+source agrees: `li-lib-x1x2x3` 1.0.3 holds `MINOR_VERSION = 5` and throws on anything else.
+Clause 5.2.1 makes a minor increment backwards-compatible, so that is a defect in the peer —
+and one that would cost all delivery to it, not part of it, if this element raised the field.
 
 So this is blocked on a mediation function that accepts 0.6, not on work here. It is the
 one gap in this document whose remedy is not in this repository.
 
 **On decode**, a differing minor version is accepted and a differing major version is
-rejected, which follows the compatibility rule the clause defines. This package is no longer
-write-only: the keepalive reader is the first thing here that reads an X2/X3 socket, so that
-leniency is now load-bearing rather than latent. The read path is bounded — a peer's
+rejected, which follows the compatibility rule the clause defines. The keepalive reader reads
+an X2/X3 socket, so that leniency is load-bearing. The read path is bounded — a peer's
 declared length beyond a few kilobytes is refused and the connection dropped — because
 `Unmarshal` waits for as many bytes as a header claims and imposes no maximum of its own.
 
@@ -109,7 +97,7 @@ declared length beyond a few kilobytes is refused and the connection dropped —
 | 1 | X2 PDU | **Emitted** by the AMF and SMF IRI-POIs. |
 | 2 | X3 PDU | **Emitted** by the UPF CC-POI. |
 | 3 | Keepalive | **Emitted**, on every X2/X3 connection at least every TIME_P1 (default 60 s), unconditionally rather than when idle — product PDUs are not acknowledged, so traffic says nothing about the mediation function's liveness. Also **answered**: a Keepalive arriving at this element is acknowledged with its own Sequence Number, clause 6.2.4 making both types supported by POIs *and* MDFs. |
-| 4 | Keepalive Acknowledgement | **Emitted and read.** Read to apply the TIME_P2 rule (default 180 s), measured from the last *valid* acknowledgement seen rather than per Keepalive; on expiry the connection is disconnected, redialled and reported to the ADMF as `mdfUnreachable`. **What establishes liveness is the Sequence Number**: clause 6.2.4 numbers the acknowledgement from the Keepalive it answers, so the number is the only evidence available that the peer is answering *this element* rather than emitting traffic. An acknowledgement carrying no usable number, or one beyond what this connection has issued, is counted as a mismatch and does **not** postpone TIME_P2 — a peer stuck in a loop, a middlebox replaying, and an endpoint a misroute put in the path all satisfy "something is answering", and each of them takes no product. It is not treated as a protocol error either: the connection is not torn down over a numbering defect in a peer that is carrying product, so the fail-safe decides. This changed on 2026-08-19; previously any acknowledgement refreshed the deadline and the mismatch was counted and acted on nowhere. |
+| 4 | Keepalive Acknowledgement | **Emitted and read.** Read to apply the TIME_P2 rule (default 180 s), measured from the last *valid* acknowledgement seen rather than per Keepalive; on expiry the connection is disconnected, redialled and reported to the ADMF as an unreachable destination. **What establishes liveness is the Sequence Number**: clause 6.2.4 numbers the acknowledgement from the Keepalive it answers, so the number is the only evidence available that the peer is answering *this element* rather than emitting traffic. An acknowledgement carrying no usable number, one beyond what this connection has issued, or one already answered is counted as a mismatch and does **not** postpone TIME_P2 — a peer stuck in a loop, a middlebox replaying, and an endpoint a misroute put in the path all satisfy "something is answering", and each of them takes no product. It is not treated as a protocol error either: the connection is not torn down over a numbering defect in a peer that is carrying product, so the fail-safe decides. |
 
 ## Payload directions — table 5.2.6-1
 
@@ -129,22 +117,17 @@ else. No product PDU carries it.
 
 ## Conditional attributes — table 5.3.1-2
 
-**Six of the 22 defined attribute types are emitted; the other sixteen are not.** Earlier
-versions delivered none of them on any xIRI or xCC: the TLV mechanism was implemented —
-`Marshal` writes the type/length/value structure of table 5.3.1-1 and `Unmarshal` parses it
-back — and no producer populated `PDU.Attributes`.
+**Six of the 22 defined attribute types are emitted; the other sixteen are not.** `Marshal`
+writes the type/length/value structure of table 5.3.1-1 and `Unmarshal` parses it back.
 
-**Correction to what this document previously claimed.** The Timestamp row used to say that
-"the record carries its own timestamps inside the payload; the header attribute is required in
-addition". That is wrong, and it understated the defect. `li/iri` reads no clock, and every
-`Timestamp` field in `TS33128Payloads.asn` is OPTIONAL and left unset here — so before this
-change an agency receiving our product could not tell when an intercepted event happened, only
-when the PDU arrived. The header attribute is not additional metadata; it is the only event
-time this element sends.
+**The Timestamp attribute is the only event time this element sends.** `li/iri` reads no
+clock, and every `Timestamp` field in `TS33128Payloads.asn` is OPTIONAL and left unset, so
+without the header attribute an agency receiving this product could tell only when the PDU
+arrived, not when the intercepted event happened.
 
 Clause 5.3 makes these attributes something the POI "may provide … as directed by the
 relevant LI architecture", and for this project the relevant architecture is 3GPP TS 33.128 —
-which directs a great deal. **Six of the 22 are required, and all six are now emitted.**
+which directs a great deal. **Six of the 22 are required, and all six are emitted.**
 
 TS 33.128 table 5.3.1-2 applies to both LI_X2 and LI_X3 and says the **NFID** "shall be set
 to indicate the NF that contains the POI" and the **IPID** "shall be set to indicate the POI
@@ -158,13 +141,12 @@ Sequence Number on LI_X3 too, and makes AXRI optional.
 So the AMF and SMF IRI-POIs each owe six attributes on every xIRI, and the UPF CC-POI owes
 four on every xCC. All are emitted.
 
-**What that change verified, and what it did not.** Four PDUs were sent to the independent
-sipgate reference before any of it was implemented — a 40-byte control beside headers of 49, 80
-and 163 bytes — and it stored all four and parsed the attribute region of each
-(`tests/e2e-li/evidence-260814/`). So a peer accepts a header longer than the mandatory 40, and
-accepts the unprefixed target-identifier fragment clause 5.3.18 illustrates. That peer does not
-validate the fragment as XML, and no mediation function that *requires* these attributes has
-been observed at all — the same limit every interoperability result here carries.
+**What interoperability verifies, and what it does not.** The reference implementation stores
+PDUs whose headers are longer than the mandatory 40 bytes — a 40-byte control beside headers
+of 49, 80 and 163 bytes — and parses the attribute region of each, including the unprefixed
+target-identifier fragment clause 5.3.18 illustrates. It does not validate the fragment as
+XML, and no mediation function that *requires* these attributes has been observed at all —
+the same limit every interoperability result here carries.
 
 | Type | Name | Clause | Disposition |
 |---|---|---|---|
@@ -195,9 +177,9 @@ been observed at all — the same limit every interoperability result here carri
 
 Values 1 to 16 were compared field by field against the table and the X2/X3 permissions
 match it exactly. Value 0 is `N/A` in the specification, because a keepalive PDU carries no
-payload, and is refused here on both interfaces, which is consistent with that. **Value 17
-is missing from the code and has been added**; it was introduced by CR019r2 in V1.8.1 and
-went unnoticed because the transcribed table carried no version stamp.
+payload, and is refused here on both interfaces, which is consistent with that. Value 17 was
+introduced by CR019r2 in V1.8.1; the transcribed table carries the revision it was read from
+so that the next addition is noticed.
 
 Of these, this project emits exactly three: format 2 on X2, and formats 5 and 12 on X3.
 
@@ -215,23 +197,22 @@ Of these, this project emits exactly three: format 2 on X2, and formats 5 and 12
 | 9 | SIP message | Yes | No | Permitted on X2, never emitted. |
 | 10 | DHCP message | Yes | No | Permitted on X2, never emitted. |
 | 11 | RADIUS packet | Yes | No | Permitted on X2, never emitted. |
-| 12 | GTP-U message | No | Yes | **Emitted** on X3 — the encapsulated form. Confirmed against the reference MDF, 2026-08-19; see below. |
+| 12 | GTP-U message | No | Yes | **Emitted** on X3 — the encapsulated form. Confirmed against the reference implementation; see below. |
 | 13 | MSRP message | No | Yes | Permitted on X3, never emitted. |
 | 14 | 3GPP TS 33.108 EpsIRIContent | Yes | No | Permitted on X2, never emitted. |
 | 15 | MIME message | Yes | Yes | Permitted, never emitted. |
 | 16 | 3GPP unstructured PDU | No | Yes | Permitted on X3, never emitted. |
 | 17 | ETSI TS 102 232-1 PS-PDU.Payload | Yes | Yes | Permitted, never emitted. Added in V1.8.1. |
 
-### Value 12, settled against the mediation function — 2026-08-19
+### Value 12, settled against the reference implementation
 
 Which reading of value 12 an MDF implements is not something the specification text settles
 on its own: "GTP-U message" could mean the encapsulated packet as it appears on N3, or an
 inner packet the POI has labelled by the tunnel it arrived on. This project emits the first —
-the downlink copy is teed after encapsulation, so what is delivered is the GTP-U datagram —
-and until now that was a reading rather than an agreement.
+the downlink copy is teed after encapsulation, so what is delivered is the GTP-U datagram.
 
-**The reference implementation resolves it the same way.** Delivering to the sipgate simulator
-from the deployed UPF, its own inbound handler logged the PDU it had parsed:
+**The reference implementation resolves it the same way.** Receiving from a UPF, its own
+inbound handler logs the PDU it has parsed:
 
 ```
 X2X3InboundHandlerAdapter : Received message: PduObject[majorVersion=0, minorVersion=5,
@@ -239,8 +220,8 @@ X2X3InboundHandlerAdapter : Received message: PduObject[majorVersion=0, minorVer
   conditionalAttributeFields=[…], payload=…]
 ```
 
-So the peer decoded value 12 into its own `GTP_U` payload format, accepted the PDU, and
-retained it — with the payload this element sent, which is the encapsulated form. That is
+So the peer decodes value 12 into its own `GTP_U` payload format, accepts the PDU, and
+retains it — with the payload this element sent, which is the encapsulated form. That is
 agreement on the reading, established by interoperation rather than by argument.
 
 **What it does not establish**, stated because the distinction is the whole point of this
@@ -257,17 +238,20 @@ plainly, so nobody mistakes its scope for a clean bill of health:
 
 - **The framing was read, not checked.** No test compares this package against TS 103 221-2,
   because ETSI publishes nothing machine-readable to compare it against. The reading is as
-  good as the person who did it, which is exactly the standard that let earlier defects
-  through on the X1 side before a check existed there.
+  good as the person who did it.
 - **The byte-level layout is covered by interoperability, not by this document.** Offsets,
-  lengths and field order are exercised every time this element delivers to the sipgate
-  reference implementation. What that cannot see — and what this disposition is aimed at —
+  lengths and field order are exercised every time this element delivers to the reference
+  implementation. What that cannot see — and what this disposition is aimed at —
   is anything neither implementation emits.
 - **Nothing here was verified against a mediation function that requires the missing
   attributes.** The gaps below are established from the specification text; how a strict MDF
   reacts to them has not been observed.
 - **Only the profile this project uses was read.** TS 103 221-2 clause 6 defines a default
   profile that is mandatory to support and permits others; alternatives were not considered.
+- **The keepalive mechanism is verified only against this project's own endpoint.** The
+  reference implementation declares the Keepalive and Keepalive Acknowledgement PDU types and
+  implements neither, so no independent implementation exercises the acknowledgement path.
+  That is a limit of the evidence, not of the implementation.
 
 ## Known gaps, in order of consequence
 
@@ -295,22 +279,6 @@ plainly, so nobody mistakes its scope for a clean bill of health:
    its own bounds. IPv6 fragmentation is out of scope for the reason the criteria disposition
    gives: this core has no IPv6 PDU sessions.
 
-2. **The emitted Version field is 5, and V1.10.1 defines 6.** No longer a matter of this
-   element's own conformance: the mechanism the bump was waiting on is implemented, and what
-   holds it back now is that the only interoperability peer available refuses 0.6. See the
-   version section above. **Blocked externally**, not deferred.
-
-**Closed since this disposition was written**, in order:
-
-- Every conditional attribute TS 33.128 requires was absent on both interfaces. All six are
-  now emitted — see table 5.3.1-2 above — which leaves the sixteen that are absent by
-  decision rather than by omission.
-- **The keepalive mechanism of clause 6.2.4 was unimplemented**: this element emitted no
-  Keepalive, answered none, and never applied the TIME_P2 disconnect. All three are now
-  done, on X2 and X3, in `keepalive.go`. What that has *not* been verified against is an
-  independent implementation, and cannot currently be: the reference declares
-  `PduType.KEEPALIVE` and `KEEPALIVE_ACK` and references neither anywhere in its X2/X3 code —
-  precisely the state this package was in before this change — so the acknowledgement path is
-  exercised only against this project's own endpoint. That is a
-  limit of the evidence, not of the implementation, and it is recorded here because the
-  distinction is exactly what this document exists to keep visible.
+2. **The emitted Version field is 5, and V1.10.1 defines 6.** Not a matter of this element's
+   own conformance: what holds the bump back is that the only interoperability peer available
+   refuses 0.6. See the version section above. **Blocked externally**, not deferred.

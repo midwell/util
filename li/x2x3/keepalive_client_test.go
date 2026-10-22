@@ -236,7 +236,7 @@ func TestKeepaliveIsSentWhileProductFlows(t *testing.T) {
 	})
 }
 
-// TestKeepaliveSurvivesASaturatedDeliveryQueue is the failure this change most needs
+// TestKeepaliveSurvivesASaturatedDeliveryQueue is the failure the mechanism most needs
 // not to have: a mediation function that is merely busy must not be judged dead.
 //
 // The delivery queue drops when it is full, by design. If a keepalive travelled that
@@ -270,8 +270,8 @@ func TestKeepaliveSurvivesASaturatedDeliveryQueue(t *testing.T) {
 }
 
 // TestKeepaliveExpiryDisconnectsAndReports is the TIME_P2 rule: disconnect, reconnect,
-// report over X1 — the third of which arrives here as the fault callback the POIs wire
-// to their mdfUnreachable report.
+// report over X1 — the third of which arrives here as the fault callback a POI wires to
+// its destination-unreachable report.
 func TestKeepaliveExpiryDisconnectsAndReports(t *testing.T) {
 	m := startMDF(t, nil) // an MDF that never acknowledges
 
@@ -365,35 +365,16 @@ func TestKeepaliveToleratesTwoMissedAcknowledgements(t *testing.T) {
 	}
 }
 
-// TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline is the two halves of what an
-// unusable acknowledgement means, and they pull in opposite directions.
+// TestAReplayedAcknowledgementDoesNotPostponeTheDeadline is the fail-safe of
+// TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline against material that is genuine
+// rather than invented.
 //
-// It is **not a protocol error**: an MDF whose numbering is wrong is still carrying
-// product, and tearing the connection down over it would cost product to punish a defect
-// that costs none. So the reader continues and the mismatch is counted.
-//
-// But it does **not refresh TIME_P2** either, which is what it used to do. Clause 6.2.4
-// numbers an acknowledgement from the Keepalive it answers, so the number is the only
-// evidence available that the peer is answering *us*; without it, "something is alive at
-// the other end" is satisfied equally by a peer stuck in a loop, a middlebox replaying, and
-// an endpoint a misroute put in the path — each of which would hold the fail-safe open over
-// a mediation function that has stopped taking product. The element already computed this
-// mismatch, for a counter, and acted on it nowhere.
-//
-// So the outcome is the fail-safe doing its job: the connection ends at TIME_P2, and the
-// fault says so rather than naming a protocol error.
-// TestAReplayedAcknowledgementDoesNotPostponeTheDeadline is the same fail-safe against
-// material that is genuine rather than invented.
-//
-// The test above answers with a number this element never sent, which is the easy half: an
+// That test answers with a number this element never sent, which is the easy half: an
 // acknowledgement of nothing acknowledges nothing. The hard half is a number it *did* send,
 // returned again — a middlebox that repeats, a peer stuck in a loop, a recorded exchange
-// replayed. Every one of those satisfies "something is answering", and clause 6.2.4's list of
-// what may not refresh the deadline names a duplicate for exactly that reason.
-//
-// It went uncovered because the guard tested only `seq >= issued()`, which a replay of a real
-// acknowledgement passes. The failure message on the test above already named "a replaying
-// middlebox" as the harm, over a check that could not see one.
+// replayed. Every one of those satisfies "something is answering", so a duplicate does not
+// refresh the deadline either. A guard on `seq >= issued()` alone would let a replay of a
+// real acknowledgement through, which is why acceptance is monotonic.
 //
 // The MDF here answers the first Keepalive correctly and then repeats that first
 // acknowledgement for every Keepalive after it. So the peer is answering, continuously, with
@@ -461,6 +442,22 @@ func TestAReplayedAcknowledgementDoesNotPostponeTheDeadline(t *testing.T) {
 	}
 }
 
+// TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline is the two halves of what an
+// unusable acknowledgement means, and they pull in opposite directions.
+//
+// It is **not a protocol error**: an MDF whose numbering is wrong is still carrying
+// product, and tearing the connection down over it would cost product to punish a defect
+// that costs none. So the reader continues and the mismatch is counted.
+//
+// But it does **not refresh TIME_P2** either. Clause 6.2.4 numbers an acknowledgement from
+// the Keepalive it answers, so the number is the only evidence available that the peer is
+// answering *us*; without it, "something is alive at the other end" is satisfied equally by
+// a peer stuck in a loop, a middlebox replaying, and an endpoint a misroute put in the path —
+// each of which would hold the fail-safe open over a mediation function that has stopped
+// taking product.
+//
+// So the outcome is the fail-safe doing its job: the connection ends at TIME_P2, and the
+// fault says so rather than naming a protocol error.
 func TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline(t *testing.T) {
 	m := startMDF(t, func(c net.Conn, p *PDU) {
 		if p.Type != PDUTypeKeepalive {
@@ -514,8 +511,8 @@ func TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline(t *testing.T) {
 }
 
 // TestAValidAcknowledgementDoesPostponeTheDeadline is the other side of the same rule, and
-// the one that keeps the fix from being an outage: a peer answering with the number it was
-// sent holds the connection open indefinitely.
+// the one that keeps the sequence check from causing an outage: a peer answering with the
+// number it was sent holds the connection open indefinitely.
 func TestAValidAcknowledgementDoesPostponeTheDeadline(t *testing.T) {
 	m := startMDF(t, func(c net.Conn, p *PDU) {
 		if p.Type != PDUTypeKeepalive {
@@ -781,13 +778,12 @@ func TestKeepaliveReaderIsQuietOnOurOwnClose(t *testing.T) {
 // mutex while a delivery drops its connection and dials another.
 //
 // It is written against the connection rather than the clock because that is the only way
-// to reach the case deterministically — and the case matters. Reporting it would push
-// mdfUnreachable and make the fault probe answer "faulty" every time an ordinary redial
-// raced the timer, which is a false fault in the mechanism whose whole purpose is telling a
-// dead mediation function from a live one.
+// to reach the case deterministically — and the case matters. Reporting it would mark the
+// destination unreachable and make the fault probe answer "faulty" every time an ordinary
+// redial raced the timer, which is a false fault in the mechanism whose whole purpose is
+// telling a dead mediation function from a live one.
 //
-// This is the assertion the first version of these tests got wrong: it accepted the fault
-// as long as it wrapped net.ErrClosed, so it passed against the defect it existed to catch.
+// It asserts no fault at all: a fault wrapping net.ErrClosed is still a fault.
 func TestKeepaliveOnAReplacedConnectionIsSilent(t *testing.T) {
 	m := startMDF(t, answerCorrectly)
 
@@ -835,11 +831,10 @@ func TestKeepaliveOnAReplacedConnectionIsSilent(t *testing.T) {
 // TestKeepaliveExpiryReachesTheFaultProbe is the other half of what the TIME_P2 rule
 // owes: not only the push to the ADMF, but the answer the element gives when asked.
 //
-// Pool.UnreachableAmong is what a POI's fault probe consults, and before keepalive it
-// could only know what a delivery attempt had established — so a destination that died
-// while idle stayed "reachable" until something was sent to it. This is that gap
-// closing, and it is asserted through the pool rather than the client because the pool
-// is what the probe actually calls.
+// Pool.UnreachableAmong is what a POI's fault probe consults. Without keepalive it could
+// only know what a delivery attempt had established, so a destination that died while
+// idle would stay "reachable" until something was sent to it. It is asserted through the
+// pool rather than the client because the pool is what the probe actually calls.
 func TestKeepaliveExpiryReachesTheFaultProbe(t *testing.T) {
 	m := startMDF(t, nil) // never acknowledges
 
@@ -871,7 +866,7 @@ func TestKeepaliveExpiryReachesTheFaultProbe(t *testing.T) {
 	}
 
 	// Now the mediation function's silence is what makes it faulty — nothing was
-	// delivered in between, which is precisely the case the probe used to miss.
+	// delivered in between, which is precisely the case only keepalive can catch.
 	eventually(t, "the probe to report the destination unreachable", func() bool {
 		unreachable, inUse := p.UnreachableAmong([]string{m.addr})
 

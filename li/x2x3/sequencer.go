@@ -39,6 +39,10 @@ type Sequencer struct {
 	// an atomic so the common case — a context that already exists — takes only a
 	// read lock and an atomic increment.
 	counters map[seqContext]*atomic.Uint32
+
+	// afterLookup is called inside Next, after an existing counter has been found and
+	// before it is advanced. Set only by tests; nil otherwise.
+	afterLookup func()
 }
 
 // seqContext is the varying part of clause 5.3.9's context.
@@ -46,10 +50,6 @@ type seqContext struct {
 	xid  [xidLength]byte
 	corr [CorrelationIDLength]byte
 }
-
-// afterSequencerLookup is called inside Next, after an existing counter has been found and
-// before it is advanced. Set only by tests; nil otherwise.
-var afterSequencerLookup func(*Sequencer)
 
 // NewSequencer returns a Sequencer holding no contexts.
 func NewSequencer() *Sequencer {
@@ -74,8 +74,8 @@ func (s *Sequencer) Next(xid [xidLength]byte, corr [CorrelationIDLength]byte) ui
 
 	s.mu.RLock()
 	if c, ok := s.counters[key]; ok {
-		if afterSequencerLookup != nil {
-			afterSequencerLookup(s)
+		if s.afterLookup != nil {
+			s.afterLookup()
 		}
 
 		n := c.Add(1) - 1

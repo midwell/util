@@ -204,7 +204,8 @@ func TestADroppedUnitDoesNotReportTheDestinationUnreachable(t *testing.T) {
 
 	err := c.SendBatch(pdus)
 	if err == nil {
-		t.Skip("this peer took the whole batch, so no unit was dropped and there is nothing to assert")
+		t.Skip("this peer took the whole batch, so no unit was dropped and there is nothing to assert; " +
+			"TestADroppedTailIsCountedAndLeavesTheDestinationReachable covers the path without a socket")
 	}
 	if !errors.Is(err, ErrUnitDropped) {
 		t.Skipf("the write failed for another reason (%v); this case needs a dropped unit", err)
@@ -306,9 +307,9 @@ func (m *pausingMDF) all() []byte {
 // TestAPartiallyWrittenUnitIsResentWhole is what a partial write costs once the retry goes
 // out on a fresh connection: nothing.
 //
-// The unit used to be skipped, on the reasoning that a receiver reading the head of a
-// stream would take the tail of a unit as the start of one. That is true of resuming
-// mid-unit on the same stream and false of the connection the retry actually uses: a TCP
+// Skipping the unit would be right when resuming mid-unit on the same stream, where a
+// receiver reading on would take the tail of a unit as the start of one. It is wrong for the
+// connection the retry actually uses: a TCP
 // connection is its own stream, and this one begins at a frame boundary, so a whole unit
 // sent on it cannot be read as anybody's tail. Nor can it duplicate — a unit the kernel did
 // not accept in full is one the peer cannot have received in full, because a write reports
@@ -403,7 +404,8 @@ func TestADroppedUnitIsTheOneThatCouldNotBeResent(t *testing.T) {
 
 	err := c.SendBatch(pdus)
 	if err == nil {
-		t.Skip("this peer took the whole batch on both connections, so no unit was dropped")
+		t.Skip("this peer took the whole batch on both connections, so no unit was dropped; " +
+			"TestADroppedTailIsCountedAndLeavesTheDestinationReachable covers the path without a socket")
 	}
 	if !errors.Is(err, ErrUnitDropped) {
 		t.Skipf("the write failed before any whole unit landed (%v); this case needs a partial "+
