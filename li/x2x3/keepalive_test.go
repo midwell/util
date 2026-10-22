@@ -238,9 +238,8 @@ func TestKeepaliveConfigValidate(t *testing.T) {
 	}
 }
 
-// TestKeepaliveDefaultsAreTheSpecifications is the delta spec's "timers with nothing
-// configuring them" scenario at its source: a deployment that configures nothing gets
-// 60 and 180 seconds, and the three network functions inherit that by passing zeros
+// TestKeepaliveDefaultsAreTheSpecifications: a deployment that configures nothing gets the
+// clause 6.2.4 defaults of 60 and 180 seconds, and callers inherit them by passing zeros
 // through rather than each writing the numbers down.
 func TestKeepaliveDefaultsAreTheSpecifications(t *testing.T) {
 	got := KeepaliveConfig{}.withDefaults()
@@ -253,5 +252,13 @@ func TestKeepaliveDefaultsAreTheSpecifications(t *testing.T) {
 	}
 	if got.Disabled {
 		t.Error("the zero value disables the mechanism; a deployment that says nothing must get the conformant behaviour")
+	}
+}
+
+// TestKeepaliveSequenceOfNothingIsNoNumber: an exported reader handed nil answers "no usable
+// number" rather than faulting the goroutine that called it.
+func TestKeepaliveSequenceOfNothingIsNoNumber(t *testing.T) {
+	if n, ok := KeepaliveSequence(nil); ok || n != 0 {
+		t.Errorf("KeepaliveSequence(nil) = %d, %v; want 0, false", n, ok)
 	}
 }

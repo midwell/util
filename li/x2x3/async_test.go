@@ -377,6 +377,21 @@ func TestANilProductUnitIsRefusedAtEveryEntryPoint(t *testing.T) {
 		}
 	})
 
+	t.Run("a closed Pool's sender", func(t *testing.T) {
+		drops := 0
+		p := NewPool(nil, KeepaliveConfig{Disabled: true}, nil, func() { drops++ })
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := p.For("127.0.0.1:1").Send(nil); !errors.Is(err, ErrNilPDU) {
+			t.Errorf("Send(nil) after Close returned %v, want ErrNilPDU", err)
+		}
+		if drops != 0 {
+			t.Errorf("a nil unit was counted as %d dropped, want 0: no unit existed to lose", drops)
+		}
+	})
+
 	t.Run("delivery still works afterwards", func(t *testing.T) {
 		inner := &recordingSender{}
 		a := NewAsyncSender(inner, 4, nil, nil)

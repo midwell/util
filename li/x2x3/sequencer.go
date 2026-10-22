@@ -31,8 +31,8 @@ import (
 //     each POI here delivers on X2 or on X3 and never both. That is why no interface
 //     discriminator appears in the key.
 //
-// Safe for concurrent use: the number is taken on the path that frames a PDU, which
-// in the UPF is four workers deep.
+// Safe for concurrent use: the number is taken on the path that frames a PDU, which in a
+// CC-POI may run on several workers at once.
 type Sequencer struct {
 	mu sync.RWMutex
 	// counters holds the next value to hand out for each live context. A pointer to
@@ -107,7 +107,7 @@ func (s *Sequencer) Next(xid [xidLength]byte, corr [CorrelationIDLength]byte) ui
 // A task deactivated and later activated again under the same XID therefore numbers
 // from zero, which is what a new context does.
 //
-// **Only where the whole XID is going.** This is the right granularity at an IRI-POI,
+// Only where the whole XID is going. This is the right granularity at an IRI-POI,
 // where one task is one warrant. It is the wrong one wherever several live tasks share
 // a delivery XID — a triggered CC-POI, where the triggering function allocates one task
 // per (warrant, session, UPF) under the warrant's ProductID — because ending one of
@@ -128,8 +128,8 @@ func (s *Sequencer) Forget(xid [xidLength]byte) {
 // ForgetContext drops exactly one context: this XID's numbering for this correlation
 // value, leaving every other context under the same XID numbering where it was.
 //
-// **Which of these two a point of interception needs follows from its tasking model,
-// and the two models in this project differ.** At an IRI-POI one task is one warrant
+// Which of these two a point of interception needs follows from its tasking model,
+// and the two models in this project differ. At an IRI-POI one task is one warrant
 // and is deactivated once, so the whole XID really is going and Forget is right. At a
 // triggered CC-POI the triggering function allocates one task per (warrant, session,
 // UPF) and gives them all the warrant's ProductID as their delivery XID — so the XID on

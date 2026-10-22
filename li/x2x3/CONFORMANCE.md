@@ -70,7 +70,10 @@ So this is blocked on a mediation function that accepts 0.6, not on work here. I
 one gap in this document whose remedy is not in this repository.
 
 **On decode**, a differing minor version is accepted and a differing major version is
-rejected, which follows the compatibility rule the clause defines. The keepalive reader reads
+rejected, which follows the compatibility rule the clause defines. A payload format table
+5.4.1-1 does not list is accepted with it, since a later minor revision may add one; a format
+the table forbids on that PDU type is refused. On encode only the listed, permitted formats
+are sent. The keepalive reader reads
 an X2/X3 socket, so that leniency is load-bearing. The read path is bounded — a peer's
 declared length beyond a few kilobytes is refused and the connection dropped — because
 `Unmarshal` waits for as many bytes as a header claims and imposes no maximum of its own.
@@ -87,7 +90,7 @@ declared length beyond a few kilobytes is refused and the connection dropped —
 | Payload Direction | 2 | 5.2.6 | **Emitted and parsed.** All six values are modelled; see the direction table below. |
 | XID | 16 | 5.2.7 | **Emitted and parsed.** Correctly implements the ProductID override: the clause requires that when the X1 task carries an optional ProductID, the XID field is populated with it instead of the task's own XID. `types.InterceptTask.DeliveryXID` encodes that rule and all three POIs label product through it. |
 | Correlation ID | 8 | 5.2.8 | **Emitted and parsed.** Supplied by the triggering function for triggered tasks and never derived locally; zero when the POI does not correlate the PDU, as the clause requires. |
-| Conditional Attribute Fields | variable | 5.3 | **Emitted and parsed.** The six TS 33.128 requires are populated by all three POIs; the remaining sixteen are absent with a reason. See table 5.3.1-2 below. |
+| Conditional Attribute Fields | variable | 5.3 | **Emitted and parsed.** An IRI-POI populates the six TS 33.128 requires on an xIRI, and a CC-POI the four table 5.3.3-2 requires on an xCC; the remaining sixteen are absent with a reason. See table 5.3.1-2 below. |
 | Payload | variable | 5.4 | **Emitted and parsed.** |
 
 ## PDU types — table 5.2.2-1
@@ -208,8 +211,9 @@ Of these, this project emits exactly three: format 2 on X2, and formats 5 and 12
 
 Which reading of value 12 an MDF implements is not something the specification text settles
 on its own: "GTP-U message" could mean the encapsulated packet as it appears on N3, or an
-inner packet the POI has labelled by the tunnel it arrived on. This project emits the first —
-the downlink copy is teed after encapsulation, so what is delivered is the GTP-U datagram.
+inner packet the POI has labelled by the tunnel it arrived on. SD-Core's UPF CC-POI emits the
+first — it copies downlink traffic after encapsulation, so what is delivered is the GTP-U
+datagram.
 
 **The reference implementation resolves it the same way.** Receiving from a UPF, its own
 inbound handler logs the PDU it has parsed:
@@ -256,7 +260,8 @@ plainly, so nobody mistakes its scope for a clean bill of health:
 ## Known gaps, in order of consequence
 
 1. **A fragmented IPv4 datagram whose first fragment has not been seen is discarded.** This
-   is a CC-POI limit rather than a wire-format one, and it is declared here because the loss
+   describes SD-Core's UPF CC-POI, which builds X3 product with this package; it is a CC-POI
+   limit rather than a wire-format one, and it is declared here because the loss
    it leaves is otherwise invisible: a copy dropped before framing leaves no gap in the X3
    sequence, so a mediation function cannot detect it.
 
@@ -277,7 +282,7 @@ plainly, so nobody mistakes its scope for a clean bill of health:
 
    If measurement ever shows out-of-order arrival is material, holding is its own change with
    its own bounds. IPv6 fragmentation is out of scope for the reason the criteria disposition
-   gives: this core has no IPv6 PDU sessions.
+   gives: SD-Core has no IPv6 PDU sessions.
 
 2. **The emitted Version field is 5, and V1.10.1 defines 6.** Not a matter of this element's
    own conformance: what holds the bump back is that the only interoperability peer available

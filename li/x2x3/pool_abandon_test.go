@@ -72,10 +72,9 @@ func TestAPoolCloseThatGivesUpCountsWhatItAbandons(t *testing.T) {
 }
 
 // TestAPoolCloseWaitsForEverySenderAmongSeveral: Close collects one answer per sender and
-// deletes each sender that answers. With several senders, a loop bounded by the map it deletes
-// from ends early — the deleted entries are never reached — so Close returned as soon as the
-// quick senders answered, without waiting out the deadline for the blocked one and without
-// counting what it abandoned.
+// deletes each sender that answers, so with several senders it must still wait for every one
+// of them: one blocked sender among quick ones holds Close until the deadline, which then
+// reports the timeout and counts what the blocked sender abandons.
 func TestAPoolCloseWaitsForEverySenderAmongSeveral(t *testing.T) {
 	var drops atomic.Int64
 

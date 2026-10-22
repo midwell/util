@@ -88,7 +88,7 @@ type Client struct {
 // destination again. Deliveries offered in between fail at once, without a dial, and are
 // accounted as lost like any other failed delivery.
 //
-// **Without it an unreachable mediation function costs a dial per batch.** A refusing
+// Without it an unreachable mediation function costs a dial per batch. A refusing
 // destination fails each dial in microseconds, so the delivery worker would dial — TCP and a
 // TLS handshake attempt — as fast as product arrived, and report an error for each: the rate
 // of both would track the offered load, which on X3 is the subject's packet rate, not any
@@ -107,7 +107,7 @@ const minRedialInterval = time.Second
 
 // DeliveryError is a delivery failure together with how many product units it cost.
 //
-// **A failed delivery is counted in units, not in calls.** The delivery worker writes up to
+// A failed delivery is counted in units, not in calls. The delivery worker writes up to
 // maxDeliveryBatch units at once, so a batch that fails is one error for many units. Counted
 // per error, an element whose mediation function refuses connections would report a few
 // dozen errors while losing a thousand units, and nothing in its own account could recover
@@ -121,10 +121,13 @@ type DeliveryError struct {
 	Err  error
 }
 
+// Error describes the underlying failure and how many units it cost.
 func (e *DeliveryError) Error() string {
 	return fmt.Sprintf("%v (%d product unit(s) not delivered)", e.Err, e.Lost)
 }
 
+// Unwrap returns the underlying failure, so errors.Is finds ErrUnitDropped and ErrNilPDU
+// through a DeliveryError.
 func (e *DeliveryError) Unwrap() error { return e.Err }
 
 // LostUnits reports how many product units err says were not delivered, or 0 when err
@@ -282,7 +285,7 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 		return nil
 	}
 
-	// **The retry resumes at a product-unit boundary, and does not restart the write.**
+	// The retry resumes at a product-unit boundary, and does not restart the write.
 	// PDUs are self-delimiting and concatenated, so a batch shares one write and a write
 	// can end in the middle of one. Sending the whole buffer again after a partial write
 	// delivers the leading complete PDUs a second time — on a fresh connection, where
@@ -290,7 +293,7 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 	// outcome deduplicating destinations by address exists to prevent, arrived at from
 	// the delivery mechanism instead of the destination list.
 	//
-	// **A unit the write stopped inside is resumed from its own start, not skipped.**
+	// A unit the write stopped inside is resumed from its own start, not skipped.
 	// Skipping it would be right when resuming mid-unit on the *same* stream, where a
 	// receiver reading on would take the tail of a unit as the start of one. The retry goes
 	// out on a fresh connection instead: a TCP connection is its own stream and this one
@@ -492,11 +495,13 @@ func (c *Client) dropLocked() {
 // wait happens after mu is released, for the reason dropLocked gives.
 //
 // The goroutines of a connection dropped earlier are not waited for: dropLocked does not
-// wait for them, and they exit on their own as soon as they observe the closed connection,
-// without touching the client (see dropLocked).
+// wait for them, and they exit on their own once they observe the closed connection. One
+// that was already reporting when its connection was dropped — a failed keepalive, an
+// expiry, a protocol error — may still call OnFault after Close returns, so an OnFault that
+// tears state down must tolerate a late call.
 //
-// Close waits for the goroutines that call OnFault, so calling Close from OnFault
-// deadlocks.
+// Close waits for the current connection's goroutines and for a probe, any of which may be
+// calling OnFault, so calling Close from OnFault deadlocks.
 func (c *Client) Close() error {
 	// Cancelled before mu is taken: a delivery dialling under mu would otherwise hold Close
 	// behind its dial timeout, which is what lifetime exists to prevent.

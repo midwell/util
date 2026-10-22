@@ -50,7 +50,7 @@ type Pool struct {
 // working — so it is reported through onError rather than through a callback of its own.
 // One condition, one report, whichever of the two mechanisms noticed it.
 //
-// **onError is therefore called from more than one goroutine at once**: each destination's
+// onError is therefore called from more than one goroutine at once: each destination's
 // delivery worker, each connection's keepalive and read goroutines, and the probe that
 // follows a peer's close. It must be safe for concurrent use, must not block and must not
 // close the pool — Close waits for those goroutines, so a callback blocked on something the
@@ -73,7 +73,7 @@ func NewPool(tlsConfig *tls.Config, keepalive KeepaliveConfig, onError func(erro
 // discardSender is what a closed pool hands out: product offered to it is dropped, and
 // nothing is dialled or queued.
 //
-// **The drop is reported.** A closed pool usually belongs to an element shutting down,
+// The drop is reported. A closed pool usually belongs to an element shutting down,
 // where a report may well not arrive; but a pool is also closed by a reconfiguration, where
 // the ADMF is reachable and this is simply product the element produced and did not deliver.
 // Staying silent would decide on the caller's behalf that nobody wants to be told. onDrop is
@@ -87,7 +87,12 @@ type discardSender struct {
 	onDrop func()
 }
 
-func (d discardSender) Send(*PDU) error {
+// Send counts pdu as dropped. A nil pdu is refused with ErrNilPDU and not counted, as every
+// other entry point refuses one: no unit existed to lose.
+func (d discardSender) Send(pdu *PDU) error {
+	if pdu == nil {
+		return ErrNilPDU
+	}
 	if d.onDrop != nil {
 		d.onDrop()
 	}
@@ -165,8 +170,8 @@ func (p *Pool) UnreachableAt(addr string) bool {
 // point of the argument. A pool never forgets a client, so a destination whose last delivery
 // failed and whose warrant was then withdrawn would otherwise count for the life of the
 // process — nothing will ever deliver there again to clear it, and an element holding no
-// tasking at all would report itself faulty. That is the probe-stuck-on failure this design
-// exists to avoid, and it is answered by asking only about destinations still in use.
+// tasking at all would report itself faulty. Asking only about destinations still in use is
+// what prevents that.
 //
 // A destination nothing has been sent to is not counted either way — see Client.Unreachable —
 // so an element that has delivered nothing reports nothing. A destination named twice counts
@@ -201,7 +206,7 @@ func (p *Pool) UnreachableAmong(addrs []string) (unreachable, inUse int) {
 
 // closeTimeout bounds how long Close waits for the pool's senders to drain.
 //
-// **A blackholed mediation function must not decide how long this element takes to stop.**
+// A blackholed mediation function must not decide how long this element takes to stop.
 // Closing a sender waits for its worker to finish the queue, and each unit is bounded only
 // by the client's own write deadline (defaultWriteTimeout) — so one destination that accepts a connection and
 // then reads nothing costs (queue depth × write timeout), which is minutes. A network
@@ -233,16 +238,16 @@ func (p *Pool) Close() error {
 	p.closed = true
 	p.mu.Unlock()
 
-	// Concurrently, for the same reason the trigger keepalive round fans out: closed in
-	// line, the pool's shutdown takes as long as the sum of its unreachable destinations.
+	// Concurrently: closed in line, the pool's shutdown would take as long as the sum of its
+	// unreachable destinations.
 	type closed struct {
 		addr string
 		err  error
 	}
 
-	// The count is taken before the loop below deletes from the map: ranging over a map
-	// while deleting from it skips entries not yet reached, so the loop would end before
-	// every sender had answered and before the deadline could abandon the slow ones.
+	// n sizes results and bounds the collection loop. That loop deletes each sender that has
+	// answered, so what is left in the map when the deadline fires is exactly the senders to
+	// abandon.
 	n := len(senders)
 	results := make(chan closed, n)
 	for addr, s := range senders {

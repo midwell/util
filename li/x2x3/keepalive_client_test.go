@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"net"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,10 +170,10 @@ func product() *PDU {
 	return &PDU{Type: PDUTypeX2, PayloadFormat: PayloadFormat3GPP33128, Payload: []byte("x")}
 }
 
-// TestKeepaliveNeverDials is the property that keeps the mechanism from changing what
-// this element does before it has anything to deliver: a POI holding tasking but
-// producing no product opens no connection to an agency, and its fault probe still
-// answers "I have not looked" rather than "unreachable".
+// TestKeepaliveNeverDials: the keepalive runs only on a connection a delivery dialled, so a
+// client that has delivered nothing opens no connection to an agency however many TIME_P1
+// periods pass, and its fault probe answers "not looked" rather than "unreachable". It fails
+// if constructing a client, rather than delivering through it, starts the mechanism.
 func TestKeepaliveNeverDials(t *testing.T) {
 	m := startMDF(t, answerCorrectly)
 	c := clientTo(t, m.addr, fastKeepalive(nil))
@@ -206,8 +205,7 @@ func TestKeepaliveIsSentOnAnIdleConnection(t *testing.T) {
 	eventually(t, "two keepalives on an idle connection", func() bool { return m.count(PDUTypeKeepalive) >= 2 })
 }
 
-// TestKeepaliveIsSentWhileProductFlows is the delta spec's second scenario, and the
-// reason the timer is not an idle timer: product PDUs are not acknowledged, so a busy
+// TestKeepaliveIsSentWhileProductFlows pins why the timer is not an idle timer: product PDUs are not acknowledged, so a busy
 // connection proves nothing about the mediation function behind it. An idle-reset
 // timer passes every other test here and fails this one.
 func TestKeepaliveIsSentWhileProductFlows(t *testing.T) {
@@ -445,11 +443,11 @@ func TestAReplayedAcknowledgementDoesNotPostponeTheDeadline(t *testing.T) {
 // TestKeepaliveWrongSequenceDoesNotPostponeTheDeadline is the two halves of what an
 // unusable acknowledgement means, and they pull in opposite directions.
 //
-// It is **not a protocol error**: an MDF whose numbering is wrong is still carrying
+// It is not a protocol error: an MDF whose numbering is wrong is still carrying
 // product, and tearing the connection down over it would cost product to punish a defect
 // that costs none. So the reader continues and the mismatch is counted.
 //
-// But it does **not refresh TIME_P2** either. Clause 6.2.4 numbers an acknowledgement from
+// But it does not refresh TIME_P2 either. Clause 6.2.4 numbers an acknowledgement from
 // the Keepalive it answers, so the number is the only evidence available that the peer is
 // answering *us*; without it, "something is alive at the other end" is satisfied equally by
 // a peer stuck in a loop, a middlebox replaying, and an endpoint a misroute put in the path —
@@ -683,8 +681,6 @@ func TestKeepaliveRefusesProductInbound(t *testing.T) {
 // destination in use; a client that leaked them would leak per redial, and a POI
 // redials whenever an MDF drops an idle connection.
 func TestKeepaliveGoroutinesDieWithTheClient(t *testing.T) {
-	before := runtime.NumGoroutine()
-
 	m := startMDF(t, answerCorrectly)
 	c := NewClient(m.addr, &tls.Config{InsecureSkipVerify: true}, fastKeepalive(nil)) //nolint:gosec // test transport
 
@@ -697,18 +693,15 @@ func TestKeepaliveGoroutinesDieWithTheClient(t *testing.T) {
 		t.Errorf("Close() error = %v", err)
 	}
 
-	// Close waits for this connection's pair, so they are already gone; the settle
-	// loop is for the test MDF's own goroutines, which are not what is being asserted.
-	eventually(t, "goroutines to return to the baseline", func() bool {
-		return runtime.NumGoroutine() <= before+4
-	})
+	// Counted by function rather than against a baseline, so the test MDF's own goroutines
+	// and anything else the binary runs cannot make it pass or fail.
+	eventually(t, "the client's goroutines to exit", func() bool { return clientGoroutines() == 0 })
 }
 
-// TestKeepaliveDisabledIsTodaysBehaviour: the rollback lever. With the mechanism off
-// nothing is sent, nothing is read, and no connection is ever torn down for want of an
-// acknowledgement — which is what a deployment facing a non-conformant MDF needs, and
-// what the reference this project interoperates with requires.
-func TestKeepaliveDisabledIsTodaysBehaviour(t *testing.T) {
+// TestKeepaliveDisabledSendsAndReadsNothing: with the mechanism off nothing is sent, nothing
+// is read, and no connection is ever torn down for want of an acknowledgement — what a
+// deployment needs when its mediation function does not acknowledge keepalives.
+func TestKeepaliveDisabledSendsAndReadsNothing(t *testing.T) {
 	m := startMDF(t, nil) // never acknowledges
 
 	faults := make(chan error, 4)

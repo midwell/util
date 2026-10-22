@@ -65,6 +65,9 @@ func keepalivePDU(t PDUType, sequence uint32) *PDU {
 // question the mechanism asks, and the caller decides what to do about it — this
 // reports what arrived and judges nothing.
 func KeepaliveSequence(p *PDU) (uint32, bool) {
+	if p == nil {
+		return 0, false
+	}
 	for _, a := range p.Attributes {
 		if a.Type == AttrSequenceNumber && len(a.Value) == 4 {
 			return binary.BigEndian.Uint32(a.Value), true
@@ -160,9 +163,9 @@ const (
 	// MinKeepaliveTime is the shortest either timer may be. TS 103 221-2 Annex C table
 	// C.4-1 gives keepaliveTimeP1 and keepaliveTimeP2 in seconds with a minimum of 1, so
 	// anything below one second is not a value the interface can express — and the
-	// sub-second end is where the arithmetic
-	// around them stops behaving: a window divided to produce a tick interval reaches
-	// zero, and a timer that fires continuously is a fault rather than a fast keepalive.
+	// sub-second end is where the arithmetic around them stops behaving: a window divided
+	// to produce a tick interval reaches zero, and a timer that fires continuously is a
+	// fault rather than a fast keepalive.
 	MinKeepaliveTime = time.Second
 
 	DefaultTimeP1 = 60 * time.Second
@@ -234,7 +237,7 @@ type KeepaliveConfig struct {
 // repositories would be three chances for one of them to drift into accepting timers
 // that disconnect every connection on schedule.
 //
-// **The constructors deliberately do not call it.** NewClient, NewPool and
+// The constructors deliberately do not call it. NewClient, NewPool and
 // NewAsyncSender return no error, so a constructor that validated could only clamp an
 // out-of-range value to the defaults — which is not enforcement, and would hide exactly
 // the mistake this exists to surface — or change its signature, which is an API break
@@ -514,15 +517,15 @@ func (c *Client) watchClose(st *connState) {
 // peerClosed drops st once its read side has failed, if it is still the connection this
 // client holds, so the next delivery dials a fresh one instead of writing into it.
 //
-// **A connection the mediation function has closed is not one a write can be trusted on.**
+// A connection the mediation function has closed is not one a write can be trusted on.
 // The kernel accepts the next write into a socket whose peer has gone, the peer answers it
 // with a reset, and only the write after that fails and redials — so the first delivery after
 // an idle close would be lost with a nil error: no drop, no error, no fault, and a gap in the
 // sequence the mediation function could see and this element could not account for. The
 // reader is the first to know, so it drops the connection.
 //
-// **Dropping the connection also stops its keepalive timer, which is what finds a dead
-// mediation function while nothing is being delivered.** Left at that, a mediation function
+// Dropping the connection also stops its keepalive timer, which is what finds a dead
+// mediation function while nothing is being delivered. Left at that, a mediation function
 // that crashed while idle would be reported reachable until the next delivery failed — and by
 // then a unit is already lost. So where the keepalive mechanism runs, the close is followed by
 // one redial (probeAfterPeerClose): a mediation function that answers gets a fresh connection
@@ -535,7 +538,7 @@ func (c *Client) watchClose(st *connState) {
 // delivery's dial establishes whether it can be reached. A read failure this element
 // caused by closing the connection itself finds st already replaced and does nothing.
 //
-// **A window remains**, between the peer's close arriving and this goroutine observing it and
+// A window remains, between the peer's close arriving and this goroutine observing it and
 // taking the lock: a delivery in that interval is still written into the closed socket.
 // It is the time a read takes to return, rather than the time until the next delivery happens
 // to fail.
@@ -552,11 +555,11 @@ func (c *Client) peerClosed(st *connState) {
 	// Added under mu, where closed is read: Close sets closed under mu before it waits, so
 	// no probe can be added once that wait has begun.
 	//
-	// **One probe at a time.** A probe already in flight re-checks for a held connection when
+	// One probe at a time. A probe already in flight re-checks for a held connection when
 	// it wakes, so it answers for this close too; a second one would wait out the same spacing
 	// computed from the same instant, wake beside it and dial again, and a peer that keeps
 	// closing what deliveries reconnect would then be dialled once per close rather than once
-	// per redialInterval -- and two failing probes would report one outage twice.
+	// per redialInterval — and two failing probes would report one outage twice.
 	if !c.keepalive.Disabled && !c.closed && !c.probing {
 		c.probing = true
 		c.probes.Add(1)
@@ -568,7 +571,7 @@ func (c *Client) peerClosed(st *connState) {
 // probeAfterPeerClose redials a mediation function that closed an idle connection, to find
 // out whether it can still be reached without waiting for the next delivery.
 //
-// **One dial per redialInterval, at most.** It waits out the backoff a failed dial imposes,
+// One dial per redialInterval, at most. It waits out the backoff a failed dial imposes,
 // and it spaces itself from the previous probe by the same interval: a peer that accepts and
 // immediately closes would otherwise be redialled as fast as the handshake completes.
 //
@@ -576,13 +579,13 @@ func (c *Client) peerClosed(st *connState) {
 // installed only if nothing else connected in the meantime: a delivery that dialled first
 // already holds the connection, and this one is closed unused. Close cancels the wait and the
 // dial, and waits for this goroutine.
+//
+// probing is cleared in the same critical section that ends the probe, on every exit. Clearing
+// it afterwards, under a second acquisition of mu, would leave a window in which the connection
+// this probe just installed can be closed by its peer and its reader find probing still set —
+// so no probe would follow that close.
 func (c *Client) probeAfterPeerClose() {
 	defer c.probes.Done()
-	defer func() {
-		c.mu.Lock()
-		c.probing = false
-		c.mu.Unlock()
-	}()
 
 	c.mu.Lock()
 	wait := c.probeWaitLocked()
@@ -594,6 +597,10 @@ func (c *Client) probeAfterPeerClose() {
 		case <-c.lifetime.Done():
 			t.Stop()
 
+			c.mu.Lock()
+			c.probing = false
+			c.mu.Unlock()
+
 			return
 		case <-t.C:
 		}
@@ -601,6 +608,7 @@ func (c *Client) probeAfterPeerClose() {
 
 	c.mu.Lock()
 	if c.closed || c.live != nil {
+		c.probing = false
 		c.mu.Unlock()
 
 		return
@@ -611,6 +619,7 @@ func (c *Client) probeAfterPeerClose() {
 	conn, err := c.dial()
 
 	c.mu.Lock()
+	c.probing = false
 	if c.closed || c.live != nil {
 		c.mu.Unlock()
 		if conn != nil {
@@ -664,8 +673,8 @@ func (c *Client) handleInbound(st *connState, p *PDU) bool {
 	case PDUTypeKeepaliveAck:
 		seq, ok := KeepaliveSequence(p)
 		if !ok || !st.seq.accept(seq) {
-			// **An acknowledgement this connection cannot act on does not answer the
-			// question TIME_P2 asks.** Either it carries no usable sequence number, or one
+			// An acknowledgement this connection cannot act on does not answer the
+			// question TIME_P2 asks. Either it carries no usable sequence number, or one
 			// beyond what has been handed out, or one that was already answered — see
 			// keepaliveCounter.accept. Clause 6.2.4 numbers the acknowledgement from the
 			// Keepalive it answers, so this is the only evidence available that the peer is
@@ -688,7 +697,7 @@ func (c *Client) handleInbound(st *connState, p *PDU) bool {
 		// A valid acknowledgement of something this connection sent: the exchange
 		// succeeded, which is the whole question TIME_P2 asks.
 		//
-		// **Only while this is still the connection the client holds.** The reader runs on
+		// Only while this is still the connection the client holds. The reader runs on
 		// its own goroutine, so an acknowledgement decoded from a connection that has since
 		// been dropped and replaced would otherwise clear a reachability conclusion the
 		// replacement has already reached — a store of false landing after expire's or
@@ -769,10 +778,9 @@ func (c *Client) answerKeepalive(st *connState, p *PDU) bool {
 //
 // It marks the destination unreachable, as the TIME_P2 expiry and a failed delivery both
 // do. This is the same conclusion arrived at by a third route — the exchange with this
-// mediation function did not work — and leaving it out meant the two mechanisms disagreed
-// about one destination: the ADMF received a pushed fault while the status answer it could
-// ask for went on saying the destination was reachable. An element whose two answers
-// contradict each other is one whose status answer stops being read.
+// mediation function did not work — and marking it keeps the pushed fault and the status
+// answer the ADMF can ask for in agreement about the destination. An element whose two
+// answers contradict each other is one whose status answer stops being read.
 func (c *Client) protocolError(st *connState, err error) {
 	// Stored before the fault is reported and before the connection is dropped, so a
 	// status request racing this cannot be answered "reachable" by an element that has
@@ -796,7 +804,7 @@ func (c *Client) protocolError(st *connState, err error) {
 // restores a connection the element was holding, which is not the same as dialling
 // one it never had — and if it fails the next delivery redials as it always would.
 //
-// **Only for the connection this client still holds.** A deadline that fires on a connection
+// Only for the connection this client still holds. A deadline that fires on a connection
 // already replaced — a delivery's redial racing the timer, which select resolves either way
 // when both are ready — says nothing about the replacement, and marking the destination
 // unreachable and reporting a fault over it would announce a dead mediation function that is

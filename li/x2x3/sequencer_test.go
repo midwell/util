@@ -87,8 +87,8 @@ func TestSequencerForgetDropsATasksContexts(t *testing.T) {
 	}
 }
 
-// TestSequencerIsConcurrent: the number is taken where a PDU is framed, which in the
-// UPF is four workers deep. Run under -race; the assertion is that every number in a
+// TestSequencerIsConcurrent: the number is taken where a PDU is framed, which in a CC-POI
+// may run on several workers at once. Run under -race; the assertion is that every number in a
 // context is handed out exactly once.
 func TestSequencerIsConcurrent(t *testing.T) {
 	const workers, each = 8, 200

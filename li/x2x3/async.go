@@ -37,8 +37,8 @@ type Reachability interface {
 //
 // A single worker preserves per-POI delivery order (the MDF correlates by
 // Correlation ID and sequence number, not arrival, so strict ordering is not
-// required, but it is free and avoids reordering within one POI). When the buffer is full Send drops the
-// PDU rather than block — LI product may be lost under sustained MDF outage, but
+// required, but it is free and avoids reordering within one POI). When the buffer
+// is full Send drops the PDU rather than block — LI product may be lost under sustained MDF outage, but
 // the target's service is never delayed — and invokes onDrop so the fault can be
 // surfaced to the ADMF over X1. Worker delivery errors invoke onError for the
 // same purpose, each carrying the number of units it cost (LostUnits). Both
@@ -95,7 +95,8 @@ const maxDeliveryBatch = 32
 // NewAsyncSender wraps inner with a bounded async delivery queue of the given
 // depth (<=0 uses a default). onError is called with each worker delivery error;
 // onDrop is called once per PDU that is dropped before delivery was attempted —
-// a full buffer, a closed sender, or an abandoned queue. Either may be nil. The worker starts immediately; call Close to stop it and close inner.
+// a full buffer, a closed sender, or an abandoned queue. Either may be nil. The
+// worker starts immediately; call Close to stop it and close inner.
 func NewAsyncSender(inner Sender, depth int, onError func(error), onDrop func()) *AsyncSender {
 	if depth <= 0 {
 		depth = defaultQueueDepth
@@ -189,7 +190,7 @@ func (a *AsyncSender) abandon() { a.abandoned.Store(true) }
 // the caller is a signalling or data-plane goroutine that delivery may neither
 // block nor fault.
 func (a *AsyncSender) Send(pdu *PDU) error {
-	// **Before the queue, and without dereferencing it.** This is the entry point a POI
+	// Before the queue, and without dereferencing it. This is the entry point a POI
 	// calls from a signalling goroutine or a framing worker, and a nil enqueued here would
 	// fault the delivery worker rather than the caller — taking the network function down
 	// over invalid input, on a goroutine whose panic no caller can recover. Reported as the
@@ -231,12 +232,13 @@ func (a *AsyncSender) enqueue(pdu *PDU) bool {
 //
 // Note what this deliberately does not answer: whether the queue is full *right now*, which
 // is the state a POI reports as delivery loss — the mediation function is reachable but
-// slower than the offered rate, so copies are being dropped as this is asked. It is a state, it is
-// observable here without I/O, and a probe for it would be legitimate. It is left out
+// slower than the offered rate, so copies are being dropped as this is asked. It is a state,
+// it is observable here without I/O, and a probe for it would be legitimate. It is left out
 // because a full queue at one instant is not yet a fault an ADMF can act on: the queue is
 // sized to absorb bursts, so it fills and drains under normal load, and a probe sampling it
 // would report "faulty" for the bursts the buffer exists to swallow. Distinguishing a burst
-// from sustained overload needs a window, and a window is exactly what this design refuses.
+// from sustained overload needs a window over time, which a probe answering from one instant
+// does not have.
 // The drops themselves are reported as they happen. If it is ever added, the condition to
 // answer is "the queue has been full since the last time anything drained", not "the queue
 // is full".
@@ -256,7 +258,7 @@ func (a *AsyncSender) Unreachable() bool {
 // Close stops accepting new PDUs, drains those already queued, waits for the
 // worker to finish, and closes the inner Sender. Safe to call more than once.
 //
-// **Idempotent in what it does, not only in what it guards.** Everything, the inner
+// Idempotent in what it does, not only in what it guards. Everything, the inner
 // sender's own Close included, happens inside the once, so a second call does not close the
 // inner sender again. *Client guards its own second close, but this type takes the
 // interface, and what a second Close does must not depend on the implementation behind it.
@@ -286,7 +288,7 @@ func (a *AsyncSender) Close() error {
 //
 // Without that, every PDU is still attempted when one before it fails, and the failures are
 // returned together. Stopping at the first would lose the rest of the batch on the strength of
-// one PDU -- one that could not be marshalled, say, which says nothing about the others -- and
+// one PDU — one that could not be marshalled, say, which says nothing about the others — and
 // report it as a single error, so the element's own account would show one failure where the
 // mediation function sees a run of missing sequence numbers. Client.SendBatch skips a PDU it
 // cannot marshal for the same reason.

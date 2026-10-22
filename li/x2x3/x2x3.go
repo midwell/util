@@ -42,17 +42,22 @@ import (
 //
 // It stays at 5 because of the peer, not this package: the reference
 // implementation of the mediation side that this package interoperates with
-// **refuses** a 0.6 PDU — it closes the connection and stores nothing. Clause
+// refuses a 0.6 PDU — it closes the connection and stores nothing. Clause
 // 5.2.1 defines a minor increment as backwards-compatible, so a conformant peer
 // has to keep decoding; this one does not, and raising the field would stop all
 // delivery to it rather than degrade it. What would unblock it is a mediation
 // function that accepts 0.6, not work in this package.
 const (
-	MajorVersion          = 0
-	MinorVersion          = 5
+	// MajorVersion and MinorVersion are the two octets of the Version field.
+	MajorVersion = 0
+	MinorVersion = 5
+	// MandatoryHeaderLength is the size of the header before any conditional attribute
+	// (clause 5.1): version, PDU type, header and payload lengths, payload format and
+	// direction, XID and Correlation ID.
 	MandatoryHeaderLength = 40
-	CorrelationIDLength   = 8
-	xidLength             = 16
+	// CorrelationIDLength is the size of the Correlation ID field (clause 5.2.8).
+	CorrelationIDLength = 8
+	xidLength           = 16
 
 	// sizePrefixLength is how much of a PDU states its full size: version (2), PDU type
 	// (2), header length (4) and payload length (4).
@@ -70,6 +75,7 @@ var ErrIncomplete = errors.New("x2x3: incomplete PDU")
 // PDUType identifies the PDU kind (TS 103 221-2).
 type PDUType uint16
 
+// The PDU types of table 5.2.2-1.
 const (
 	PDUTypeX2           PDUType = 1
 	PDUTypeX3           PDUType = 2
@@ -80,6 +86,7 @@ const (
 // PayloadFormat identifies the encoding of the payload.
 type PayloadFormat uint16
 
+// The payload formats of table 5.4.1-1, by value.
 const (
 	PayloadFormatReserved     PayloadFormat = 0
 	PayloadFormatETSI102232_1 PayloadFormat = 1
@@ -106,9 +113,8 @@ const (
 //
 // TRANSCRIBED FROM V1.10.1 (2026-03). Restate the revision whenever this table
 // is updated: the table is not checked against any published source, so without
-// a version a stale copy and a current one look identical. That is exactly how
-// value 17 stayed missing for three revisions. CONFORMANCE.md carries the
-// per-value disposition, and x2x3_test.go asserts this whole table.
+// a version a stale copy and a current one look identical. CONFORMANCE.md carries
+// the per-value disposition, and x2x3_test.go asserts this whole table.
 var payloadFormatRules = map[PayloadFormat][2]bool{
 	PayloadFormatReserved:     {false, false},
 	PayloadFormatETSI102232_1: {true, true},
@@ -130,11 +136,32 @@ var payloadFormatRules = map[PayloadFormat][2]bool{
 	PayloadFormatPSPDUPayload: {true, true},
 }
 
+// allowedOn reports whether f may be sent on PDU type t. A format the table does not list
+// is not allowed: this element only sends what it knows the meaning of.
 func (f PayloadFormat) allowedOn(t PDUType) bool {
 	r, ok := payloadFormatRules[f]
 	if !ok {
 		return false
 	}
+
+	return permitted(r, t)
+}
+
+// acceptedOn reports whether a received f on PDU type t is accepted. Unlike allowedOn, a
+// format the table does not list is accepted: a peer on a later minor version may use a
+// value added after this transcription, and clause 5.2.1 requires a minor increment to stay
+// decodable. Only a format the table lists as not permitted on t is refused.
+func (f PayloadFormat) acceptedOn(t PDUType) bool {
+	r, ok := payloadFormatRules[f]
+	if !ok {
+		return true
+	}
+
+	return permitted(r, t)
+}
+
+// permitted reads one row of table 5.4.1-1 — permitted on X2, permitted on X3 — for t.
+func permitted(r [2]bool, t PDUType) bool {
 	switch t {
 	case PDUTypeX2:
 		return r[0]
@@ -148,6 +175,7 @@ func (f PayloadFormat) allowedOn(t PDUType) bool {
 // PayloadDirection indicates the direction of the intercepted communication.
 type PayloadDirection uint16
 
+// The payload directions of table 5.2.6-1.
 const (
 	DirectionReservedKeepalive PayloadDirection = 0
 	DirectionUnknown           PayloadDirection = 1
@@ -183,12 +211,21 @@ func (p *PDU) validate() error {
 	return nil
 }
 
+// validateReceived is validate for a decoded PDU: a payload format the table forbids on the
+// PDU's type is refused, and one it does not list is accepted (see acceptedOn).
+func (p *PDU) validateReceived() error {
+	if (p.Type == PDUTypeX2 || p.Type == PDUTypeX3) && !p.PayloadFormat.acceptedOn(p.Type) {
+		return fmt.Errorf("x2x3: payload format %d not allowed on PDU type %d", p.PayloadFormat, p.Type)
+	}
+	return nil
+}
+
 // Marshal encodes the PDU to its TS 103 221-2 wire form.
 //
-// **A nil receiver is refused rather than dereferenced**, and this is where it has to be:
+// A nil receiver is refused rather than dereferenced, and this is where it has to be:
 // every delivery path in this package reaches the wire through here, so a check on one
 // entry point leaves the others faulting. What faults is the network function carrying the
-// delivery — an AMF's signalling goroutine or a UPF's framing worker — over invalid input,
+// delivery — a signalling goroutine or a framing worker — over invalid input,
 // which takes the element down rather than the mediation function it was delivering to.
 // Send, SendBatch and AsyncSender.Send refuse a nil unit at their own entry too, so the
 // error a caller gets does not depend on which of them it used.
@@ -308,10 +345,8 @@ func Unmarshal(b []byte) (*PDU, int, error) {
 	// addition, so a peer ahead of us on the minor number is required to remain
 	// decodable: it can only have added a PDU type, direction, conditional
 	// attribute or payload format, none of which changes the layout parsed here.
-	// Rejecting that peer outright would refuse a conformant MDF running a newer
-	// revision than ours.
-	// A differing minor in either direction stays decodable: a lower one uses a
-	// subset of what we know, a higher one adds values that do not move any field.
+	// A differing minor in either direction is therefore accepted, and a payload
+	// format this table does not list is accepted with it (validateReceived).
 	if b[0] != MajorVersion {
 		return nil, 0, fmt.Errorf("x2x3: unsupported major version %d (this implementation speaks %d.x)", b[0], MajorVersion)
 	}
@@ -331,7 +366,7 @@ func Unmarshal(b []byte) (*PDU, int, error) {
 	p.Attributes = attrs
 	p.Payload = append([]byte(nil), b[headerLen:total]...)
 
-	if err := p.validate(); err != nil {
+	if err := p.validateReceived(); err != nil {
 		return nil, 0, err
 	}
 	return p, total, nil

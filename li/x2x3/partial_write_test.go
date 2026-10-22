@@ -156,6 +156,16 @@ func TestARetryDoesNotRedeliverWhatThePeerAlreadyHas(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 
+	mdf.mu.Lock()
+	retried := mdf.accepted >= 2
+	mdf.mu.Unlock()
+	if !retried {
+		// The socket buffers took the whole batch, so the write never stalled and there was
+		// no retry to observe. TestADroppedTailIsCountedAndLeavesTheDestinationReachable
+		// drives the retry path with a scripted connection on every platform.
+		t.Skip("the first write did not stall on this platform; no retry happened to examine")
+	}
+
 	got := mdf.received()
 
 	// One marshalled PDU is the unit of duplication, so count how many whole copies of
@@ -222,7 +232,7 @@ func TestADroppedUnitDoesNotReportTheDestinationUnreachable(t *testing.T) {
 // client's write deadline trips, and then reads everything that follows — on that
 // connection and on the one the client dials to retry.
 //
-// **Resuming the read is what makes the property observable.** A peer that stalls forever
+// Resuming the read is what makes the property observable. A peer that stalls forever
 // leaves the bytes the kernel accepted unread, so nothing can distinguish a unit that was
 // sent and never read from one that was never sent — which is the difference under test.
 // Once it drains, every byte this element wrote is counted, on both streams.
