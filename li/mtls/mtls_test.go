@@ -25,6 +25,13 @@ import (
 // newCA returns a self-signed CA certificate, its key, and its PEM encoding.
 func newCA(t *testing.T, cn string) (*x509.Certificate, *ecdsa.PrivateKey, []byte) {
 	t.Helper()
+
+	return newCAValid(t, cn, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
+
+// newCAValid is newCA valid from notBefore to notAfter.
+func newCAValid(t *testing.T, cn string, notBefore, notAfter time.Time) (*x509.Certificate, *ecdsa.PrivateKey, []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -32,8 +39,8 @@ func newCA(t *testing.T, cn string) (*x509.Certificate, *ecdsa.PrivateKey, []byt
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: cn},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
@@ -79,18 +86,25 @@ func newLeaf(t *testing.T, cn string, caCert *x509.Certificate, caKey *ecdsa.Pri
 	return
 }
 
-// writeMaterial writes a cert/key/ca triple to dir and Loads it.
-func writeMaterial(t *testing.T, dir string, cert, key, ca []byte) *Material {
+// writeTriple writes a cert/key/ca triple to dir and returns the three paths.
+func writeTriple(t *testing.T, dir string, cert, key, ca []byte) (certPath, keyPath, caPath string) {
 	t.Helper()
-	cp := filepath.Join(dir, "tls.crt")
-	kp := filepath.Join(dir, "tls.key")
-	ap := filepath.Join(dir, "ca.crt")
-	for p, b := range map[string][]byte{cp: cert, kp: key, ap: ca} {
+	certPath = filepath.Join(dir, "tls.crt")
+	keyPath = filepath.Join(dir, "tls.key")
+	caPath = filepath.Join(dir, "ca.crt")
+	for p, b := range map[string][]byte{certPath: cert, keyPath: key, caPath: ca} {
 		if err := os.WriteFile(p, b, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	m, err := Load(cp, kp, ap)
+
+	return certPath, keyPath, caPath
+}
+
+// writeMaterial writes a cert/key/ca triple to dir and Loads it.
+func writeMaterial(t *testing.T, dir string, cert, key, ca []byte) *Material {
+	t.Helper()
+	m, err := Load(writeTriple(t, dir, cert, key, ca))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -204,16 +218,7 @@ func TestLoadRejectsBadInputs(t *testing.T) {
 		t.Error("Load accepted missing files")
 	}
 	// Non-certificate CA file.
-	cp := filepath.Join(dir, "tls.crt")
-	kp := filepath.Join(dir, "tls.key")
-	bad := filepath.Join(dir, "bad-ca.crt")
-	//nolint:errcheck // test
-	_ = os.WriteFile(cp, cert, 0o600)
-	//nolint:errcheck // test
-	_ = os.WriteFile(kp, key, 0o600)
-	//nolint:errcheck // test
-	_ = os.WriteFile(bad, []byte("not a certificate"), 0o600)
-	if _, err := Load(cp, kp, bad); err == nil {
+	if _, err := Load(writeTriple(t, t.TempDir(), cert, key, []byte("not a certificate"))); err == nil {
 		t.Error("Load accepted a CA file with no certificate")
 	}
 	// Sanity: a good triple loads.

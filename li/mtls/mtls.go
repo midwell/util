@@ -13,7 +13,7 @@
 // configured file paths (e.g. a dedicated, access-restricted Kubernetes
 // Secret). Unlike SD-Core's SBI TLS, verification is never skipped.
 //
-// **There is no reload.** Load reads the files once and the configurations it returns
+// There is no reload. Load reads the files once and the configurations it returns
 // hold what it read, so rotating the certificate or the trust anchor takes effect only
 // when the network function restarts. A certificate that expires in service makes every
 // X1, X2 and X3 handshake fail, and the failure is visible only at the peer.
@@ -38,45 +38,68 @@ type Material struct {
 // trust anchor, from the given file paths (X0-pre-provisioned). All three are
 // required — LI has no insecure/verification-skipped mode.
 //
-// A certificate that has already expired is refused here, where the operator is
-// looking, rather than discovered handshake by handshake at every peer.
+// A certificate outside its validity period — expired, or not valid yet — is refused
+// here, where the operator is looking, rather than discovered handshake by handshake
+// at every peer.
+//
+// The key file's permissions are not checked. A Kubernetes Secret volume mounts its
+// files 0644 unless the deployment sets defaultMode, so a check would refuse an
+// ordinary deployment; access to the key is the volume's to restrict.
 func Load(certPath, keyPath, caCertPath string) (*Material, error) {
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("mtls: load LI certificate/key: %w", err)
 	}
+	// LoadX509KeyPair fills Leaf unless GODEBUG x509keypairleaf=0 turns that off.
 	leaf := cert.Leaf
 	if leaf == nil {
 		if leaf, err = x509.ParseCertificate(cert.Certificate[0]); err != nil {
 			return nil, fmt.Errorf("mtls: parse LI certificate: %w", err)
 		}
 	}
-	if now := time.Now(); now.After(leaf.NotAfter) {
-		return nil, fmt.Errorf("mtls: LI certificate %q expired at %s",
-			leaf.Subject.CommonName, leaf.NotAfter.UTC().Format(time.RFC3339))
+	if invalid := withinValidity(leaf, time.Now()); invalid != nil {
+		return nil, fmt.Errorf("mtls: LI certificate %q %w", leaf.Subject.CommonName, invalid)
 	}
 	caPEM, err := os.ReadFile(caCertPath)
 	if err != nil {
 		return nil, fmt.Errorf("mtls: read LI CA certificate: %w", err)
 	}
-	pool, err := caPool(caPEM)
+	pool, err := caPool(caPEM, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("mtls: LI CA file %q: %w", caCertPath, err)
 	}
 	return &Material{cert: cert, caPool: pool}, nil
 }
 
-// caPool builds the trust anchors from a PEM bundle, admitting only CA certificates.
+// withinValidity reports, as an error completing "certificate X …", why c is not valid
+// at now, or nil when it is.
+func withinValidity(c *x509.Certificate, now time.Time) error {
+	switch {
+	case now.After(c.NotAfter):
+		return fmt.Errorf("expired at %s", c.NotAfter.UTC().Format(time.RFC3339))
+	case now.Before(c.NotBefore):
+		return fmt.Errorf("is not valid until %s", c.NotBefore.UTC().Format(time.RFC3339))
+	}
+
+	return nil
+}
+
+// caPool builds the trust anchors from a PEM bundle, admitting only CA certificates that
+// are within their validity period.
 //
 // x509.CertPool.AppendCertsFromPEM admits any certificate, and a certificate in the
 // pool is trusted as it stands: verification accepts a peer presenting it as a
-// complete chain of one. A bundle that carried a leaf — a misassembled ca.crt, say —
-// therefore made that leaf's holder trusted on every LI interface without any CA
-// having issued it for that. Such entries are skipped, and a bundle with no CA at all
-// is refused.
-func caPool(bundle []byte) (*x509.CertPool, error) {
+// complete chain of one. A bundle carrying a leaf — a misassembled ca.crt, say —
+// would make that leaf's holder trusted on every LI interface without any CA having
+// issued it for that, so only certificates marked CA by basicConstraints are anchors.
+// An anchor outside its validity period verifies no chain, so it is left out too, and
+// a bundle that is left with none is refused with the count of what was skipped and
+// why. A CERTIFICATE block that does not parse is an error: the bundle is damaged, and
+// the anchor it should have carried may be the one the peers use.
+func caPool(bundle []byte, now time.Time) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
-	anchors, skipped := 0, 0
+
+	var anchors, notCA, outOfDate, otherBlocks int
 
 	for rest := bundle; ; {
 		var block *pem.Block
@@ -84,14 +107,21 @@ func caPool(bundle []byte) (*x509.CertPool, error) {
 			break
 		}
 		if block.Type != "CERTIFICATE" {
+			otherBlocks++
 			continue
 		}
 		c, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
+			return nil, fmt.Errorf("certificate %d does not parse: %w", anchors+notCA+outOfDate+1, err)
+		}
+		// IsCA is only set when basicConstraints is present, so this is the
+		// basicConstraints CA:TRUE test.
+		if !c.IsCA {
+			notCA++
 			continue
 		}
-		if !c.IsCA || !c.BasicConstraintsValid {
-			skipped++
+		if withinValidity(c, now) != nil {
+			outOfDate++
 			continue
 		}
 		pool.AddCert(c)
@@ -99,11 +129,9 @@ func caPool(bundle []byte) (*x509.CertPool, error) {
 	}
 
 	if anchors == 0 {
-		// Say why: a root without the extension (an X.509 v1 certificate, or one issued
-		// with no extensions configured) is skipped by the rule above, and "no CA" alone
-		// would send an operator looking at the wrong file.
-		return nil, fmt.Errorf("contains no CA certificate: %d certificate(s) skipped for "+
-			"lacking basicConstraints with CA:TRUE", skipped)
+		return nil, fmt.Errorf("contains no usable CA certificate: %d without basicConstraints "+
+			"CA:TRUE, %d outside their validity period, %d PEM block(s) that are not "+
+			"certificates", notCA, outOfDate, otherBlocks)
 	}
 	return pool, nil
 }
@@ -111,6 +139,9 @@ func caPool(bundle []byte) (*x509.CertPool, error) {
 // ServerTLS returns the TLS config for the X1 listener: it presents this NE's
 // LI certificate and requires and verifies a client (ADMF) certificate issued
 // by the LI CA. A peer without a valid LI certificate is rejected at handshake.
+//
+// TLS 1.2 is the floor; the cipher suites are Go's defaults, which exclude the
+// suites Go considers insecure, so none are configured here.
 func (m *Material) ServerTLS() *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{m.cert},

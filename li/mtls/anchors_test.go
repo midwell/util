@@ -13,8 +13,6 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -112,20 +110,13 @@ func TestABundleWithNoCAIsRefused(t *testing.T) {
 	neCert, neKey := newLeaf(t, "ne", ca, caKey)
 	onlyLeaf, _ := selfSignedLeaf(t, "stray", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 
-	cp, kp, ap := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt")
-	for p, b := range map[string][]byte{cp: neCert, kp: neKey, ap: onlyLeaf} {
-		if err := os.WriteFile(p, b, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	_, err := Load(cp, kp, ap)
-	if err == nil || !strings.Contains(err.Error(), "no CA") {
+	_, err := Load(writeTriple(t, dir, neCert, neKey, onlyLeaf))
+	if err == nil || !strings.Contains(err.Error(), "no usable CA") {
 		t.Errorf("Load of a bundle holding only a leaf = %v, want a refusal naming the missing CA", err)
 	}
 	// And why: a root issued without the extension is skipped by the same rule, so the error
 	// must name the rule rather than leave the operator to suspect the wrong file.
-	if err != nil && !strings.Contains(err.Error(), "1 certificate(s) skipped for lacking basicConstraints") {
+	if err != nil && !strings.Contains(err.Error(), "1 without basicConstraints CA:TRUE") {
 		t.Errorf("the refusal does not say why the certificate was skipped: %v", err)
 	}
 }
@@ -137,14 +128,55 @@ func TestAnExpiredCertificateIsRefusedAtLoad(t *testing.T) {
 	_, _, caPEM := newCA(t, "LI Test CA")
 	expired, key := selfSignedLeaf(t, "ne", time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
 
-	cp, kp, ap := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt")
-	for p, b := range map[string][]byte{cp: expired, kp: key, ap: caPEM} {
-		if err := os.WriteFile(p, b, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := Load(writeTriple(t, dir, expired, key, caPEM)); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Errorf("Load of an expired certificate = %v, want a refusal saying it expired", err)
+	}
+}
+
+// TestANotYetValidCertificateIsRefusedAtLoad: a certificate whose validity has not begun
+// fails every handshake just as an expired one does — a clock behind the issuer's, or a
+// certificate rolled out early.
+func TestANotYetValidCertificateIsRefusedAtLoad(t *testing.T) {
+	_, _, caPEM := newCA(t, "LI Test CA")
+	early, key := selfSignedLeaf(t, "ne", time.Now().Add(time.Hour), time.Now().Add(2*time.Hour))
+
+	if _, err := Load(writeTriple(t, t.TempDir(), early, key, caPEM)); err == nil || !strings.Contains(err.Error(), "not valid until") {
+		t.Errorf("Load of a not-yet-valid certificate = %v, want a refusal saying when it becomes valid", err)
+	}
+}
+
+// TestAnAnchorOutsideItsValidityIsNotTrusted: an expired CA verifies no chain, so a bundle
+// holding only one is refused with that reason, and one holding a current CA beside it
+// loads.
+func TestAnAnchorOutsideItsValidityIsNotTrusted(t *testing.T) {
+	ca, caKey, caPEM := newCA(t, "LI Test CA")
+	neCert, neKey := newLeaf(t, "ne", ca, caKey)
+	_, _, expiredPEM := newCAValid(t, "Old LI CA", time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
+
+	_, err := Load(writeTriple(t, t.TempDir(), neCert, neKey, expiredPEM))
+	if err == nil || !strings.Contains(err.Error(), "1 outside their validity period") {
+		t.Errorf("Load with only an expired CA = %v, want a refusal saying the CA is out of date", err)
 	}
 
-	if _, err := Load(cp, kp, ap); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Errorf("Load of an expired certificate = %v, want a refusal saying it expired", err)
+	if _, err := Load(writeTriple(t, t.TempDir(), neCert, neKey, append(expiredPEM, caPEM...))); err != nil {
+		t.Errorf("Load with an expired CA beside a current one = %v, want it to load", err)
+	}
+}
+
+// TestADamagedCABundleIsRefused: a CERTIFICATE block that does not parse may be the anchor
+// the peers use, so it is an error rather than an entry silently skipped; other PEM blocks
+// are counted in the refusal, so a key pasted into ca.crt is visible as one.
+func TestADamagedCABundleIsRefused(t *testing.T) {
+	ca, caKey, caPEM := newCA(t, "LI Test CA")
+	neCert, neKey := newLeaf(t, "ne", ca, caKey)
+	garbage := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")})
+
+	if _, err := Load(writeTriple(t, t.TempDir(), neCert, neKey, append(garbage, caPEM...))); err == nil || !strings.Contains(err.Error(), "does not parse") {
+		t.Errorf("Load of a bundle with a damaged certificate = %v, want a refusal", err)
+	}
+
+	_, err := Load(writeTriple(t, t.TempDir(), neCert, neKey, neKey))
+	if err == nil || !strings.Contains(err.Error(), "1 PEM block(s) that are not certificates") {
+		t.Errorf("Load of a CA file holding a key = %v, want a refusal counting the key block", err)
 	}
 }
