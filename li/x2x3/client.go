@@ -58,6 +58,58 @@ type Client struct {
 	unreachable atomic.Bool
 }
 
+// DeliveryError is a delivery failure together with how many product units it cost.
+//
+// **A failed delivery is counted in units, not in calls.** The delivery worker writes up to
+// maxDeliveryBatch units at once, and a batch that fails used to reach the network function
+// as one error, so an element whose mediation function was refusing connections reported a
+// few dozen errors while losing a thousand units — and nothing in its own account could
+// recover the number the mediation function would see missing from its sequence. Every error
+// the delivery worker reports carries the count; LostUnits reads it.
+//
+// It wraps the failure, so errors.Is still finds ErrUnitDropped and ErrNilPDU through it.
+type DeliveryError struct {
+	// Lost is how many product units were not delivered.
+	Lost int
+	Err  error
+}
+
+func (e *DeliveryError) Error() string {
+	return fmt.Sprintf("%v (%d product unit(s) not delivered)", e.Err, e.Lost)
+}
+
+func (e *DeliveryError) Unwrap() error { return e.Err }
+
+// LostUnits reports how many product units err says were not delivered, or 0 when err
+// carries no count — nil, or an error from outside a delivery.
+func LostUnits(err error) int {
+	var de *DeliveryError
+	if errors.As(err, &de) {
+		return de.Lost
+	}
+
+	return 0
+}
+
+// lostUnits wraps err with the number of units it cost. A nil err stays nil.
+func lostUnits(n int, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &DeliveryError{Lost: n, Err: err}
+}
+
+// moreLost adds n to the units err already accounts for.
+func moreLost(err error, n int) error {
+	var de *DeliveryError
+	if errors.As(err, &de) {
+		return &DeliveryError{Lost: de.Lost + n, Err: de.Err}
+	}
+
+	return lostUnits(n, err)
+}
+
 // NewClient returns a delivery client for the MDF at addr ("host:port").
 //
 // The zero KeepaliveConfig is the conformant one — the clause 6.2.4 mechanism, at the
@@ -88,7 +140,7 @@ func (c *Client) Send(pdu *PDU) error {
 
 	b, err := pdu.Marshal()
 	if err != nil {
-		return err
+		return lostUnits(1, err)
 	}
 
 	return c.sendBytes(b, nil)
@@ -135,16 +187,25 @@ func (c *Client) Unreachable() bool {
 // deliver writes already-marshalled PDU bytes, reconnecting once if the MDF has
 // dropped an idle connection. Reached from both Send and SendBatch through sendBytes, so
 // both get the same reconnect behaviour — a batch is only a longer write.
+//
+// Every failure it returns is a *DeliveryError counting the units that did not arrive: all of
+// them when nothing could be written, and only the ones from the resumption point on when a
+// write stopped part-way and the retry failed.
 func (c *Client) deliver(b []byte, boundaries []int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	units := len(boundaries)
+	if units == 0 {
+		units = 1
+	}
+
 	if c.closed {
-		return fmt.Errorf("x2x3: send to %s after Close", c.addr)
+		return lostUnits(units, fmt.Errorf("x2x3: send to %s after Close", c.addr))
 	}
 	if c.live == nil {
 		if err := c.dialLocked(); err != nil {
-			return err
+			return lostUnits(units, err)
 		}
 	}
 	n, err := c.writeLocked(b)
@@ -175,36 +236,61 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 	// Whether anything reached the old connection whole, which is what makes a later
 	// failure a partial success rather than a total one.
 	landed := len(rest) < len(b)
+	// The units still to deliver: everything from the resumption point on.
+	pending := unitsIn(boundaries, len(b), len(rest))
 
 	// One reconnect attempt — the MDF may have dropped an idle connection.
 	c.dropLocked()
 	if err := c.dialLocked(); err != nil {
-		return err
+		return lostUnits(pending, err)
 	}
 	if len(rest) > 0 {
 		if _, err := c.writeLocked(rest); err != nil {
 			c.dropLocked()
 
 			if resuming && landed {
-				// The one place a unit is still knowingly lost: this element had one
+				// The one place units are still knowingly lost: this element had one
 				// reconnect, spent it, and the resend did not land. Earlier units did, so
 				// the statement is the one ErrUnitDropped is for — delivery succeeded
-				// except for a product unit — and the destination is not called
-				// unreachable over it, because it took the rest. A drop leaves a gap in a
-				// numbered sequence, which the peer can see and the fault channel can
-				// explain.
-				return fmt.Errorf("%w: send to %s: %v", ErrUnitDropped, c.addr, err)
+				// except for the units from the one the write stopped inside to the end of
+				// the batch — and the destination is not called unreachable over it,
+				// because it took the rest. A drop leaves a gap in a numbered sequence,
+				// which the peer can see and the fault channel can explain.
+				return lostUnits(pending, fmt.Errorf("%w: send to %s: %v", ErrUnitDropped, c.addr, err))
 			}
 
-			return fmt.Errorf("x2x3: send to %s: %w", c.addr, err)
+			return lostUnits(pending, fmt.Errorf("x2x3: send to %s: %w", c.addr, err))
 		}
 	}
 
 	return nil
 }
 
-// ErrUnitDropped reports that delivery succeeded except for one product unit, which was
-// partially written and could not be resumed.
+// unitsIn counts the product units in the last restLen bytes of a total-byte buffer whose
+// units end at boundaries. A nil boundaries is one unit, which is in the tail if the tail is
+// not empty. The tail always starts at a unit boundary — resumeAt only resumes at one.
+func unitsIn(boundaries []int, total, restLen int) int {
+	if restLen == 0 {
+		return 0
+	}
+	if len(boundaries) == 0 {
+		return 1
+	}
+
+	start := total - restLen
+	n := 0
+	for _, end := range boundaries {
+		if end > start {
+			n++
+		}
+	}
+
+	return n
+}
+
+// ErrUnitDropped reports that delivery succeeded except for the tail of a batch: the unit a
+// write stopped inside, and every unit after it, which were resent on a fresh connection that
+// did not take them either. How many is the DeliveryError count that carries it.
 //
 // It is a distinct error because the two outcomes call for different reports and this
 // element must not conflate them. A destination that took the rest of the batch is
@@ -215,7 +301,7 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 // loss answers "something did not arrive". A watcher told the destination is down would
 // report a fault about a mediation function that is working, and retract it on the next
 // successful send.
-var ErrUnitDropped = errors.New("x2x3: one product unit was partially written and dropped")
+var ErrUnitDropped = errors.New("x2x3: the tail of a partially written batch could not be resent and was dropped")
 
 // resumeAt splits a buffer that was partially written at the first product-unit
 // boundary at or after what the peer received, and reports whether a unit was left
@@ -356,6 +442,9 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 		// buffer, so the destination is not sent the leading PDUs twice.
 		ends       []int
 		marshalErr error
+		// skipped counts the units that never reached the buffer, which the error
+		// returned counts as lost alongside whatever delivery loses.
+		skipped int
 	)
 
 	for _, pdu := range pdus {
@@ -363,6 +452,7 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 			if marshalErr == nil {
 				marshalErr = ErrNilPDU
 			}
+			skipped++
 
 			continue
 		}
@@ -372,6 +462,7 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 			if marshalErr == nil {
 				marshalErr = err
 			}
+			skipped++
 
 			continue
 		}
@@ -381,12 +472,16 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 	}
 
 	if len(buf) == 0 {
-		return marshalErr
+		return lostUnits(skipped, marshalErr)
 	}
 
 	if err := c.sendBytes(buf, ends); err != nil {
+		if skipped > 0 {
+			return moreLost(err, skipped)
+		}
+
 		return err
 	}
 
-	return marshalErr
+	return lostUnits(skipped, marshalErr)
 }

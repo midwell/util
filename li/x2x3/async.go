@@ -257,22 +257,40 @@ func (a *AsyncSender) Close() error {
 // report it as a single error, so the element's own account would show one failure where the
 // mediation function sees a run of missing sequence numbers. Client.SendBatch skips a PDU it
 // cannot marshal for the same reason.
+//
+// Whatever it returns counts the units it cost (see DeliveryError). *Client counts its own; an
+// error from a sender that does not is taken to have cost every unit it was given, because a
+// sender that says only "failed" has not said that anything arrived.
 func (a *AsyncSender) send(batch []*PDU) error {
 	if len(batch) == 1 {
-		return a.inner.Send(batch[0])
+		return counted(a.inner.Send(batch[0]), 1)
 	}
 
 	if bs, ok := a.inner.(batchSender); ok {
-		return bs.SendBatch(batch)
+		return counted(bs.SendBatch(batch), len(batch))
 	}
 
-	var errs []error
+	var (
+		errs []error
+		lost int
+	)
 
 	for _, pdu := range batch {
 		if err := a.inner.Send(pdu); err != nil {
 			errs = append(errs, err)
+			lost += LostUnits(counted(err, 1))
 		}
 	}
 
-	return errors.Join(errs...)
+	return lostUnits(lost, errors.Join(errs...))
+}
+
+// counted returns err as a DeliveryError, taking it to have cost all n units it was given
+// when it does not already say how many it did.
+func counted(err error, n int) error {
+	if err == nil || LostUnits(err) > 0 {
+		return err
+	}
+
+	return lostUnits(n, err)
 }
