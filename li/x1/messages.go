@@ -332,13 +332,18 @@ type MediationDetails struct {
 // 5G POIs match on is modeled; the rest of the TS 103 221-1 set is unmodeled
 // (an unknown identifier yields an empty match and is rejected).
 type TargetIdentifier struct {
-	IMSI       string `xml:"imsi,omitempty"`
-	SUPIIMSI   string `xml:"supiimsi,omitempty"`
-	SUPINAI    string `xml:"supinai,omitempty"`
-	PEIIMEI    string `xml:"peiImei,omitempty"`
-	PEIIMEISV  string `xml:"peiImeisv,omitempty"`
-	GPSIMSISDN string `xml:"gpsiMsisdn,omitempty"`
-	E164Number string `xml:"e164Number,omitempty"`
+	IMSI      string `xml:"imsi,omitempty"`
+	SUPIIMSI  string `xml:"supiimsi,omitempty"`
+	SUPINAI   string `xml:"supinai,omitempty"`
+	PEIIMEI   string `xml:"peiImei,omitempty"`
+	PEIIMEISV string `xml:"peiImeisv,omitempty"`
+	// IMEI and PEIIMEICheckDigit name the same device as PEIIMEI: the 14-digit IMEI, and
+	// the 15-digit form that appends its TS 23.003 check digit. Both are matched as the
+	// 14-digit PEI the network functions present.
+	IMEI              string `xml:"imei,omitempty"`
+	PEIIMEICheckDigit string `xml:"peiImeiCheckDigit,omitempty"`
+	GPSIMSISDN        string `xml:"gpsiMsisdn,omitempty"`
+	E164Number        string `xml:"e164Number,omitempty"`
 	// The plain TS 103 221-1 arms that TS 33.128 table 6.2.3-7 lists as LI_T3
 	// packet-detection criteria. Element names are the schema's, which are
 	// lowercase-initial — the table names the *types* (IPv4Address, TCPPort), not

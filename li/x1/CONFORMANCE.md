@@ -211,8 +211,12 @@ Two properties of the answers matter more than the coverage:
   behalf.
 
 `GetTaskDetails` round-trips a task's target identifiers back into the vocabulary the request
-used, across all fifteen identifier types, so an ADMF can compare what the element holds
-against what it believes it sent.
+used, across every identifier type this element models, so an ADMF can compare what the
+element holds against what it believes it sent.
+
+A device is matched by its fourteen-digit IMEI, whichever element names it: `peiImei` and
+`imei` carry the IMEI, and `peiImeiCheckDigit` carries it with its TS 23.003 check digit,
+which is verified (a wrong one is refused with 1010) and re-derived in the answer.
 
 ### What the status answer does not cover — declared 2026-08-25
 

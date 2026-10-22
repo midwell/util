@@ -1838,7 +1838,14 @@ func targetXMLAs(t types.TargetIdentifier, element string) string {
 		return targetXML(t)
 	}
 
-	return "<ns1:" + element + ">" + escapeXML(t.Value) + "</ns1:" + element + ">"
+	value := t.Value
+	if element == elPEIIMEICD && digitsBetween(value, 14, 14) {
+		// Stored as the fourteen-digit IMEI; the element the request used carries the
+		// check digit too, verified on the way in, so this reproduces what was sent.
+		value += string(imeiCheckDigit(value))
+	}
+
+	return "<ns1:" + element + ">" + escapeXML(value) + "</ns1:" + element + ">"
 }
 
 // extensionTargetArm renders the 3GPP LI_T3 arm for a packet-detection criterion.
@@ -2189,6 +2196,8 @@ const (
 	elSUPINAI      = "supinai"
 	elPEIIMEI      = "peiImei"
 	elPEIIMEISV    = "peiImeisv"
+	elIMEI         = "imei"
+	elPEIIMEICD    = "peiImeiCheckDigit"
 	elGPSIMSISDN   = "gpsiMsisdn"
 	elE164Number   = "e164Number"
 	elGTPUTunnelID = "gtpuTunnelId"
@@ -2212,6 +2221,8 @@ func plainArm(t TargetIdentifier) (targetArm, bool) {
 		{elSUPINAI, t.SUPINAI},
 		{elPEIIMEI, t.PEIIMEI},
 		{elPEIIMEISV, t.PEIIMEISV},
+		{elIMEI, t.IMEI},
+		{elPEIIMEICD, t.PEIIMEICheckDigit},
 		{elGPSIMSISDN, t.GPSIMSISDN},
 		{elE164Number, t.E164Number},
 		{elGTPUTunnelID, t.GTPUTunnelID},
@@ -2232,6 +2243,7 @@ func plainArm(t TargetIdentifier) (targetArm, bool) {
 var armTypes = map[string]types.TargetIdentifierType{
 	elSUPIIMSI: types.TargetSUPI, elIMSI: types.TargetSUPI, elSUPINAI: types.TargetSUPI,
 	elPEIIMEI: types.TargetPEI, elPEIIMEISV: types.TargetPEI,
+	elIMEI: types.TargetPEI, elPEIIMEICD: types.TargetPEI,
 	elGPSIMSISDN: types.TargetGPSI, elE164Number: types.TargetGPSI,
 	elGTPUTunnelID: types.TargetFTEID,
 	elIPv4Address:  types.TargetUEIPv4, elIPv6Address: types.TargetUEIPv6,
@@ -2265,12 +2277,22 @@ func canonicalArmValue(a targetArm) (string, error) {
 		}
 
 		return tok, nil
-	case elPEIIMEI:
+	case elPEIIMEI, elIMEI:
 		if !digitsBetween(tok, 14, 14) {
 			return bad()
 		}
 
 		return tok, nil
+	case elPEIIMEICD:
+		// The schema type is fifteen digits. Stored as the fourteen-digit IMEI the network
+		// functions present, which drops the check digit -- so the check digit is verified
+		// rather than discarded unread: a wrong one means the ADMF's value names no device,
+		// and the answer re-derives it, so only a correct one round-trips exactly.
+		if !digitsBetween(tok, 15, 15) || imeiCheckDigit(tok[:14]) != tok[14] {
+			return bad()
+		}
+
+		return tok[:14], nil
 	case elPEIIMEISV:
 		if !digitsBetween(tok, 16, 16) {
 			return bad()
@@ -2329,6 +2351,24 @@ func schemaInteger(tok string, lo, hi int64, bad func() (string, error)) (string
 }
 
 // digitsBetween reports whether s is all decimal digits with a length in [lo, hi].
+// imeiCheckDigit is the check digit TS 23.003 Annex B defines for a fourteen-digit IMEI:
+// the Luhn digit, doubling every second digit from the right of the fourteen.
+func imeiCheckDigit(imei string) byte {
+	sum := 0
+	for i := len(imei) - 1; i >= 0; i-- {
+		d := int(imei[i] - '0')
+		if (len(imei)-1-i)%2 == 0 {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+	}
+
+	return byte('0' + (10-sum%10)%10)
+}
+
 func digitsBetween(s string, lo, hi int) bool {
 	if len(s) < lo || len(s) > hi {
 		return false
@@ -2354,7 +2394,7 @@ func populatedArms(t TargetIdentifier) int {
 	n := 0
 	for _, v := range []string{
 		t.IMSI, t.SUPIIMSI, t.SUPINAI,
-		t.PEIIMEI, t.PEIIMEISV,
+		t.PEIIMEI, t.PEIIMEISV, t.IMEI, t.PEIIMEICheckDigit,
 		t.GPSIMSISDN, t.E164Number,
 		t.GTPUTunnelID, t.IPv4Address, t.IPv6Address,
 		t.TCPPort, t.UDPPort,
