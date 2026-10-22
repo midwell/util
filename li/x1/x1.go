@@ -27,6 +27,9 @@ import (
 	"github.com/omec-project/util/li/types"
 )
 
+// maxRequestBytes bounds an X1 request body. A request carries provisioning messages,
+// each a few kilobytes; a megabyte holds hundreds of them, which is far more than an ADMF
+// sends in one container, while keeping one request's memory bounded.
 const maxRequestBytes = 1 << 20
 
 // The TS 103 221-1 deliveryType values, which appear both as something this
@@ -46,21 +49,11 @@ const (
 // responseTemplate emits an X1Response in the conventional TS 103 221-1 wire
 // form (xsi/ns1 prefixes, xsi:type QName), which Go's encoding/xml can't
 // produce cleanly. Input is still parsed structurally with encoding/xml.
-var responseTemplate = template.Must(template.New("x1resp").Funcs(template.FuncMap{
-	"esc": func(v any) string {
-		var b bytes.Buffer
-		//nolint:errcheck // writing to a bytes.Buffer cannot fail
-		_ = xml.EscapeText(&b, []byte(fmt.Sprintf("%s", v)))
-		return b.String()
-	},
-	// A details answer has to say what was tasked in the same vocabulary the
-	// request used, so an ADMF can compare it against what it believes it sent.
-	"targetXML":    targetXML,
+var responseTemplate = template.Must(template.New("x1resp").Funcs(x1TemplateFuncs).Funcs(template.FuncMap{
 	"responseBody": responseBody,
-	"deliveryType": deliveryTypeOf,
 }).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <ns1:X1Response xmlns:ns1="http://uri.etsi.org/03221/X1/2017/10" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="urn:3GPP:ns:li:3GPPX1Extensions:r18:v6" xmlns:c="http://uri.etsi.org/03280/common/2017/07">{{range .Messages}}
-  <ns1:x1ResponseMessage xsi:type="ns1:{{.Type}}">
+  <ns1:x1ResponseMessage xsi:type="ns1:{{esc .Type}}">
     <ns1:admfIdentifier>{{esc .AdmfIdentifier}}</ns1:admfIdentifier>
     <ns1:neIdentifier>{{esc .NeIdentifier}}</ns1:neIdentifier>
     <ns1:messageTimestamp>{{esc .MessageTimestamp}}</ns1:messageTimestamp>
@@ -211,6 +204,16 @@ type Server struct {
 	// requires that a task's destination identifier arrived over X1 rather than having
 	// been agreed out of band, so this is a supported arrangement and not a fallback.
 	configured map[string]heldDestination
+
+	// afterPurgeSnapshot, afterDestinationGuard and afterLapseDecision are set only by
+	// this package's tests, to hold a goroutine inside a window a few instructions wide;
+	// nil otherwise. afterPurgeSnapshot runs between reading the tasks a purge tears down
+	// and emptying the store; afterDestinationGuard inside createDestination, after its
+	// refusals are decided and before the destination is stored; afterLapseDecision
+	// inside purgeIfLapsed, after it concludes the ADMF has gone quiet and before it acts.
+	afterPurgeSnapshot    func()
+	afterDestinationGuard func()
+	afterLapseDecision    func()
 }
 
 // heldDestination is a delivery destination this element can resolve a DID to.
@@ -716,13 +719,26 @@ func NewServer(s *store.Store, neID string, opts ...Option) *Server {
 	return srv
 }
 
+// ServeHTTP serves the X1 interface over HTTP, as TS 103 221-1 clause 7.2 binds it: one
+// X1Request per POST, answered with an X1Response, or with an X1TopLevelErrorResponse when
+// the request cannot be parsed. HTTP status codes report HTTP-level errors only (clause
+// 7.2.2.2): a method other than POST, a body larger than maxRequestBytes, or a body that
+// cannot be read.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "X1 requires POST", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
+		// A body over the limit is refused whole rather than truncated: parsing a prefix
+		// would answer a request the peer did not send.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "X1 request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
@@ -741,13 +757,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// information." The schema defines the element for it, so a conformant ADMF
 		// has a structured answer to expect.
 		//
-		// Clause 7.2.2.2 settles the status code and it is the opposite of what stood
-		// here: "HTTP error codes shall only be used to indicate HTTP-level errors, and
-		// shall not be used to indicate errors with the X1 responses themselves." A
-		// request that arrived intact and could not be parsed is an X1-level error, so
-		// it is a 200 carrying the defined response — where this answered 400 with the
-		// decoder's own message as the body, which is neither the defined answer nor a
-		// thing an LI interface should be putting on the wire.
+		// Clause 7.2.2.2 settles the status code: "HTTP error codes shall only be used to
+		// indicate HTTP-level errors, and shall not be used to indicate errors with the X1
+		// responses themselves." A request that arrived intact and could not be parsed is
+		// an X1-level error, so it is a 200 carrying the defined response, and the
+		// decoder's own message never reaches the wire.
 		w.Header().Set("Content-Type", "application/xml")
 		//nolint:errcheck // a peer that hung up mid-response is not actionable, and must not be logged
 		_, _ = w.Write(s.topLevelError(peer))
@@ -818,27 +832,29 @@ func (s *Server) topLevelError(peer *x509.Certificate) []byte {
 // returns the response envelope. peer is the certificate the requester presented
 // (nil if none), against which each message is authenticated. Exposed for testing
 // without HTTP.
+//
+// A request carrying no message is refused as unparseable. The schema requires at least
+// one, and so does an answer: an X1Response with no message would not validate, so the
+// clause 6.1 top-level error is the only well-formed reply.
 func (s *Server) Process(body []byte, peer *x509.Certificate) (*X1Response, error) {
 	var req X1Request
 	if err := xml.Unmarshal(body, &req); err != nil {
 		return nil, fmt.Errorf("x1: malformed request: %w", err)
 	}
+	if len(req.Messages) == 0 {
+		return nil, errors.New("x1: request carries no message")
+	}
 	resp := &X1Response{}
 	for _, m := range req.Messages {
-		// The bool the two-return form carried said "this message authenticated", and it
-		// existed only to record ADMF liveness after the batch. That now happens inside,
-		// before each message is applied — see applyAuthenticated for why the order
-		// matters to the fail-safe — so nothing out here needs it.
-		rm, _ := s.applyAuthenticated(m, peer)
-		resp.Messages = append(resp.Messages, rm)
+		resp.Messages = append(resp.Messages, s.applyAuthenticated(m, peer))
 	}
 
 	return resp, nil
 }
 
 // applyAuthenticated authenticates a request message and, only if it passes,
-// applies it. The bool reports whether the peer authenticated for this message.
-func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) (X1ResponseMessage, bool) {
+// applies it.
+func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) X1ResponseMessage {
 	if code, desc := s.authenticate(m, peer); code != 0 {
 		// Someone reached this interface with a certificate from the LI CA and tried to
 		// task or untask this element as somebody they are not. Refusing it is not
@@ -869,7 +885,7 @@ func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) 
 			// on the authentication path — where the request is refused before anything but
 			// its type has been trusted.
 			RequestType: localType(m.Type),
-		}, false
+		}
 	}
 	// **Recorded before the message is applied, not after the batch.**
 	//
@@ -890,7 +906,7 @@ func (s *Server) applyAuthenticated(m X1RequestMessage, peer *x509.Certificate) 
 	// because this element finished acting on it.
 	s.recordActivity()
 
-	return s.apply(m), true
+	return s.apply(m)
 }
 
 func (s *Server) recordActivity() {
@@ -956,8 +972,8 @@ func (s *Server) purgeIfLapsed(timeout time.Duration) {
 	// nil in production. The window between deciding the ADMF has gone quiet and acting
 	// on it is where a returning ADMF's recovery activation lands — see
 	// TestAnActivationInTheLapseWindowSurvives.
-	if afterLapseDecision != nil {
-		afterLapseDecision()
+	if s.afterLapseDecision != nil {
+		s.afterLapseDecision()
 	}
 
 	// **Re-checked under the transition lock, and that is not belt-and-braces.** The read
@@ -1020,26 +1036,14 @@ func (s *Server) purgeAllTaskingLocked(reason PurgeReason) {
 	// asserted by hope is one that passes against the defect. See
 	// TestAnActivationRacingTheFailSafePurgeLeavesNoOrphan, which holds the purge open
 	// here and is mutation-verified against the unsynchronised ordering.
-	if afterPurgeSnapshot != nil {
-		afterPurgeSnapshot()
+	if s.afterPurgeSnapshot != nil {
+		s.afterPurgeSnapshot()
 	}
 	s.store.DeactivateAll()
 	for _, t := range tasks {
 		s.notifyRemoved(t, reason)
 	}
 }
-
-// afterPurgeSnapshot is called between reading the tasks a purge will tear down and
-// emptying the store. Set only by tests; nil otherwise.
-var afterPurgeSnapshot func()
-
-// afterDestinationGuard is called inside createDestination, after its two refusals have
-// been decided and before the destination is stored. Set only by tests; nil otherwise.
-var afterDestinationGuard func()
-
-// afterLapseDecision is called inside purgeIfLapsed, after it has concluded the ADMF has
-// gone quiet and before it acts on that. Set only by tests; nil otherwise.
-var afterLapseDecision func()
 
 // deactivateAll performs the bulk deactivation TS 103 221-1 requires every implementation to
 // support: "If enabled, the DeactivateAllTasks command shall perform a 'DeactivateTask' command
@@ -1311,7 +1315,8 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 		rm.Type = "GetNEStatusResponse"
 	case "GetDestinationDetailsRequest":
 		if m.DID == "" {
-			err = fmt.Errorf("missing dId")
+			err = refuse(errCodeSchemaError, "missing dId")
+			code = errCodeSchemaError
 		} else if d, found := s.destinationByDID(m.DID); found {
 			rm.Destinations = []ReportedDestination{d}
 		} else {
@@ -1335,7 +1340,8 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 			rm.Tasks = []types.InterceptTask{t}
 		} else if m.XID == "" {
 			// xId is mandatory on this request in the schema.
-			err = fmt.Errorf("missing xId")
+			err = refuse(errCodeSchemaError, "missing xId")
+			code = errCodeSchemaError
 		} else {
 			// Reporting "no such task" is the whole point: it is the answer that
 			// tells an ADMF its warrant is not in place here.
@@ -1435,7 +1441,7 @@ func (s *Server) apply(m X1RequestMessage) X1ResponseMessage {
 // element was not holding the warrant it thought it was withdrawing.
 func (s *Server) deactivate(xid string) (int, error) {
 	if xid == "" {
-		return 0, fmt.Errorf("missing xId")
+		return 0, refuse(errCodeSchemaError, "missing xId")
 	}
 	if err := validIdentifier("xId", xid); err != nil {
 		return 0, err
@@ -1528,8 +1534,8 @@ func (s *Server) createDestination(d *DestinationDetails) (int, error) {
 	// few instructions wide, so the interleaving it used to admit cannot be reached by
 	// racing two goroutines and hoping — see
 	// TestACreateRacingAnActivationResolvesOneWayOrTheOther.
-	if afterDestinationGuard != nil {
-		afterDestinationGuard()
+	if s.afterDestinationGuard != nil {
+		s.afterDestinationGuard()
 	}
 
 	s.mu.Lock()
@@ -2099,10 +2105,14 @@ func mapUPFLIT3Identifier(id UPFLIT3Identifier) (types.TargetIdentifier, error) 
 // UUID" are different things to be told, and the mandatory-field check already said the
 // first one clearly.
 func malformedTaskIdentifiers(td TaskDetails) error {
-	if td.XID != "" {
-		if err := validIdentifier("xId", td.XID); err != nil {
-			return err
-		}
+	// xId is mandatory in TaskDetails, so a task without one is the message violating its
+	// own schema. Checked here, ahead of the "no such task" test, so a ModifyTask without
+	// one is not answered 2020 as though it named a task this element lacks.
+	if td.XID == "" {
+		return refuse(errCodeSchemaError, "missing xId")
+	}
+	if err := validIdentifier("xId", td.XID); err != nil {
+		return err
 	}
 	if td.ProductID != "" {
 		if err := validIdentifier("productID", td.ProductID); err != nil {

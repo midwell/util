@@ -30,7 +30,6 @@ const (
 	errCodeNoSuchDID    = 2040 // DID does not exist on the NE
 	errCodeDeactAllOff  = 5010 // DeactivateAllTasks not enabled
 	errCodeRemoveAllOff = 8020 // RemoveAllDestinations not enabled
-	errCodeDeactAllFail = 5000 // Generic DeactivateAllTasks failure
 	// 8010 is the specific refusal for the guard the specification puts on bulk removal,
 	// and it carries information a generic 1000 does not: the table's own suggested
 	// content is "details of which Destinations are in use, and (if possible) by which

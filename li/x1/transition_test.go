@@ -48,8 +48,7 @@ func TestAnActivationRacingTheFailSafePurgeLeavesNoOrphan(t *testing.T) {
 	// reaching the interleaving.
 	inWindow := make(chan struct{}, 1)
 	proceed := make(chan struct{}, 1)
-	afterPurgeSnapshot = func() { inWindow <- struct{}{}; <-proceed }
-	t.Cleanup(func() { afterPurgeSnapshot = nil })
+	srv.afterPurgeSnapshot = func() { inWindow <- struct{}{}; <-proceed }
 
 	// Lapsed by construction: any idle time exceeds a zero window. Driven through
 	// purgeIfLapsed so the path under test is the one the watchdog takes.
@@ -246,8 +245,7 @@ func TestAnAcknowledgedActivationIsNeverAnEmptyTask(t *testing.T) {
 
 	inWindow := make(chan struct{}, 1)
 	proceed := make(chan struct{}, 1)
-	afterPurgeSnapshot = func() { inWindow <- struct{}{}; <-proceed }
-	t.Cleanup(func() { afterPurgeSnapshot = nil })
+	srv.afterPurgeSnapshot = func() { inWindow <- struct{}{}; <-proceed }
 
 	srv.mu.Lock()
 	srv.lastSeen = srv.now().Add(-time.Hour)
@@ -337,8 +335,7 @@ func TestACreateRacingAnActivationResolvesOneWayOrTheOther(t *testing.T) {
 
 	inWindow := make(chan struct{}, 1)
 	proceed := make(chan struct{}, 1)
-	afterDestinationGuard = func() { inWindow <- struct{}{}; <-proceed }
-	t.Cleanup(func() { afterDestinationGuard = nil })
+	srv.afterDestinationGuard = func() { inWindow <- struct{}{}; <-proceed }
 
 	var wg sync.WaitGroup
 
@@ -443,8 +440,7 @@ func TestAnActivationInTheLapseWindowSurvives(t *testing.T) {
 
 	inWindow := make(chan struct{}, 1)
 	proceed := make(chan struct{}, 1)
-	afterLapseDecision = func() { inWindow <- struct{}{}; <-proceed }
-	t.Cleanup(func() { afterLapseDecision = nil })
+	srv.afterLapseDecision = func() { inWindow <- struct{}{}; <-proceed }
 
 	var wg sync.WaitGroup
 

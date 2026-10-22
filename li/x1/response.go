@@ -51,13 +51,13 @@ func responseBody(m X1ResponseMessage) string {
 	case "GetTaskDetailsResponse":
 		return taskDetailsBody(m)
 	case getAllTaskDetailsResponse:
-		return listBody(m, "listOfTaskResponseDetails", func(b *strings.Builder) {
+		return listBody("listOfTaskResponseDetails", func(b *strings.Builder) {
 			for _, t := range m.Tasks {
 				b.WriteString(taskResponseDetails(6, t, m.TaskFaults[t.XID]))
 			}
 		})
 	case "GetAllDestinationDetailsResponse":
-		return listBody(m, "listOfDestinationResponseDetails", func(b *strings.Builder) {
+		return listBody("listOfDestinationResponseDetails", func(b *strings.Builder) {
 			for _, d := range m.Destinations {
 				b.WriteString(destinationResponseDetails(6, d))
 			}
@@ -138,7 +138,7 @@ func allDetailsBody(m X1ResponseMessage) string {
 // are no destinations, an empty list shall be returned - this is not an error". That matters
 // most for a restarted element, which holds nothing precisely when an ADMF most needs a usable
 // answer.
-func listBody(_ X1ResponseMessage, name string, items func(*strings.Builder)) string {
+func listBody(name string, items func(*strings.Builder)) string {
 	var b strings.Builder
 	b.WriteString(open(4, name))
 	items(&b)
@@ -218,19 +218,19 @@ func taskResponseDetails(ind int, t types.InterceptTask, faults []X1Error) strin
 	b.WriteString(closeTag(ind+4, "listOfDIDs"))
 	b.WriteString(closeTag(ind+2, "taskDetails"))
 
-	b.WriteString(taskStatus(ind+2, t, faults))
+	b.WriteString(taskStatus(ind+2, faults))
 	b.WriteString(closeTag(ind, "taskResponseDetails"))
 
 	return b.String()
 }
 
-// taskStatus renders the schema's TaskStatus, which is a complex type and was being emitted
-// as the string "Active" or "Inactive" — values that appear in no version of the schema.
+// taskStatus renders the schema's TaskStatus, a complex type: not the strings "Active" or
+// "Inactive", which appear in no version of the schema.
 //
 // What the schema asks for is `provisioningStatus`: whether the element has *provisioned*
 // the task, not whether it is switched on. A task this element holds has been applied, so it
 // is `complete`. The optional counters are omitted rather than guessed.
-func taskStatus(ind int, _ types.InterceptTask, faults []X1Error) string {
+func taskStatus(ind int, faults []X1Error) string {
 	// Always `complete`, and the alternatives are unreachable rather than unhandled.
 	//
 	// A task in the store has been applied: activation refuses anything this element cannot
@@ -475,17 +475,17 @@ func elNS(ind int, ns, name, value string) string {
 // unknown here when product is reaching it. Each is marked, so the answer stays literal
 // about what was provisioned as well as complete about what resolves.
 func (s *Server) heldDestinations() []ReportedDestination {
-	out := s.heldDestinationsLocked()
+	out := s.heldDestinationsUnannotated()
 	s.annotateReachability(out)
 
 	return out
 }
 
-// heldDestinationsLocked is the same list without the reachability answer. Split out because
+// heldDestinationsUnannotated is the same list without the reachability answer. Split out because
 // that answer comes from the element's delivery layer, which holds locks of its own — calling
 // into it under s.mu would order this package's lock ahead of theirs, and the fault probes are
 // kept outside the lock for exactly that reason.
-func (s *Server) heldDestinationsLocked() []ReportedDestination {
+func (s *Server) heldDestinationsUnannotated() []ReportedDestination {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -564,20 +564,20 @@ func (s *Server) unresolvedFaults() []X1Error {
 // configured. It answers the same question heldDestinations does, for one identifier, so
 // the two cannot disagree about whether this element can deliver to a DID.
 func (s *Server) destinationByDID(did string) (ReportedDestination, bool) {
-	reported, ok := s.destinationByDIDLocked(did)
+	reported, ok := s.destinationByDIDUnannotated(did)
 	if !ok {
 		return ReportedDestination{}, false
 	}
 
-	// Outside the lock, as heldDestinationsLocked documents.
+	// Outside the lock, as heldDestinationsUnannotated documents.
 	one := []ReportedDestination{reported}
 	s.annotateReachability(one)
 
 	return one[0], true
 }
 
-// destinationByDIDLocked resolves one DID without the reachability answer.
-func (s *Server) destinationByDIDLocked(did string) (ReportedDestination, bool) {
+// destinationByDIDUnannotated resolves one DID without the reachability answer.
+func (s *Server) destinationByDIDUnannotated(did string) (ReportedDestination, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
