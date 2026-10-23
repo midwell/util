@@ -139,6 +139,13 @@ var errNoKeepaliveReporter = errors.New("x1: no reporter for the keepalive proce
 // the ADMF indicating 'FaultCleared'". The clearing report goes on its own goroutine because
 // this runs on the X1 request goroutine, and only when a fault is owed, so an ordinary
 // request costs a lock acquisition.
+//
+// A clear is owed for as long as the reporter holds the 9050 fault, not only on the first
+// request after it: a FaultCleared that does not arrive leaves the fault recorded, so the
+// next request sends it again, and the ADMF is not left holding a keepalive fault for an
+// element it is talking to. The reporter sends no clear for a fault it does not hold and
+// none while one is already in flight, so asking again costs nothing when there is nothing
+// to clear.
 func (s *Server) recordActivity() {
 	s.mu.Lock()
 	s.lastSeen = s.now()
@@ -148,7 +155,7 @@ func (s *Server) recordActivity() {
 	reporter := s.keepaliveReporter
 	s.mu.Unlock()
 
-	if owed && reporter != nil {
+	if reporter != nil && (owed || reporter.holds(reportKey{scope: scopeElement, condition: NEIssueKeepalivesMissing})) {
 		go reporter.NotifyElementClear(NEIssueKeepalivesMissing)
 	}
 }

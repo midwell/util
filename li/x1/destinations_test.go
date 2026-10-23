@@ -697,7 +697,7 @@ func TestMalformedRequestHeadersAreNotEchoedBack(t *testing.T) {
 	if m.Version != supportedVersion {
 		t.Errorf("answer version %q, want this element's %q", m.Version, supportedVersion)
 	}
-	if !uuidPattern.MatchString(m.X1TransactionID) {
+	if !types.ValidUUID(m.X1TransactionID) {
 		t.Errorf("echoed x1TransactionId %q is not a UUID", m.X1TransactionID)
 	}
 

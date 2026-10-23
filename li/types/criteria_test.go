@@ -195,6 +195,11 @@ func TestContradictoryTargetsFindsCombinationsNothingSatisfies(t *testing.T) {
 		{"two sessions", []TargetIdentifier{id(TargetFSEID, "1"), id(TargetFSEID, "2")}, true},
 		{"two directions", []TargetIdentifier{id(TargetGTPTunnelDirection, "Outbound"), id(TargetGTPTunnelDirection, "Inbound")}, true},
 		{"two UE addresses", []TargetIdentifier{id(TargetUEIPv4, "192.0.2.1"), id(TargetUEIPv4, "192.0.2.2")}, true},
+		// A packet carries a UE address of one family.
+		{"a UE IPv4 and a UE IPv6 address", []TargetIdentifier{
+			id(TargetUEIPv4, "192.0.2.1"), id(TargetUEIPv6, "2001:0db8:0000:0000:0000:0000:0000:0001"),
+		}, true},
+		{"a UE IPv4 address and a port", []TargetIdentifier{id(TargetUEIPv4, "192.0.2.1"), id(TargetTCPPort, "443")}, false},
 		{"a TCP and a UDP port", []TargetIdentifier{id(TargetTCPPort, "53"), id(TargetUDPPort, "53")}, true},
 		{"two TCP ports", []TargetIdentifier{id(TargetTCPPort, "80"), id(TargetTCPPort, "443")}, true},
 		{"two IMEIs", []TargetIdentifier{id(TargetPEI, "35784005123456"), id(TargetPEI, "35784005123457")}, true},
@@ -255,6 +260,10 @@ func TestTheTwoShapesOfOneTEIDAreCompatible(t *testing.T) {
 		{"5@10.0.0.1", "5@10.0.0.2", true},
 		{"5", "6@10.0.0.1", true},
 		{"5", "6", true},
+		// Addresses are compared as addresses: two spellings of one endpoint agree.
+		{"5@2001:0db8:0000:0000:0000:0000:0000:0001", "5@2001:db8::1", false},
+		{"5@10.0.0.1", "5@::ffff:10.0.0.1", false},
+		{"5@2001:db8::1", "5@2001:db8::2", true},
 	} {
 		task := InterceptTask{Targets: []TargetIdentifier{fteid(c.a), fteid(c.b)}}
 		if _, _, got := task.ContradictoryTargets(); got != c.contradict {

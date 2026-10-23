@@ -60,7 +60,8 @@ check:
 
 - **A task's target identifiers must all match** (table 6.2.1.2-1: "Where multiple criteria
   are present, all criteria are required to be matched"). A combination no subject or packet
-  satisfies — two SUPIs, two sessions, two directions, two port criteria — is refused
+  satisfies — two SUPIs, two sessions, two directions, two port criteria, a UE IPv4 with a UE
+  IPv6 address — is refused
   (3000/3001) by these packages for every element; a task naming an identifier an element does
   not evaluate is refused by that element's CanApply. Clause 5.1.1 says "A Task relates to a
   single target identifier", while table 6.2.1.2-1 defines a list of criteria that must all
@@ -169,8 +170,11 @@ criteria.
 `targetIdentifiers` list may name several, and they are conjunctive: TS 103 221-1 table
 6.2.1.2-1, "Where multiple criteria are present, all criteria are required to be matched." An
 element refuses (3000/3001) a combination no subject or packet satisfies — two SUPIs, two
-sessions, two directions, two port criteria — and, through its CanApply, a task naming an
-identifier it does not evaluate.
+sessions, two directions, two port criteria, a UE IPv4 with a UE IPv6 address — and, through its
+CanApply, a task naming an identifier it does not evaluate. An LI_T3 F-TEID is refused the same
+way when its TEID is 0 (no user-plane tunnel carries it) or when it names both an IPv4 and an IPv6
+address: a criterion matches a tunnel endpoint by one address, and keeping either would narrow the
+interception to one family by this element's choice.
 What is refused as a schema error (1010) is two arms inside *one* identifier. The two rules are
 about different levels of the structure.
 
@@ -421,7 +425,8 @@ the element sends a ReportNEIssue `FaultReport` with code 9050 and starts TIME_P
 1 min). An OK answer within TIME_P1 starts TIME_P3 (default 2 h); when TIME_P3 expires, or
 TIME_P1 expires with no OK answer, the element deactivates all tasks and sends an `Alert` with
 code 10000. Any X1 request ends the procedure, with a `FaultCleared` carrying 9050 when the
-`FaultReport` was delivered. An element configured to retain tasking restarts TIME_P2 instead,
+`FaultReport` was delivered; a `FaultCleared` that does not arrive is sent again with the next X1
+request, until one does. An element configured to retain tasking restarts TIME_P2 instead,
 and reports 9050 again each time TIME_P2 expires while the ADMF stays silent. The procedure is
 enabled by default; a network function disables it only by configuration, and timers outside
 what the procedure allows are refused rather than silently ignored.
@@ -444,7 +449,7 @@ does. The codes it emits, and what each means here:
 | Code | Meaning | Where |
 |---|---|---|
 | 1000 | Generic error | The fallback for a refusal no more specific code fits. Every path this element knows names a specific one |
-| 1010 | Syntax/schema error | A message violating its own schema: a missing mandatory element (`xId`, `dId`, `taskDetails`, `destinationDetails`); an identifier or target value outside the format the schema defines; a `deliveryType` outside its enumeration; an IPv6 destination address with a zone or in IPv4-mapped form; a `targetIdentifier` populating more than one arm of the schema's choice; a request carrying no message (answered as a `TopLevelError`) |
+| 1010 | Syntax/schema error | A message violating its own schema: a missing mandatory element (`xId`, `dId`, `taskDetails`, `destinationDetails`); an identifier or target value outside the format the schema defines; a `deliveryType` outside its enumeration; an IPv6 destination address with a zone or in IPv4-mapped form; an LI_T3 criterion value outside its type (an F-TEID address that is not one, a `NetworkInstance` or `PDR` that is not hexBinary); a `targetIdentifier`, or an LI_T3 criterion, populating more than one arm of the schema's choice, an arm this element does not model included; a request carrying no message (answered as a `TopLevelError`) |
 | 1020 | Unsupported version | A message whose version is not a `v1.x.y`: another major version, or a value outside the schema's pattern. The description names the version this element supports |
 | 1030 | ADMF Identifier does not match certificate details | Clause 8.2.4 binding, and any message arriving without a client certificate |
 | 1040 | Unexpected ADMF Identifier | A peer in the LI domain that is not this element's responsible ADMF |

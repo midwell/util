@@ -10,6 +10,7 @@ package types
 
 import (
 	"encoding/hex"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -118,12 +119,12 @@ type XID string
 func (x XID) Bytes() [16]byte {
 	var out [16]byte
 
-	if !canonicalUUID(string(x)) {
+	if !ValidUUID(string(x)) {
 		return out
 	}
 
-	// canonicalUUID has established 32 hexadecimal digits, so this cannot fail; the check
-	// keeps a change to canonicalUUID from ever yielding a partly filled XID.
+	// ValidUUID has established 32 hexadecimal digits, so this cannot fail; the check
+	// keeps a change to ValidUUID from ever yielding a partly filled XID.
 	if n, err := hex.Decode(out[:], []byte(strings.ReplaceAll(string(x), "-", ""))); err != nil || n != len(out) {
 		return [16]byte{}
 	}
@@ -131,8 +132,11 @@ func (x XID) Bytes() [16]byte {
 	return out
 }
 
-// canonicalUUID reports whether s is a UUID in lowercase 8-4-4-4-12 form.
-func canonicalUUID(s string) bool {
+// ValidUUID reports whether s is a UUID in lowercase 8-4-4-4-12 form: TS 103 280's UUID
+// type, which X1 restricts an XId, a DId and an x1TransactionId to, and the only form
+// XID.Bytes converts. One checker for both, so what X1 admits and what converts to a PDU
+// header cannot drift apart.
+func ValidUUID(s string) bool {
 	if len(s) != 36 {
 		return false
 	}
@@ -358,7 +362,9 @@ func (t InterceptTask) NamesOnlyTypes(kinds ...TargetIdentifierType) bool {
 // match, and TS 103 221-1 table 6.2.1.2-1 has an element reject "an inappropriate
 // combination of identifiers" rather than acknowledge it. The single-valued
 // properties are a subscriber's SUPI and GPSI, and a packet's F-SEID, F-TEID, UE
-// address, network instance, tunnel direction, PDR and rule identifiers. These are
+// address, network instance, tunnel direction, PDR and rule identifiers. A packet's UE
+// address is also of one family, so a UE IPv4 address and a UE IPv6 address contradict
+// each other as two IPv4 addresses do. These are
 // judged per packet, which is how a CC-POI applies them: a session holds many PDRs and
 // rules, but each packet is matched by one of each, so a task naming two PDR IDs selects
 // nothing. A subscriber holds one SUPI; the GPSI is single-valued here because the
@@ -367,7 +373,8 @@ func (t InterceptTask) NamesOnlyTypes(kinds ...TargetIdentifierType) bool {
 //
 // An F-TEID criterion is "TEID" or "TEID@address" (see TargetFTEID), and the two shapes of
 // one TEID are compatible: the one without an address names any tunnel endpoint with that
-// TEID, so it is satisfied wherever the addressed one is.
+// TEID, so it is satisfied wherever the addressed one is. Two addresses are compared as
+// addresses, so two spellings of one endpoint do not contradict.
 //
 // A PEI is the exception that needs care: a subscriber presents its IMEISV and the
 // IMEI it contains (TS 23.003: an IMEISV is the eight-digit TAC and six-digit serial
@@ -391,6 +398,9 @@ func contradicts(a, b TargetIdentifier) bool {
 		return false
 	}
 	if isPort(a.Type) && isPort(b.Type) {
+		return true
+	}
+	if isUEAddress(a.Type) && isUEAddress(b.Type) && a.Type != b.Type {
 		return true
 	}
 	if a.Type != b.Type {
@@ -417,13 +427,31 @@ func isPort(t TargetIdentifierType) bool {
 	return t == TargetTCPPort || t == TargetUDPPort
 }
 
+func isUEAddress(t TargetIdentifierType) bool {
+	return t == TargetUEIPv4 || t == TargetUEIPv6
+}
+
 // fteidCompatible reports whether two distinct F-TEID criteria can match one packet: they
-// name the same TEID, and at most one of them names an address.
+// name the same TEID, and either at most one of them names an address or both name the
+// same one.
 func fteidCompatible(a, b string) bool {
 	teidA, addrA, hasA := strings.Cut(a, "@")
 	teidB, addrB, hasB := strings.Cut(b, "@")
 
-	return teidA == teidB && (!hasA || !hasB || addrA == addrB)
+	return teidA == teidB && (!hasA || !hasB || sameAddress(addrA, addrB))
+}
+
+// sameAddress compares two addresses as addresses where both parse, so "10.0.0.1" and an
+// IPv4-mapped spelling of it, or two spellings of one IPv6 address, are the same; text
+// that does not parse is compared as text.
+func sameAddress(a, b string) bool {
+	pa, errA := netip.ParseAddr(a)
+	pb, errB := netip.ParseAddr(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+
+	return pa.Unmap() == pb.Unmap()
 }
 
 // peiCompatible reports whether two distinct PEI values can belong to one device: an

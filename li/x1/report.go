@@ -375,6 +375,12 @@ type Reporter struct {
 	// the standard's own two mechanisms and they answer different questions: "what
 	// changed" and "what holds now". This is the first.
 	reported map[reportKey]bool
+
+	// forgotten marks task-scoped keys whose task ended while a report or retraction for
+	// them was in flight. Settling that send records nothing: the XID it names has been
+	// deactivated, and a record left behind would be inherited by a task re-activated under
+	// the same XID, which the watcher would then send an AllClear for a fault it never had.
+	forgotten map[reportKey]bool
 }
 
 // reportScope is which of the three scopes clause 6.5.1 defines a report carries.
@@ -443,6 +449,13 @@ func (r *Reporter) commit(k reportKey, record bool) {
 	now := r.now()
 
 	delete(r.sending, k)
+	if r.forgotten[k] {
+		delete(r.forgotten, k)
+		delete(r.reported, k)
+		delete(r.lastSent, k)
+
+		return
+	}
 	r.lastSent[k] = now
 
 	// A record is what a retraction later finds. A task-scoped report is recorded only when
@@ -483,6 +496,11 @@ func (r *Reporter) release(k reportKey) {
 	defer r.mu.Unlock()
 
 	delete(r.sending, k)
+	if r.forgotten[k] {
+		delete(r.forgotten, k)
+		delete(r.reported, k)
+		delete(r.lastSent, k)
+	}
 }
 
 // settle ends a reservation according to what the send established.
@@ -570,6 +588,7 @@ func (r *Reporter) commitClear(k reportKey) {
 
 	delete(r.sending, k)
 	delete(r.reported, k)
+	delete(r.forgotten, k)
 	// The throttle is forgotten with it, so the same fault recurring immediately is
 	// reported rather than suppressed as a repeat of the one just retracted.
 	delete(r.lastSent, k)
@@ -599,6 +618,7 @@ func NewReporter(admfURL, admfID, neID string, tlsConfig *tls.Config) *Reporter 
 		lastSent:      make(map[reportKey]time.Time),
 		sending:       make(map[reportKey]bool),
 		reported:      make(map[reportKey]bool),
+		forgotten:     make(map[reportKey]bool),
 	}
 }
 
@@ -925,8 +945,9 @@ func (r *Reporter) standingTaskFaults() []reportKey {
 // forgetTask drops every task-scoped record of xid without retracting it: the task has ended,
 // which ends its faults, and an AllClear would name an XID the ADMF has deactivated. Done when
 // the task is removed rather than at the next watcher sample, so a task re-activated under the
-// same XID within one interval does not inherit the old task's faults. A record whose report
-// is still in flight is left to settle.
+// same XID within one interval does not inherit the old task's faults. A key whose report or
+// retraction is still in flight -- including a first report, which has no record yet -- is
+// marked, and its settlement records nothing.
 func (r *Reporter) forgetTask(xid string) {
 	if r == nil || xid == "" {
 		return
@@ -935,8 +956,14 @@ func (r *Reporter) forgetTask(xid string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	ofTask := func(k reportKey) bool { return k.scope == scopeTask && k.id == xid }
+	for k := range r.sending {
+		if ofTask(k) {
+			r.forgotten[k] = true
+		}
+	}
 	for k := range r.reported {
-		if k.scope == scopeTask && k.id == xid && !r.sending[k] {
+		if ofTask(k) && !r.sending[k] {
 			delete(r.reported, k)
 			delete(r.lastSent, k)
 		}

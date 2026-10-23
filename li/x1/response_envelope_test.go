@@ -145,7 +145,7 @@ func TestEveryResponseThisElementReturnsCarriesTheFullEnvelope(t *testing.T) {
 			if m.Version != supportedVersion {
 				t.Errorf("version = %q, want %q", m.Version, supportedVersion)
 			}
-			if !uuidPattern.MatchString(m.X1TransactionID) {
+			if !types.ValidUUID(m.X1TransactionID) {
 				t.Errorf("x1TransactionId = %q, which is not the TS 103 280 UUID the schema restricts it to", m.X1TransactionID)
 			}
 			if m.MessageTimestamp == "" {
@@ -218,7 +218,7 @@ func TestTheRequesterAlwaysGeneratesAConformantTransactionIdentifier(t *testing.
 
 	for range 64 {
 		h := r.header("KeepaliveRequest")
-		if !uuidPattern.MatchString(h.TxID) {
+		if !types.ValidUUID(h.TxID) {
 			t.Fatalf("header generated %q, which the schema does not admit — a conformant peer would be obliged to substitute a different value, and an equality check would then refuse a correct response", h.TxID)
 		}
 		if echoTransactionID(h.TxID) != h.TxID {

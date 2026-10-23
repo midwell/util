@@ -6,6 +6,7 @@ package x1
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -2017,17 +2018,7 @@ func mapUPFLIT3Identifier(id UPFLIT3Identifier) (types.TargetIdentifier, error) 
 		}, nil
 
 	case id.FTEID != nil:
-		// The address is optional in the schema. Where it is absent the criterion is
-		// the TEID alone, which cannot separate two tunnels sharing one; that is the
-		// triggering function's choice to make, not ours to refuse.
-		v := strconv.FormatUint(uint64(id.FTEID.TEID), 10)
-		if addr := id.FTEID.IPv4Address; addr != "" {
-			v += "@" + addr
-		} else if addr := id.FTEID.IPv6Address; addr != "" {
-			v += "@" + addr
-		}
-
-		return types.TargetIdentifier{Type: types.TargetFTEID, Value: v}, nil
+		return mapFTEID(*id.FTEID)
 
 	case id.PDRID != nil:
 		return types.TargetIdentifier{
@@ -2044,10 +2035,12 @@ func mapUPFLIT3Identifier(id UPFLIT3Identifier) (types.TargetIdentifier, error) 
 	case id.NetworkInstance != "":
 		// xs:hexBinary in the schema, so it is carried and compared as the octets it
 		// encodes rather than as a name.
-		return types.TargetIdentifier{
-			Type:  types.TargetNetworkInstance,
-			Value: strings.ToLower(id.NetworkInstance),
-		}, nil
+		v, err := hexBinaryCriterion("NetworkInstance", id.NetworkInstance)
+		if err != nil {
+			return types.TargetIdentifier{}, err
+		}
+
+		return types.TargetIdentifier{Type: types.TargetNetworkInstance, Value: v}, nil
 
 	case id.GTPTunnelDirection != "":
 		// A closed enumeration. Anything else is refused: an unrecognised direction
@@ -2065,13 +2058,72 @@ func mapUPFLIT3Identifier(id UPFLIT3Identifier) (types.TargetIdentifier, error) 
 		}
 
 	case id.PDR != "":
-		return types.TargetIdentifier{
-			Type:  types.TargetPDR,
-			Value: strings.ToLower(id.PDR),
-		}, nil
+		v, err := hexBinaryCriterion("PDR", id.PDR)
+		if err != nil {
+			return types.TargetIdentifier{}, err
+		}
+
+		return types.TargetIdentifier{Type: types.TargetPDR, Value: v}, nil
 	}
 
 	return types.TargetIdentifier{}, fmt.Errorf("unsupported detection criterion")
+}
+
+// mapFTEID maps an F-TEID criterion to "TEID" or "TEID@address", the address in the
+// canonical spelling the plain address arms use, so one tunnel endpoint has one value
+// however a peer wrote it.
+//
+// The address is optional in the schema. Where it is absent the criterion is the TEID
+// alone, which cannot separate two tunnels sharing one; that is the triggering
+// function's choice to make, not ours to refuse. Three things are refused:
+//   - A TEID of 0. The schema makes the element mandatory, and an absent one decodes as 0;
+//     either way 0 names no user-plane tunnel (TS 29.281 reserves it for path management),
+//     so the criterion could never match. The operation's own refusal, as for an FSEID
+//     with no SEID.
+//   - An address that is not one of its schema type: 1010, as for the plain address arms.
+//   - Both an IPv4 and an IPv6 address. The schema admits both, for a dual-stack endpoint,
+//     but a criterion holds one address and a packet arrives on one of them, so keeping
+//     either would narrow the interception to one family by this element's choice, and
+//     dropping both would widen it to every endpoint with that TEID. Refused as a
+//     criterion this element cannot apply rather than read in one of those ways.
+func mapFTEID(f FTEID) (types.TargetIdentifier, error) {
+	if f.TEID == 0 {
+		return types.TargetIdentifier{}, errors.New("FTEID criterion carries no TEID")
+	}
+	v := strconv.FormatUint(uint64(f.TEID), 10)
+
+	addr := IPAddress{IPv4: xsToken(f.IPv4Address), IPv6: xsToken(f.IPv6Address)}
+	switch addr.Arms() {
+	case 0:
+		return types.TargetIdentifier{Type: types.TargetFTEID, Value: v}, nil
+	case 1:
+		if err := addr.Valid(); err != nil {
+			// The address is not quoted: see refuse.
+			return types.TargetIdentifier{}, refuse(errCodeSchemaError, "FTEID address: %v", err)
+		}
+
+		return types.TargetIdentifier{Type: types.TargetFTEID, Value: v + "@" + addr.Canonical()}, nil
+	default:
+		return types.TargetIdentifier{}, errors.New(
+			"FTEID criterion names both an IPv4 and an IPv6 address; a criterion matches a tunnel endpoint by one")
+	}
+}
+
+// hexBinaryCriterion checks a criterion of the schema's xs:hexBinary type and returns it
+// in one spelling, lower case. A value that is not an even number of hexadecimal digits is
+// outside the type, so 1010; an empty one is inside it but names nothing a packet could
+// carry, so the operation's own refusal.
+func hexBinaryCriterion(element, value string) (string, error) {
+	tok := xsToken(value)
+	octets, err := hex.DecodeString(tok)
+	if err != nil {
+		return "", refuse(errCodeSchemaError, "%s is not hexBinary as the schema requires", element)
+	}
+	if len(octets) == 0 {
+		return "", fmt.Errorf("%s criterion names no value", element)
+	}
+
+	return strings.ToLower(tok), nil
 }
 
 // malformedTaskIdentifiers returns a refusal when a task's own identifiers do not conform
@@ -2478,7 +2530,7 @@ func populatedLIT3Arms(id UPFLIT3Identifier) int {
 		}
 	}
 
-	return n
+	return n + len(id.Unmodelled)
 }
 
 // unhonourableTaskFields returns a refusal for the first field of td this element can
@@ -2726,17 +2778,12 @@ var versionPattern = regexp.MustCompile(`^v1\.\d+\.\d+$`)
 // everything else the message says. A fresh value is chosen rather than a fixed one so that
 // two refusals to the same peer stay distinguishable.
 func echoTransactionID(id string) string {
-	if uuidPattern.MatchString(id) {
+	if types.ValidUUID(id) {
 		return id
 	}
 
 	return newUUID()
 }
-
-// uuidPattern is the TS 103 280 UUID: the format the schema restricts an XId, a DId and
-// an x1TransactionId to. Lowercase hexadecimal only, and — as published — it does not
-// pin the version or variant nibbles, so neither does this.
-var uuidPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
 // validIdentifier reports whether an identifier conforms to the UUID format the schema
 // defines for it. field names the element, so an ADMF can tell which of a message's
@@ -2750,7 +2797,7 @@ var uuidPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0
 // mediation function throws away. Refusing at the door is the only place that failure is
 // visible.
 func validIdentifier(field, value string) error {
-	if !uuidPattern.MatchString(value) {
+	if !types.ValidUUID(value) {
 		// A value, so not quoted: see refuse.
 		return refuse(errCodeSchemaError,
 			"%s is not a UUID as the schema requires", field)

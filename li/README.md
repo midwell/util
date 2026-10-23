@@ -81,7 +81,7 @@ Three network functions act as POIs:
   no OK answer, it deactivates all tasks and reports Alert 10000 "Database cleared" — so
   warrants do not outlive an operational controller — unless it is configured to retain
   tasking. Any X1 request ends the procedure, and a delivered fault 9050 is cleared with
-  `FaultCleared`.
+  `FaultCleared`, sent again with the next request until one arrives.
 - **X2/X3 keepalive (on by default):** a different mechanism, in the other
   direction. ETSI TS 103 221-2 clause 6.2.4 has each POI send a Keepalive PDU on
   every delivery connection at least every TIME_P1 (60 s), and disconnect,
@@ -440,7 +440,8 @@ types in table 6.2.3-7. What this implementation does with each:
 A task's criteria are a list, and they are **conjunctive**: traffic is intercepted only
 where every one of them matches (TS 103 221-1 table 6.2.1.2-1), so a list narrows — a
 session's F-SEID with a tunnel direction is that session's traffic in one direction. A
-combination no packet satisfies (two sessions, two directions, two ports) is refused at
+combination no packet satisfies (two sessions, two directions, two ports, a UE IPv4 with a UE
+IPv6 address) is refused at
 activation, as the same table requires, by these packages for every element. Clause 5.1.1
 says "A Task relates to a single target identifier"; the element follows table 6.2.1.2-1,
 which defines the field as a list of criteria that must all match.

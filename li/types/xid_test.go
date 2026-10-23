@@ -33,3 +33,24 @@ func TestOnlyTheCanonicalXIDConvertsToHeaderBytes(t *testing.T) {
 		}
 	}
 }
+
+// TestValidUUIDIsTheSchemasUUID: lowercase 8-4-4-4-12 only, the form X1 admits and the only one
+// XID.Bytes converts, so the two cannot disagree about a task identifier.
+func TestValidUUIDIsTheSchemasUUID(t *testing.T) {
+	for s, want := range map[string]bool{
+		"50b93d1e-1b53-4d63-aacb-e4d99811bc0b":  true,
+		"50B93D1E-1B53-4D63-AACB-E4D99811BC0B":  false,
+		"50b93d1e1b534d63aacbe4d99811bc0b":      false,
+		"50b93d1e-1b53-4d63-aacb-e4d99811bc0":   false,
+		"50b93d1e-1b53-4d63-aacb-e4d99811bc0bz": false,
+		"g0b93d1e-1b53-4d63-aacb-e4d99811bc0b":  false,
+		"":                                      false,
+	} {
+		if got := ValidUUID(s); got != want {
+			t.Errorf("ValidUUID(%q) = %v, want %v", s, got, want)
+		}
+		if got := !XID(s).IsZero(); got != want {
+			t.Errorf("XID(%q) converts = %v, want %v: X1's check and the conversion disagree", s, got, want)
+		}
+	}
+}

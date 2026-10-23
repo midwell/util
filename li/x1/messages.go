@@ -465,6 +465,12 @@ type UPFLIT3Identifier struct {
 	GTPTunnelDirection string  `xml:"urn:3GPP:ns:li:3GPPX1Extensions:r18:v6 GTPTunnelDirection,omitempty"`
 	FTEID              *FTEID  `xml:"urn:3GPP:ns:li:3GPPX1Extensions:r18:v6 FTEID,omitempty"`
 	PDR                string  `xml:"urn:3GPP:ns:li:3GPPX1Extensions:r18:v6 PDR,omitempty"`
+	// Unmodelled collects every child element no field above claims, for the reason
+	// TargetIdentifier.Unmodelled does: a criterion carrying one modelled and one unknown
+	// arm would otherwise decode as the modelled arm alone, and the element would apply
+	// fewer criteria than were ordered -- which, since every criterion must match, widens
+	// the interception.
+	Unmodelled []UnmodelledElement `xml:",any"`
 }
 
 // FTEID is a GTP tunnel endpoint: the TEID, optionally with the address of the node
