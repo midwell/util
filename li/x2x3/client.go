@@ -44,7 +44,7 @@ type Client struct {
 	// to it, or nil when none is. Everything about one connection dies with it —
 	// see connState.
 	live *connState
-	// closed records that Close was called, which deliver has to know: it treats a nil
+	// closed records that Close was called, which deliverLocked has to know: it treats a nil
 	// live as "not connected yet" and dials, so without this a Send after Close would
 	// deliver product over a *new* connection to a destination this element has finished
 	// with. AsyncSender guards that for pooled callers too, but a client should not depend
@@ -52,7 +52,7 @@ type Client struct {
 	closed bool
 
 	// lastDialFailure and lastDialErr record the most recent dial that failed, and are
-	// cleared by one that succeeds. Guarded by mu. They are what lets deliver refuse to
+	// cleared by one that succeeds. Guarded by mu. They are what lets deliverLocked refuse to
 	// dial again within redialInterval — see minRedialInterval.
 	lastDialFailure time.Time
 	lastDialErr     error
@@ -76,6 +76,20 @@ type Client struct {
 	// dialConn replaces the TLS dial when set, so a test can hand the client a connection
 	// whose writes fail in a chosen way. Set only by tests; nil otherwise.
 	dialConn func(ctx context.Context) (net.Conn, error)
+	// afterDelivery runs once a delivery's outcome is recorded and mu released. Set only
+	// by tests, to put another writer of the reachability flag after it; nil otherwise.
+	afterDelivery func()
+	// afterKeepaliveFailed runs after a keepalive write failed and its connection was
+	// dropped, before the fault is reported. Set only by tests; nil otherwise.
+	afterKeepaliveFailed func()
+
+	// batchMu guards batchBuf and batchEnds, the buffers SendBatch marshals into and
+	// reuses, so a steady stream of batches allocates nothing beyond what marshalling
+	// itself needs. Separate from mu, which is held across a dial and a write: holding it
+	// across marshalling too would make a keepalive wait for a batch to be encoded.
+	batchMu   sync.Mutex
+	batchBuf  []byte
+	batchEnds []int
 
 	// unreachable is what the most recent exchange with this destination established,
 	// kept outside mu because a fault probe reads it on the X1 request goroutine: mu is
@@ -101,7 +115,7 @@ type Client struct {
 // certainly have lost as well, since the last one a moment ago failed.
 //
 // The redial that follows a write failure on a held connection is not subject to it: that
-// connection was working a moment ago, and the one reconnect deliver makes is how an idle
+// connection was working a moment ago, and the one reconnect deliverLocked makes is how an idle
 // connection the mediation function dropped is restored.
 const minRedialInterval = time.Second
 
@@ -217,13 +231,25 @@ func (c *Client) Send(pdu *PDU) error {
 // boundaries are the offsets at which each product unit in b ends, so a retry after a
 // partial write can resume at one. Nil means b is a single unit.
 func (c *Client) sendBytes(b []byte, boundaries []int) error {
-	err := c.deliver(b, boundaries)
+	c.mu.Lock()
+	err := c.deliverLocked(b, boundaries)
 
+	// Recorded before mu is released, in the critical section that reached the outcome.
+	// Every writer of the flag stores under mu, so the last conclusion reached is the one
+	// that stands: recorded after the unlock instead, a delivery's outcome could land after
+	// a newer one — a probe or another delivery that has since found the destination
+	// reachable, or a keepalive expiry that has found it gone — and overwrite it.
+	//
 	// A dropped unit is not a statement about the destination. The rest of the batch
 	// reached it, so it is reachable, and recording it as unreachable would report a
 	// fault about a working mediation function — see ErrUnitDropped. The loss is still
 	// returned to the caller.
 	c.unreachable.Store(err != nil && !errors.Is(err, ErrUnitDropped))
+	c.mu.Unlock()
+
+	if c.afterDelivery != nil {
+		c.afterDelivery()
+	}
 
 	return err
 }
@@ -251,17 +277,15 @@ func (c *Client) Unreachable() bool {
 	return c.unreachable.Load()
 }
 
-// deliver writes already-marshalled PDU bytes, reconnecting once if the MDF has
+// deliverLocked writes already-marshalled PDU bytes, reconnecting once if the MDF has
 // dropped an idle connection. Reached from both Send and SendBatch through sendBytes, so
-// both get the same reconnect behaviour — a batch is only a longer write.
+// both get the same reconnect behaviour — a batch is only a longer write. The caller holds
+// mu.
 //
 // Every failure it returns is a *DeliveryError counting the units that did not arrive: all of
 // them when nothing could be written, and only the ones from the resumption point on when a
 // write stopped part-way and the retry failed.
-func (c *Client) deliver(b []byte, boundaries []int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Client) deliverLocked(b []byte, boundaries []int) error {
 	units := len(boundaries)
 	if units == 0 {
 		units = 1
@@ -310,28 +334,37 @@ func (c *Client) deliver(b []byte, boundaries []int) error {
 	// The units still to deliver: everything from the resumption point on.
 	pending := unitsIn(boundaries, len(b), len(rest))
 
-	// One reconnect attempt — the MDF may have dropped an idle connection.
+	// The connection is dropped either way: a write that reported an error is not one to
+	// keep writing on.
 	c.dropLocked()
+
+	// The write took every byte and reported an error anyway — a deadline that fired after
+	// the last record was flushed, say. Every unit was written, so none is lost and the
+	// destination is not unreachable: it took all of them. There is nothing to resend, so
+	// no reconnect either; the next delivery dials.
+	if len(rest) == 0 {
+		return nil
+	}
+
+	// One reconnect attempt — the MDF may have dropped an idle connection.
 	if err := c.dialLocked(); err != nil {
 		return lostUnits(pending, err)
 	}
-	if len(rest) > 0 {
-		if _, err := c.writeLocked(rest); err != nil {
-			c.dropLocked()
+	if _, err := c.writeLocked(rest); err != nil {
+		c.dropLocked()
 
-			if resuming && landed {
-				// The one place units are still knowingly lost: this element had one
-				// reconnect, spent it, and the resend did not land. Earlier units did, so
-				// the statement is the one ErrUnitDropped is for — delivery succeeded
-				// except for the units from the one the write stopped inside to the end of
-				// the batch — and the destination is not called unreachable over it,
-				// because it took the rest. A drop leaves a gap in a numbered sequence,
-				// which the peer can see and the fault channel can explain.
-				return lostUnits(pending, fmt.Errorf("%w: send to %s: %v", ErrUnitDropped, c.addr, err))
-			}
-
-			return lostUnits(pending, fmt.Errorf("x2x3: send to %s: %w", c.addr, err))
+		if resuming && landed {
+			// The one place units are still knowingly lost: this element had one
+			// reconnect, spent it, and the resend did not land. Earlier units did, so
+			// the statement is the one ErrUnitDropped is for — delivery succeeded
+			// except for the units from the one the write stopped inside to the end of
+			// the batch — and the destination is not called unreachable over it,
+			// because it took the rest. A drop leaves a gap in a numbered sequence,
+			// which the peer can see and the fault channel can explain.
+			return lostUnits(pending, fmt.Errorf("%w: send to %s: %v", ErrUnitDropped, c.addr, err))
 		}
+
+		return lostUnits(pending, fmt.Errorf("x2x3: send to %s: %w", c.addr, err))
 	}
 
 	return nil
@@ -547,12 +580,17 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 		return nil
 	}
 
+	c.batchMu.Lock()
+	defer c.batchMu.Unlock()
+
 	var (
-		buf []byte
+		// buf and ends reuse the previous batch's backing arrays. The write is synchronous
+		// and nothing keeps a reference once it returns, so the arrays are free again here.
+		buf = c.batchBuf[:0]
 		// ends is where each PDU in buf finishes. It is what lets a retry after a
 		// partial write resume at a unit boundary rather than resending the whole
 		// buffer, so the destination is not sent the leading PDUs twice.
-		ends       []int
+		ends       = c.batchEnds[:0]
 		marshalErr error
 		// skipped counts the units that never reached the buffer, which the error
 		// returned counts as lost alongside whatever delivery loses.
@@ -583,6 +621,8 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 		ends = append(ends, len(buf))
 	}
 
+	c.keepBatchBuffers(buf, ends)
+
 	if len(buf) == 0 {
 		return lostUnits(skipped, marshalErr)
 	}
@@ -596,4 +636,20 @@ func (c *Client) SendBatch(pdus []*PDU) error {
 	}
 
 	return lostUnits(skipped, marshalErr)
+}
+
+// maxRetainedBatchBytes bounds the buffer SendBatch keeps between batches. A batch larger
+// than this — an unusual burst of large X3 payloads — is still sent, but its buffer is not
+// kept, so one burst does not pin its size in memory for the life of the client.
+const maxRetainedBatchBytes = 4 << 20
+
+// keepBatchBuffers retains buf and ends for the next batch, unless buf has grown past
+// maxRetainedBatchBytes. The caller holds batchMu.
+func (c *Client) keepBatchBuffers(buf []byte, ends []int) {
+	if cap(buf) > maxRetainedBatchBytes {
+		c.batchBuf, c.batchEnds = nil, nil
+
+		return
+	}
+	c.batchBuf, c.batchEnds = buf, ends
 }

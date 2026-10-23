@@ -389,7 +389,10 @@ func (c *Client) sendKeepalive(st *connState) bool {
 		return false
 	}
 
-	if err := c.writeOn(st, b); err != nil {
+	// The unreachable conclusion is recorded by writeOn, under mu as it drops the
+	// connection: stored here, after the unlock, it could land after a delivery that has
+	// since redialled and found the destination reachable, and overwrite that.
+	if err := c.writeOn(st, b, true); err != nil {
 		// A connection this element replaced is not a fault, and saying so here is the
 		// whole point of the distinction: the loop ends because its connection ended,
 		// and the replacement has a timer of its own.
@@ -397,7 +400,9 @@ func (c *Client) sendKeepalive(st *connState) bool {
 			return false
 		}
 
-		c.unreachable.Store(true)
+		if c.afterKeepaliveFailed != nil {
+			c.afterKeepaliveFailed()
+		}
 		c.fault(fmt.Errorf("x2x3: keepalive to %s: %w", c.addr, err))
 
 		return false
@@ -411,19 +416,22 @@ func (c *Client) sendKeepalive(st *connState) bool {
 //
 // A write failure says something about the mediation function. This says something about
 // us — the connection went because *this element* replaced it, which the one-shot redial
-// in deliver does on any write error and Close does at shutdown. Reporting it as a fault
+// in deliverLocked does on any write error and Close does at shutdown. Reporting it as a fault
 // would mark the destination unreachable and report it to the ADMF every time an ordinary
 // redial happened to race the keepalive timer, in the one mechanism whose purpose is
 // telling a dead mediation function from a live one.
 var errStaleConn = errors.New("x2x3: connection replaced")
 
 // writeOn writes to st, but only while st is still the connection this client holds.
+// When the write fails it drops st and, if markUnreachable is set, records the destination
+// unreachable in the same critical section — a keepalive that went unwritten is a statement
+// about the destination; an acknowledgement this element failed to send is not.
 //
 // The check is what makes a keepalive safe to write from its own goroutine: between
 // the timer firing and the lock being acquired, a delivery may have failed, dropped
 // this connection and dialled another. Writing then would put a keepalive numbered
 // for one connection onto a different one.
-func (c *Client) writeOn(st *connState, b []byte) error {
+func (c *Client) writeOn(st *connState, b []byte, markUnreachable bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -434,6 +442,9 @@ func (c *Client) writeOn(st *connState, b []byte) error {
 		// Drop rather than redial here: the next delivery redials, and a keepalive
 		// has nothing to deliver that would justify dialling on its own.
 		c.dropLocked()
+		if markUnreachable {
+			c.unreachable.Store(true)
+		}
 
 		return err
 	}
@@ -762,7 +773,7 @@ func (c *Client) answerKeepalive(st *connState, p *PDU) bool {
 	// this element's own keepalives — sent on the next connection a delivery dials — are
 	// what establish whether the mediation function is reachable. An acknowledgement this
 	// element owes the peer says nothing about that.
-	return c.writeOn(st, b) == nil
+	return c.writeOn(st, b, false) == nil
 }
 
 // protocolError drops a connection whose peer is not speaking X2/X3, and reports it.
